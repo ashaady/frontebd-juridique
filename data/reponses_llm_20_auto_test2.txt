@@ -1,0 +1,530 @@
+REPONSES LLM - EVALUATION RAG (AUTO)
+
+Question 1
+Question: Quelle est la durée légale maximale du travail par semaine dans les établissements au Sénégal ? Y a-t-il des exceptions ?
+RAG sources: 8
+Reponse LLM:
+**Contexte fourni :** La confiance dans le contexte fourni est faible. La réponse est basée uniquement sur les sources explicites disponibles.
+
+### Durée légale maximale du travail hebdomadaire
+
+Selon le Code du Travail sénégalais, la durée légale maximale du travail est fixée à **40 heures par semaine** pour les établissements visés à l'article L.3 [source 1].
+
+### Exceptions et modalités
+
+1.  **Secteur agricole :** Une exception importante concerne les exploitations agricoles. La durée du travail y est fixée à **2 352 heures par an**. Un arrêté du Ministre chargé du Travail doit déterminer la durée légale hebdomadaire applicable selon les saisons, dans cette limite annuelle [source 1].
+
+2.  **Aménagements et dérogations :** Des arrêtés ministériels peuvent déterminer les modalités d'application pour différentes branches d'activité. Ils peuvent prévoir :
+    *   L'aménagement et la répartition des horaires sur un cycle.
+    *   Des dérogations permanentes ou temporaires pour certains cas et emplois.
+    *   Les modalités de récupération des heures perdues [source 1].
+
+3.  **Accords d'entreprise :** Des accords relatifs à l'aménagement des horaires de travail peuvent également être conclus au sein de l'entreprise ou de l'établissement [source 1].
+
+**Synthèse des sources utilisées :**
+La réponse synthétise les informations provenant de la [source 1], qui est la seule source du contexte à traiter explicitement de la durée légale hebdomadaire du travail et de ses exceptions. Les autres sources disponibles ([sources 2 à 8]) abordent des sujets différents (repos hebdomadaire, âge de la retraite, heures supplémentaires, etc.) et ne sont pas pertinentes pour répondre directement à la question posée.
+
+--------------------------------------------------------------------------------
+
+Question 2
+Question: Le travail forcé est-il interdit au Sénégal ? Citez au moins trois exceptions légales prévues par le Code du Travail.
+RAG sources: 8
+Reponse LLM:
+**RÉPONSE :**
+
+Oui, le travail forcé ou obligatoire est interdit au Sénégal. Cette interdiction est stipulée à l'**Article L.4** du Code du Travail.
+
+Cependant, la loi prévoit des exceptions précises où un travail ou service n'est pas considéré comme "forcé ou obligatoire" au sens de cette interdiction.
+
+Voici **trois exceptions légales** explicitement prévues par le Code du Travail sénégalais :
+
+1.  **Travail ou service exigé en vertu des lois sur le service militaire** : Cette exception concerne les travaux effectués dans le cadre du service militaire et affectés à des travaux de caractère militaire.
+2.  **Travail ou service exigé d'un individu comme conséquence d'une condamnation prononcée par l'autorité judiciaire** : Cela se réfère au travail effectué dans le cadre d'une peine prononcée par un tribunal.
+3.  **Travail ou service exigé en cas de guerre, sinistre ou de circonstance mettant en danger la vie ou les conditions normales d'existence de la population** : Cette exception s'applique dans des situations de crise extrême nécessitant une mobilisation pour la protection collective.
+
+**Sources :**
+*   [source 1] droit du travail/droit du travaail.pdf (pp. 3-4) - Article L.4.
+
+**Note importante :** La confiance dans les sources fournies est indiquée comme étant **LOW**. Il est donc recommandé de vérifier ces informations directement auprès du Code du Travail sénégalais officiel ou de consulter un expert juridique pour une confirmation absolue.
+
+--------------------------------------------------------------------------------
+
+Question 3
+Question: Combien de semaines de congé de maternité une femme salariée a-t-elle droit ? Quel est le minimum postérieur à l'accouchement ?
+RAG sources: 8
+Reponse LLM:
+D'après les sources fournies, voici les informations concernant le congé de maternité :
+
+**Durée du congé de maternité :**
+- La femme salariée a droit à **14 semaines consécutives** de suspension de son contrat de travail ([source 1], Article L.143)
+
+**Répartition de la période :**
+- **8 semaines** doivent être prises **après l'accouchement** (partie postérieure à la délivrance) ([source 1], Article L.143)
+
+**Conditions supplémentaires :**
+- Le congé peut être prolongé de **3 semaines supplémentaires** en cas de maladie dûment constatée résultant de la grossesse ou des couches ([source 1], Article L.143)
+- Pendant cette période, l'employeur ne peut pas licencier la femme enceinte ([source 1], Article L.143)
+
+**Important :** Ces dispositions sont d'ordre public - toute convention contraire est nulle de plein droit ([source 1], Article L.143)
+
+*Note : La confiance dans le contexte est faible, mais ces informations sont explicitement mentionnées dans la source 1.*
+
+--------------------------------------------------------------------------------
+
+Question 4
+Question: En cas de licenciement pour motif économique, quelle indemnité spéciale l'employeur doit-il verser au travailleur, en plus du préavis et de l'indemnité de licenciement ?
+RAG sources: 8
+Reponse LLM:
+En réponse à votre question sur l'indemnité spéciale en cas de licenciement pour motif économique, voici la synthèse basée sur les sources disponibles.
+
+Selon l'**Article L.62** du Code du travail sénégalais, le travailleur licencié pour motif économique bénéficie effectivement d'une indemnité spéciale, distincte du préavis et de l'indemnité de licenciement.
+
+Cette indemnité est caractérisée comme suit :
+*   Elle est **non imposable**.
+*   Elle est **payée par l'employeur**.
+*   Son montant est **égal à un mois du salaire brut**.
+
+[source 1]
+
+**Synthèse des sources utilisées :**
+1.  [source 1] (Article L.62) : Définit précisément l'existence et les caractéristiques de l'indemnité spéciale.
+2.  [source 7] (Article L.61) : Mentionne la procédure préalable de consultation des délégués du personnel pour tenter d'éviter le licenciement économique, ce qui est une étape obligatoire avant le versement de cette indemnité.
+3.  [source 8] (Article L.60) : Définit ce qui constitue un licenciement pour motif économique, condition préalable à l'application de l'Article L.62.
+
+Par conséquent, en plus du préavis et de l'indemnité de licenciement, l'employeur est tenu de verser au travailleur une indemnité spéciale d'un mois de salaire brut.
+
+--------------------------------------------------------------------------------
+
+Question 5
+Question: Qui est tenu de déclarer à l'autorité sanitaire un cas de maladie contagieuse ? Citez tous les obligés dans l'ordre prévu par le Code.
+RAG sources: 8
+Reponse LLM:
+D'après les sources fournies, voici les personnes tenues de déclarer un cas de maladie contagieuse à l'autorité sanitaire, dans l'ordre prévu par le Code :
+
+**Obligations de déclaration selon l'Article L.3 [source 1] :**
+
+1. **Tout médecin** qui a constaté l'existence de la maladie
+2. **Le principal occupant, chef de famille ou d'établissement** des locaux où se trouve le malade (s'ils en ont été informés)
+3. À son défaut, dans l'ordre suivant :
+   - **Le conjoint**
+   - **L'ascendant le plus proche du malade**
+   - **Toute autre personne résidant avec lui ou lui donnant des soins**
+
+**Synthèse des sources pertinentes :**
+- [source 1] détaille spécifiquement l'ordre des obligés pour la déclaration sanitaire
+- [source 5] prévoit des sanctions pénales pour les médecins qui certifieraient faussement ou dissimuleraient l'existence de maladies
+- [source 6] mentionne l'examen médical des détenus pour détecter les maladies contagieuses
+
+**Note importante :** La confiance du contexte est faible (LOW) car seules 3 sources sur 8 fournies traitent directement des obligations sanitaires. Les autres sources concernent des domaines différents (droit de la famille, procédure civile, obligations commerciales) et ne sont pas pertinentes pour cette question.
+
+Je précise que cette réponse se base uniquement sur les passages explicites du contexte fourni, en particulier l'Article L.3 du code de l'hygiène [source 1].
+
+--------------------------------------------------------------------------------
+
+Question 6
+Question: À quelle distance minimale les puits doivent-ils être implantés des habitations ? Et les réservoirs enterrés des latrines ?
+RAG sources: 8
+Reponse LLM:
+En analysant les documents fournis, voici les distances minimales requises :
+
+**Pour les puits par rapport aux habitations :**
+- Les puits doivent être implantés à **dix mètres au moins des habitations** selon l'Article L.9 du code de l'hygiène [source 1].
+
+**Pour les réservoirs enterrés par rapport aux latrines :**
+- Les réservoirs enterrés ou partiellement enterrés ne peuvent être distants de moins de **5 mètres des latrines** selon le même Article L.9 [source 1].
+
+**Sources supplémentaires pertinentes :**
+- L'Article 55 du code de l'eau confirme la nécessité de protéger les puits individuels contre les contaminations dues à la proximité des latrines, sans préciser de distance minimale [source 2].
+- Le code de l'assainissement mentionne des distances supérieures à quinze mètres pour d'autres installations, mais ne s'applique pas spécifiquement aux réservoirs enterrés [source 3].
+
+**Note importante :** La confiance dans ces informations est **LOW** car elles proviennent d'un seul document [source 1] pour les distances précises. Il est recommandé de vérifier auprès des autorités compétentes pour confirmation.
+
+--------------------------------------------------------------------------------
+
+Question 7
+Question: Quelles obligations hygiéniques s'imposent aux personnes manipulant des denrées alimentaires dans le cadre professionnel ?
+RAG sources: 8
+Reponse LLM:
+### Réponse basée sur le contexte fourni (confiance faible)
+
+D'après les documents consultés, voici les obligations hygiéniques principales pour le personnel manipulant des denrées alimentaires :
+
+#### [source 1] - Code de l'hygiène (pp. 9-10)
+**Article L.49** : Les personnes manipulant des denrées alimentaires sont astreintes à :
+- La plus grande propreté corporelle et vestimentaire (sous responsabilité de l'employeur)
+- Des visites médicales périodiques selon la réglementation
+- Interdiction de fumer dans les ateliers de préparation
+- Interdiction de manipulation pour les personnes susceptibles de contaminer les denrées (infections cutanéo-muqueuses, respiratoires ou intestinales)
+- Utilisation obligatoire des installations sanitaires (vestiaires, cabinets d'aisance)
+- Mise à disposition de lavabos, savon et essuie-mains près des lieux de travail
+
+#### [source 2] - Code de l'hygiène (pp. 8-9)
+**Article L.44** : Restrictions spécifiques concernant les emballages :
+- Interdiction d'utiliser des papiers imprimés et journaux en contact direct avec les denrées (sauf pour fruits et légumes non épluchés/non lavés)
+
+#### [source 3] - Code de l'hygiène (p. 9)
+**Article L.48** : Règles pour distributeurs automatiques :
+- Emplacement éloigné de toute source de contamination
+- Maintenance des denrées à température adéquate
+- Renouvellement régulier pour garantir leur salubrité
+- Emballages individuels obligatoires pour bonbons et friandises
+
+### Synthèse
+Les obligations couvrent trois aspects principaux :
+1. **Hygiène personnelle** du manipulateur (propreté, visites médicales)
+2. **Protection des denrées** (interdictions de contamination, règles d'emballage)
+3. **Environnement de travail** (installations sanitaires, conditions de conservation)
+
+### Limitations
+La confiance du contexte étant **LOW**, ces éléments sont extraits uniquement des passages explicites disponibles. Certains aspects réglementaires pourraient être incomplets en l'absence d'autres textes applicables.
+
+*Sources utilisées : [1], [2], [3]*
+
+--------------------------------------------------------------------------------
+
+Question 8
+Question: Comment est réparti le produit des amendes prononcées en application du Code de l'Hygiène ?
+RAG sources: 8
+Reponse LLM:
+D'après les sources fournies, voici comment est réparti le produit des amendes prononcées en application du Code de l'Hygiène :
+
+**Synthèse des sources :**
+
+[source 1] et [source 7] (qui font toutes deux référence au Code de l'Hygiène) indiquent la répartition suivante :
+- **50%** au Budget général de l’État ;
+- **25%** à la collectivité locale ;
+- **25%** aux agents verbalisateurs.
+
+Cette répartition est prévue par l'**Article L.79** du Code de l'Hygiène [source 1].
+
+**Note :** La confiance du contexte est indiquée comme étant **MEDIUM**. Les sources disponibles (1 et 7) sont cohérentes sur ce point spécifique. Moins de 3 sources distinctes concernant le Code de l'Hygiène sont disponibles, mais l'information est clairement établie par l'article de loi pertinent.
+
+--------------------------------------------------------------------------------
+
+Question 9
+Question: Combien de membres compose la CENA ? Quelle est la durée de leur mandat et qui les nomme ?
+RAG sources: 8
+Reponse LLM:
+D'après le Code électoral sénégalais de 2023, voici les informations concernant la composition, la durée du mandat et la nomination des membres de la C.E.N.A.
+
+**1. Composition de la C.E.N.A :**
+La Commission Électorale Nationale Autonome (C.E.N.A) est composée de **douze (12) membres** [source 1].
+
+**2. Durée du mandat :**
+Les membres de la C.E.N.A sont nommés pour un mandat de **six (06) ans**. Ce mandat est renouvelable par tiers tous les trois (03) ans [source 1].
+
+**3. Autorité de nomination :**
+Les membres sont **nommés par décret** [source 1]. Le texte précise également que la C.E.N.A est dirigée par un Président, assisté d'un Vice-président et d'un Secrétaire général, qui sont également **nommés par décret** [source 1].
+
+**Synthèse des sources :**
+Cette réponse synthétise les informations provenant de [source 1], qui est la source principale sur ce sujet. Les autres sources disponibles ([source 2] à [source 8]) fournissent des informations sur les démembrements et les attributions de la C.E.N.A, mais ne contiennent pas de détails supplémentaires sur la composition, la durée du mandat ou la nomination de ses membres principaux.
+
+--------------------------------------------------------------------------------
+
+Question 10
+Question: Citez au moins cinq catégories de personnes ne pouvant pas être membres de la CENA.
+RAG sources: 8
+Reponse LLM:
+D'après les sources fournies, voici au moins cinq catégories de personnes ne pouvant pas être membres de la Commission Electorale Nationale Autonome (CENA) au Sénégal, telles que prévues par l'article L.10 du Code électoral [source 1] :
+
+1.  **Les membres du Gouvernement**
+2.  **Les magistrats en activité**
+3.  **Les membres d'un Cabinet ministériel**
+4.  **Les personnes exerçant un mandat électif**
+5.  **Les gouverneurs, les préfets, les sous-préfets ainsi que leurs adjoints en activité ou à la retraite depuis moins de cinq (05) ans**
+
+L'article mentionne également d'autres catégories inéligibles, notamment :
+*   Les personnes inéligibles en vertu de l'article LO.160 du Code électoral.
+*   Les candidats aux élections contrôlées par la CENA.
+*   Les parents jusqu'au deuxième degré des candidats à la Présidence de la République.
+*   Les membres d'un groupe de soutien à un parti, à une liste de candidats ou à un candidat.
+*   Toute autre personne régie par un statut spécial l'empêchant d'exercer d'autres fonctions.
+
+**Note importante :** La confiance dans le contexte fourni est faible. Cette réponse est basée uniquement sur les passages explicites cités dans la source.
+
+--------------------------------------------------------------------------------
+
+Question 11
+Question: Qui est électeur au Sénégal selon le Code électoral ? Quel est l'âge minimum requis ?
+RAG sources: 8
+Reponse LLM:
+Voici une synthèse des informations disponibles sur les conditions pour être électeur au Sénégal selon le Code électoral 2023.
+
+### Conditions pour être Électeur au Sénégal
+
+**Source 1** (Code électoral, pp. 27-28) - Article L.57 :
+Tout Sénégalais électeur peut faire acte de candidature et être élu, sous réserve des conditions d'âge et des cas d'incapacité ou d'inéligibilité prévus par la loi.
+
+**Source 3** (Code électoral, pp. 12-13) - Article L.26 :
+Sont électeurs :
+- Les Sénégalais des deux sexes, âgés de **dix-huit (18) ans accomplis**, jouissant de leurs droits civils et politiques et n'étant dans aucun cas d'incapacité prévu par la loi ;
+- Les étrangers naturalisés Sénégalais qui n'ont conservé aucune autre nationalité en application de l'article 16 bis du Code de la Nationalité sénégalaise ;
+- Les étrangers qui ont acquis la nationalité sénégalaise par mariage, sauf opposition du gouvernement par décret pendant un délai d'un an en application de l'article 7 du Code de la Nationalité sénégalaise.
+
+**Source 6** (Code électoral, p. 140) - Article L.308 :
+Sont électeurs les Sénégalais des deux sexes remplissant les conditions fixées par les articles L.26 et L.27 et ne se trouvant dans aucun des cas d'incapacité définis aux articles L.29 et L.30.
+
+**Source 8** (Code électoral, pp. 12-13) - Article L.28 :
+Nul ne peut refuser l'inscription sur les listes électorales :
+1. À un citoyen sénégalais jouissant de ses droits civils et politiques et remplissant les conditions fixées par les articles L.34 à L.36 ;
+2. À un citoyen sénégalais par naturalisation, après la date d'acquisition de la nationalité sénégalaise ou, pour l'un des conjoints ayant acquis la nationalité sénégalaise par le mariage, après la date d'expiration du délai d'incapacité prévu par l'article 7 du Code de la Nationalité ;
+3. Aux personnes qui, frappées d'incapacité électorale à la suite d'une condamnation, bénéficient de la réhabilitation ou font l'objet d'une mesure d'amnistie ou de grâce.
+
+### Synthèse
+
+Pour être électeur au Sénégal, il faut remplir les conditions cumulatives suivantes :
+
+1.  **Nationalité** : Être de nationalité sénégalaise.
+    *   Cela inclut également les personnes naturalisées ou ayant acquis la nationalité par mariage, sous réserve des délais légaux (par exemple, absence d'opposition du gouvernement dans un délai d'un an pour le mariage).
+
+2.  **Âge** : Avoir **dix-huit (18) ans révolus** (âgé de 18 ans accomplis).
+
+3.  **Jouissance des droits civils et politiques** : Jouir de ses droits civils et politiques. Cela exclut notamment les personnes frappées d'une incapacité électorale (par exemple, à la suite de certaines condamnations judiciaires), sauf si elles ont bénéficié d'une réhabilitation, d'une amnistie ou d'une grâce.
+
+**Conclusion :** L'âge minimum requis pour être électeur au Sénégal est de **18 ans**.
+
+--------------------------------------------------------------------------------
+
+Question 12
+Question: Quelles catégories de personnes ne doivent pas être inscrites sur la liste électorale ?
+RAG sources: 10
+Reponse LLM:
+D'après les documents du contexte fournis, plusieurs catégories de personnes ne doivent pas être inscrites sur les listes électorales. Je vais synthétiser les informations en citant les sources pertinentes.
+
+### Synthèse des catégories d'exclusion
+
+**1. Exclusions définitives (Article L.29)**
+Certaines personnes sont définitivement exclues de l'inscription sur les listes électorales [source 1]. Cette catégorie comprend :
+*   Les individus condamnés pour crime.
+*   Les individus condamnés pour trafic de stupéfiants.
+*   Les individus condamnés pour des infractions portant sur les deniers publics (sauf exceptions prévues à l'article L.28-3).
+
+**2. Exclusions temporaires (Articles L.29 et L.30)**
+D'autres personnes sont exclues pour une durée déterminée [source 1, source 2] :
+*   **Pour une durée de cinq ans après l'expiration de la peine** : Cette exclusion concerne les personnes condamnées pour d'autres infractions que celles mentionnées ci-dessus (hors crime, trafic de stupéfiants, infractions sur les deniers publics).
+*   **Pour une durée de cinq ans à compter de la condamnation définitive** : Cette règle s'applique spécifiquement aux personnes condamnées [source 2] :
+    *   Pour un délit visé à l'article L.29 (3ème tiret) à une peine d'emprisonnement sans sursis d'un à trois mois, ou avec sursis de trois à six mois.
+    *   Pour un délit quelconque à une amende sans sursis supérieure à 200 000 FCFA.
+    *   Les tribunaux peuvent toutefois relever les condamnés de cette privation temporaire.
+
+**3. Autres cas d'exclusion (Article L.29)**
+L'article L.29 énumère d'autres cas d'exclusion [source 1] :
+*   Les personnes en état de contumace.
+*   Les faillis non réhabilités.
+*   Les personnes ayant fait l'objet d'une interdiction du droit de vote prononcée par une juridiction pénale.
+*   Les incapables majeurs (personnes sous tutelle).
+
+### Récapitulatif des sources utilisées
+*   **[source 1] (Article L.29)** : Établit la liste principale des personnes qui "ne doivent pas être inscrites", incluant les condamnés pour crime, les faillis non réhabilités, etc.
+*   **[source 2] (Article L.30)** : Précise les conditions des exclusions temporaires de cinq ans pour certaines condamnations.
+*   **[source 9] (Article R.34)** : Mentionne que la commission électorale doit radier les électeurs qui ont perdu les qualités requises par la loi, ce qui inclut les catégories citées ci-dessus.
+
+En résumé, le droit de vote peut être perdu définitivement ou temporairement en raison d'une condamnation pénale, d'une situation de faillite non réhabilitée, d'une mesure de contumace ou d'une incapacité juridique. La durée de l'exclusion dépend de la nature et de la gravité de l'infraction ou de la situation.
+
+--------------------------------------------------------------------------------
+
+Question 13
+Question: Quelles sont les trois catégories d'infractions définies par le Code pénal sénégalais ? Quelles peines y correspondent ?
+RAG sources: 8
+Reponse LLM:
+Je ne trouve pas d'information dans le contexte fourni concernant les trois catégories d'infractions définies par le Code pénal sénégalais. 
+
+Le contexte disponible ne contient pas de définition générale des catégories d'infractions (crimes, délits, contraventions) ni des peines correspondant à chaque catégorie. Les sources citent uniquement des articles spécifiques traitant de peines particulières pour des infractions déterminées.
+
+**Sources disponibles dans le contexte :**
+- [source 1] mentionne les peines en matière criminelle mais sans définir la catégorie "crime"
+- [source 2] traite de la non-assistance à personne en danger
+- [source 3] concerne la violation de tombeau
+- [source 4] porte sur l'exposition d'enfant incapable
+- [source 5] traite de la rébellion
+- [source 6] concerne le faux témoignage
+- [source 7] traite des établissements liés à la prostitution
+- [source 8] concerne l'aménagement des peines
+
+Je ne peux donc pas répondre précisément à votre question sur la base des documents fournis. La confiance du contexte étant faible, je vous recommande de consulter directement le Code pénal sénégalais pour obtenir cette information fondamentale.
+
+--------------------------------------------------------------------------------
+
+Question 14
+Question: En quoi consiste la peine de dégradation civique prévue par le Code pénal sénégalais ?
+RAG sources: 9
+Reponse LLM:
+D'après les sources fournies, la peine de dégradation civique est définie par l'Article 27 du Code pénal sénégalais [source 2]. Elle consiste en plusieurs incapacités et privations pour le condamné :
+
+1. **Destitution et exclusion** des fonctions, emplois ou offices publics.
+2. **Privation des droits civiques et politiques**, incluant le droit de vote, d'éligibilité et le droit de porter des décorations.
+3. **Incapacité d'exercer certaines fonctions juridiques**, comme être juré, expert, ou témoin (sauf pour de simples renseignements).
+4. **Incapacité de participer à l'autorité parentale**, comme faire partie d'un conseil de famille ou être tuteur, subrogé tuteur ou curateur.
+5. **Privation du droit de port d'armes** et d'exercer dans certains corps (Gendarmerie nationale, Police, Douane, Sapeurs-pompiers, Forces armées) ou de participer à un service public, d'enseigner ou d'être employé dans un établissement d'instruction.
+
+La dégradation civique est encourue dès que la condamnation devient irrévocable [source 3]. Elle peut être prononcée comme peine principale, accompagnée ou non d'un emprisonnement n'excédant pas cinq ans [source 1]. Pour les mineurs de plus de treize ans, si cette peine est encourue, ils seront condamnés à un emprisonnement de deux ans au plus [source 4].
+
+Cette peine peut également être appliquée dans des cas spécifiques, comme les actes arbitraires contre les droits civiques [source 5] ou la forfaiture de fonctionnaires publics [source 7].
+
+**Synthèse des sources utilisées :**
+- [source 2] : Définition détaillée de la dégradation civique (Article 27).
+- [source 3] : Moment où la peine est encourue (Article 23).
+- [source 1] : Possibilité d'accompagnement par un emprisonnement (Article 28).
+
+--------------------------------------------------------------------------------
+
+Question 15
+Question: Quels sont les six modes d'aménagement des peines prévus par le Code pénal ? Dans quels cas ne peuvent-ils pas être appliqués ?
+RAG sources: 6
+Reponse LLM:
+Je vais synthétiser les informations provenant des sources disponibles pour répondre à votre question.
+
+**Synthèse des sources :**
+
+Selon le contexte fourni, les six modes d'aménagement des peines initialement prévus par le Code pénal sénégalais sont les suivants, tels qu'énumérés à l'**Article 44-2** [source 1] :
+
+1.  Le sursis
+2.  La probation
+3.  Le travail au bénéfice de la société
+4.  La semi-liberté
+5.  Le fractionnement de la peine
+6.  La dispense de peine et l'ajournement
+
+**Cas d'exclusion de l'application de ces modes d'aménagement :**
+
+Toujours selon l'**Article 44-2** [source 1], les modes d'aménagement des peines listés ci-dessus (du 1° au 6°) ne peuvent être appliqués ou prescrits dans les cas suivants :
+-   **Ni en cas de récidive ;**
+-   **Ni en matière criminelle ;**
+-   **Ni en matière correctionnelle** pour les infractions spécifiques suivantes :
+    -   Détournements de deniers publics
+    -   Délits douaniers
+    -   Viols
+    -   Attentats à la pudeur
+    -   Pédophilie
+    -   Délits relatifs aux stupéfiants.
+
+**Évolution récente :**
+
+Il est important de noter que les sources [2], [3], [4], [5] et [6] font état d'une modification de l'Article 44-2 par la **Loi n°2020-28 du 26 mai 2020**. Cette loi a ajouté un **septième mode d'aménagement** : **le placement sous surveillance électronique** [source 2, source 3, source 4, source 5, source 6].
+
+Les restrictions d'application mentionnées ci-dessus (récidive, matière criminelle, infractions correctionnelles spécifiques) s'appliquent toujours aux modes 1 à 6. Le texte précise que "Les modes d'aménagement des peines prévus aux 1° à 6° de l'alinéa précédent ne peuvent être appliqués ou prescrits" dans ces cas [source 2, source 3]. Le placement sous surveillance électronique (le 7ème mode) est soumis à ses propres conditions d'application détaillées dans les articles suivants du Code pénal (comme l'Article 44-10).
+
+En résumé, la liste des modes d'aménagement a été étendue à sept, mais les interdictions d'application pour les cas graves (récidive, crimes, etc.) concernent spécifiquement les six modes initiaux.
+
+--------------------------------------------------------------------------------
+
+Question 16
+Question: Quelle peine encourt une personne qui s'abstient volontairement de porter secours à une personne en péril alors qu'elle aurait pu le faire sans risque ?
+RAG sources: 8
+Reponse LLM:
+D'après les sources fournies, la réponse est basée sur une seule source disponible.
+
+**Source :** [source 1] droit penal/droit penal.pdf (pp. 12-13)
+
+L'article 49 du Code pénal sénégalais prévoit la peine encourue pour le délit de non-assistance à personne en péril. Selon cet article :
+
+> Sera puni d'un emprisonnement de trois mois à cinq ans et d'une amende de 25.000 francs à 1 million de francs, ou de l'une de ces deux peines seulement, quiconque s'abstient volontairement de porter à une personne en péril l'assistance que, sans risque pour lui ni pour les tiers, il pouvait lui prêter, soit par son action personnelle, soit en provoquant un secours.
+
+**Synthèse de la réponse :**
+Une personne qui s'abstient volontairement de porter secours à une personne en péril, alors qu'elle pouvait le faire sans risque pour elle-même ou pour les tiers, encourt une peine d'**emprisonnement de trois mois à cinq ans** et/ou une **amende de 25 000 à 1 000 000 de francs CFA**.
+
+**Note importante :** La confiance dans cette réponse est faible car elle ne s'appuie que sur une seule source. Il est recommandé de consulter le texte officiel et à jour du Code pénal sénégalais pour une information juridique certaine.
+
+--------------------------------------------------------------------------------
+
+Question 17
+Question: À partir de quel moment la personnalité juridique commence-t-elle et cesse-t-elle selon le Code de la famille sénégalais ?
+RAG sources: 8
+Reponse LLM:
+Selon le Code de la famille sénégalais, la personnalité juridique commence et cesse aux moments suivants :
+
+**Début de la personnalité :**
+- La personnalité commence à la naissance.
+- Cependant, l'enfant peut acquérir des droits dès le jour de sa conception, à condition qu'il naisse vivant.
+- La date de conception est fixée légalement de façon irréfragable entre le 180e et le 300e jour précédant la naissance.
+
+**Fin de la personnalité :**
+- La personnalité cesse au décès.
+
+Ces dispositions sont énoncées à l'**Article premier** du Code de la famille [source 1].
+
+*Note : La réponse est basée sur une seule source disponible dans le contexte fourni. La confiance générale du contexte étant faible, cette information doit être considérée avec prudence et il est recommandé de la vérifier auprès du texte officiel complet du Code de la famille sénégalais.*
+
+--------------------------------------------------------------------------------
+
+Question 18
+Question: Quel nom porte l'enfant légitime ? Et l'enfant naturel ?
+RAG sources: 8
+Reponse LLM:
+D'après les sources fournies, je peux vous répondre en synthétisant les informations disponibles.
+
+**Synthèse des sources :**
+
+1.  [source 1] L'Article 219 du Code de la famille définit l'enfant légitime comme celui dont la filiation est établie à l'égard de parents mariés au moment de sa conception, et l'enfant naturel comme celui dont la filiation est établie à l'égard d'un seul parent ou de parents non mariés entre eux.
+2.  [source 7] L'Article 200 indique qu'un élément constitutif de la possession d'état d'un enfant légitime est que "L’enfant a porté le nom du père dont il prétend descendre".
+3.  [source 2] L'Article 281 précise qu'un enfant naturel dont la filiation est établie à l'égard de ses deux parents à la naissance est assimilé à l'enfant légitime pour l'attribution de la puissance paternelle, ce qui suggère une assimilation concernant également le nom.
+
+**Réponse :**
+
+Le contexte fourni ne contient pas d'article qui stipule explicitement et directement le nom que porte l'enfant légitime et l'enfant naturel.
+
+Cependant, en croisant les informations :
+*   **Pour l'enfant légitime**, l'Article 200 [source 7] laisse entendre qu'il porte le nom de son père.
+*   **Pour l'enfant naturel**, la réponse n'est pas explicitement donnée. L'Article 281 [source 2] établit une assimilation à l'enfant légitime pour la puissance paternelle lorsque la filiation est établie à l'égard des deux parents, mais il ne traite pas spécifiquement du nom. Pour les autres cas (filiation établie uniquement à l'égard de la mère, ou d'aucun parent), le contexte ne permet pas de déterminer le nom porté par l'enfant.
+
+Par conséquent, en l'état des sources fournies, je ne peux pas donner une réponse définitive et précise sur le nom porté par l'enfant naturel. Seule l'indication concernant le nom de l'enfant légitime peut être déduite de l'Article 200.
+
+--------------------------------------------------------------------------------
+
+Question 19
+Question: La femme mariée conserve-t-elle son nom de naissance selon le Code de la famille ? Quels droits acquiert-elle concernant le nom de son mari ?
+RAG sources: 8
+Reponse LLM:
+D'après les sources disponibles, voici les dispositions du Code de la famille sénégalais concernant le nom de la femme mariée.
+
+**Synthèse des sources pertinentes :**
+
+[source 1] indique explicitement à l'**Article 7** que "La femme mariée conserve son nom". Elle acquiert également le droit d'user du nom de son mari pendant la durée du mariage et durant son veuvage. En cas de séparation de corps, elle conserve l'usage du nom du mari, sauf décision contraire du juge.
+
+[source 2] précise à l'**Article 176** que lors d'un divorce, "La femme peut continuer à user du nom du mari, sauf si ce dernier s’y oppose expressément".
+
+[source 3] mentionne à l'**Article 832** une règle générale selon laquelle "Toute personne conserve le nom et les prénoms sous lesquels elle est actuellement connue".
+
+**Réponse :**
+
+Oui, selon le Code de la famille sénégalais, la femme mariée conserve son nom de naissance.
+
+Concernant le nom de son mari, elle acquiert les droits suivants :
+1.  **Pendant le mariage et le veuvage** : Elle a le droit d'user du nom de son mari [source 1].
+2.  **En cas de séparation de corps** : Elle conserve l'usage du nom de son mari, sauf si le juge en décide autrement [source 1].
+3.  **Après un divorce** : Elle peut continuer à utiliser le nom de son mari, à moins que celui-ci ne s'y oppose expressément [source 2].
+
+**Note importante :** La confiance dans cette réponse est faible car elle repose uniquement sur les extraits fournis du Code de la famille. Une consultation de l'intégralité du texte est recommandée pour une confirmation absolue.
+
+--------------------------------------------------------------------------------
+
+Question 20
+Question: Comment le Code de la famille définit-il le domicile ? Quel est le domicile légal du mineur non émancipé et du majeur en tutelle ?
+RAG sources: 8
+Reponse LLM:
+Bonjour,
+
+En me basant sur les sources disponibles dans le contexte fourni, voici les éléments qui permettent de répondre à votre question.
+
+### Définition du domicile légal
+
+Le Code de la famille sénégalais définit le domicile légal dans son **Article 13** (Loi n° 89-01 du 17 janvier 1989) [source 1].
+
+### Domicile légal du mineur non émancipé
+
+Selon l'**Article 13**, alinéa 1°, le domicile légal du **mineur non émancipé** est fixé **chez la personne qui exerce sur lui le droit de garde** [source 1].
+
+### Domicile légal du majeur en tutelle
+
+Toujours selon l'**Article 13**, alinéa 2°, le domicile légal du **majeur en tutelle** est fixé **chez son tuteur** [source 1].
+
+**Synthèse des sources utilisées :**
+*   [source 1] Article 13 : Définition légale du domicile pour le mineur non émancipé et le majeur en tutelle.
+
+**Limites de la réponse :**
+*   La confiance dans le contexte fourni est **LOW**. Seul l'Article 13 a été identifié comme traitant directement de la question.
+*   D'autres articles du contexte ([source 2] à [source 8]) concernent des sujets connexes comme l'émancipation ou la tutelle, mais ne définissent pas le domicile légal. Par conséquent, ils n'ont pas été utilisés pour cette réponse spécifique.
+
+Il est important de noter que cette réponse se limite strictement aux informations présentes dans le contexte fourni. Pour une analyse plus complète, il serait nécessaire de consulter l'intégralité du Code de la famille sénégalais.
+
+--------------------------------------------------------------------------------

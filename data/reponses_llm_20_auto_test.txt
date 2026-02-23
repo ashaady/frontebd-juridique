@@ -1,0 +1,14 @@
+REPONSES LLM - EVALUATION RAG (AUTO)
+
+Question 1
+Question: Quelle est la durée légale maximale du travail par semaine dans les établissements au Sénégal ? Y a-t-il des exceptions ?
+RAG sources: 4
+Reponse LLM:
+D'après le Code du Travail du Sénégal, la durée légale maximale du travail est de **40 heures par semaine** pour les établissements visés à l'article L.3 [source 1].
+
+Il existe une exception principale :
+*   Dans les **exploitations agricoles**, la durée du travail est fixée à **2 352 heures par an**. Un arrêté du Ministre chargé du Travail détermine la durée légale hebdomadaire selon les saisons dans cette limite annuelle [source 1].
+
+De plus, le contexte précise que des arrêtés ministériels peuvent apporter des aménagements, des dérogations permanentes ou temporaires, et fixer les modalités de répartition des horaires sur un cycle donné [source 1].
+
+--------------------------------------------------------------------------------

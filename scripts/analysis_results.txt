@@ -1,0 +1,48 @@
+--- Chunk Analysis Report ---
+Total Chunks: 13453
+Malformed JSON: 0
+Empty Text: 0
+Avg Char Count: 799.80
+Min/Max Char Count: 120 / 3600
+Small Chunks (<50 chars): 0
+Large Chunks (>10000 chars): 0
+Missing Fields: []
+
+--- Domains (Chunk Counts) ---
+PDFs_OHADA: 3118
+Code de procédure civile: 1189
+Professions judiciaires et extra judiciaires: 1116
+Code des obligations civiles et commerciales: 896
+Droit de la famille: 845
+droit penal: 838
+code general des impots: 754
+Code de procedure penal: 505
+Code_Des_Douanes: 473
+Code de la route: 327
+droit du travail: 291
+CODE DE L’AVIATION CIVILE: 280
+CODE DES COMMUNICATIONS ELECTRONIQUES: 279
+CODE GÉNÉRAL DES COLLECTIVITÉS LOCALES: 265
+Code Minier: 264
+CODE DE L’ENVIRONNEMENT: 256
+code de la presse: 229
+tourisme: 189
+loi-sur-les-prix-et-la-protection-du-consommateur: 149
+Code-maritime: 125
+Organisation judiciaire: 114
+CODE DE LA CONSTRUCTION: 113
+constitution: 108
+Code de l'eau: 98
+Loi-n°2021-31-du-9-juillet-2021-portant-Code-de-lElectricite: 92
+CODE DE L’URBANISME: 87
+CODE DES MARCHÉS PUBLICS: 83
+LOI SUR LA PROTECTION DES DONNEES A caracter personnelle: 79
+Organisation de l’administration: 75
+code de l'hygiene: 70
+Loi-n°2021-23-du-02-mars-2021-relative-aux-contrats-de-partenariat-public-privé-2: 58
+code securite social: 31
+Code de l'assainissement: 23
+Loi-orientation-n-2020-02-du-07-Janvier-2020-relative-aux-PME: 20
+nationalité: 9
+CODE FORESTIER: 3
+code electoral: 2

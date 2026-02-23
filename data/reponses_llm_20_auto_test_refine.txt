@@ -1,0 +1,9 @@
+REPONSES LLM - EVALUATION RAG (AUTO)
+
+Question 1
+Question: Quelle est la durée légale maximale du travail par semaine dans les établissements au Sénégal ? Y a-t-il des exceptions ?
+RAG sources: 7
+Reponse LLM:
+(vide)
+
+--------------------------------------------------------------------------------

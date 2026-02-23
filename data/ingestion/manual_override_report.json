@@ -1,0 +1,11 @@
+{
+  "pages_path": "data\\ingestion\\pages.jsonl",
+  "output_pages_path": "data\\ingestion\\pages.manual.jsonl",
+  "relative_path": "code securite social/code_secutrite_sociale.pdf",
+  "text_path": "<stdin>",
+  "original_pages": 26,
+  "manual_sections": 1,
+  "manual_chars_total": 324,
+  "max_section_chars": 324,
+  "min_section_chars": 324
+}

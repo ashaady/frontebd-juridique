@@ -1,0 +1,37 @@
+{
+  "started_at_utc": "2026-02-23T05:00:47.821228+00:00",
+  "finished_at_utc": "2026-02-23T05:01:44.475949+00:00",
+  "config": {
+    "provider": "sentence-transformers",
+    "chunks_path": "data\\tmp\\target_chunks_incremental.jsonl",
+    "output_path": "data\\tmp\\target_embeddings_incremental.jsonl",
+    "report_path": "data\\tmp\\target_embedding_report_incremental.json",
+    "model": "Snowflake/snowflake-arctic-embed-l-v2.0",
+    "batch_size": 32,
+    "max_retries": 5,
+    "retry_base_seconds": 1.0,
+    "timeout_seconds": 120.0,
+    "input_type": "passage",
+    "truncate_chars": 20000,
+    "max_input_tokens": 4096,
+    "local_device": "cuda",
+    "normalize_embeddings": true,
+    "limit_chunks": null,
+    "resume": true
+  },
+  "stats": {
+    "chunks_total_input": 832,
+    "bad_chunk_lines": 0,
+    "missing_required_fields": 0,
+    "empty_text_skipped": 0,
+    "duplicate_chunk_id_skipped": 0,
+    "already_embedded_skipped": 32,
+    "truncated_inputs": 0,
+    "auto_token_shrinks": 0,
+    "batches_total": 25,
+    "batches_failed": 0,
+    "embedded_new": 800,
+    "embedded_total_after_run": 832,
+    "embedding_dim": 1024
+  }
+}

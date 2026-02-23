@@ -1,0 +1,44 @@
+{
+  "started_at_utc": "2026-02-23T04:22:45.752516+00:00",
+  "finished_at_utc": "2026-02-23T04:31:08.166425+00:00",
+  "input_dir": "droit donnees",
+  "output_dir": "data\\ingestion",
+  "config": {
+    "min_native_chars": 120,
+    "ocr_dpi": 200,
+    "ocr_lang": "fra",
+    "workers": 8,
+    "ocr_requested": true,
+    "ocr_enabled": true,
+    "tessdata_dir": "data\\ocr\\tessdata",
+    "limit_docs": null
+  },
+  "ocr_readiness": {
+    "ocr_requested": true,
+    "tesseract_in_path": true,
+    "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+    "tessdata_dir": "data\\ocr\\tessdata",
+    "tesseract_lang_available": true,
+    "available_langs": [
+      "fra"
+    ],
+    "warnings": []
+  },
+  "stats": {
+    "docs_total": 111,
+    "pdf_docs": 111,
+    "docx_docs": 0,
+    "pages_total": 4066,
+    "low_text_pages": 810,
+    "ocr_attempted_pages": 810,
+    "ocr_used_pages": 790,
+    "ocr_error_pages": 11,
+    "empty_pages_after_processing": 7,
+    "doc_errors": 0
+  },
+  "artifacts": {
+    "manifest": "data\\ingestion\\manifest.jsonl",
+    "pages": "data\\ingestion\\pages.jsonl",
+    "doc_report": "data\\ingestion\\doc_report.jsonl"
+  }
+}

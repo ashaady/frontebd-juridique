@@ -1,0 +1,3 @@
+Documents a recopier entierement (texte natif casse)
+==================================================
+- code securite social/code_secutrite_sociale.pdf | pages=26 | bad_pages=25 (96%)

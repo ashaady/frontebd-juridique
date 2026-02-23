@@ -1,0 +1,96 @@
+{
+  "started_at_utc": "2026-02-21T15:15:58.681152+00:00",
+  "finished_at_utc": "2026-02-21T15:15:58.987240+00:00",
+  "config": {
+    "pages_path": "data\\ingestion\\pages.jsonl",
+    "output_path": "data\\chunks\\chunks-sample.jsonl",
+    "report_path": "data\\chunks\\chunking-report-sample.json",
+    "max_tokens": 900,
+    "overlap_tokens": 120,
+    "min_chunk_chars": 120,
+    "limit_docs": 8
+  },
+  "stats": {
+    "docs_total": 8,
+    "docs_with_any_article_header": 8,
+    "blocks_total": 1412,
+    "chunks_total": 1430,
+    "chunks_with_article_hint": 1412,
+    "long_article_extra_parts": 37,
+    "skipped_input_lines": 1
+  },
+  "per_doc_stats": [
+    {
+      "doc_id": "df4cd52f10eb14d0",
+      "relative_path": "Code de l'assainissement/code-de-l-assainissement.pdf",
+      "blocks_total": 104,
+      "article_headers_detected": 103,
+      "chunks_total": 103,
+      "chunks_with_article_hint": 100,
+      "long_article_extra_parts": 1
+    },
+    {
+      "doc_id": "735addc7c339dfc8",
+      "relative_path": "Code de l'eau/code-de-l-eau.pdf",
+      "blocks_total": 111,
+      "article_headers_detected": 110,
+      "chunks_total": 108,
+      "chunks_with_article_hint": 106,
+      "long_article_extra_parts": 0
+    },
+    {
+      "doc_id": "d84f74a88c3cec9c",
+      "relative_path": "code de l'hygiene/codehygiene.pdf",
+      "blocks_total": 80,
+      "article_headers_detected": 79,
+      "chunks_total": 78,
+      "chunks_with_article_hint": 76,
+      "long_article_extra_parts": 0
+    },
+    {
+      "doc_id": "68fcfd71551e6d36",
+      "relative_path": "CODE DE LA CONSTRUCTION/Décret n°2010-99 du 27 janvier 2010 portant code de la construction (partie règlementaire).pdf",
+      "blocks_total": 219,
+      "article_headers_detected": 218,
+      "chunks_total": 217,
+      "chunks_with_article_hint": 214,
+      "long_article_extra_parts": 0
+    },
+    {
+      "doc_id": "26eec8b34e67ffc6",
+      "relative_path": "CODE DE LA CONSTRUCTION/Loi n° 2009-23 du 8 juillet 2009 portant code de la construction (Partie législative).pdf",
+      "blocks_total": 166,
+      "article_headers_detected": 165,
+      "chunks_total": 163,
+      "chunks_with_article_hint": 161,
+      "long_article_extra_parts": 0
+    },
+    {
+      "doc_id": "f19828a72574dfa7",
+      "relative_path": "code de la presse/Code-de-la-presse-version-officielle-du-JO.pdf",
+      "blocks_total": 235,
+      "article_headers_detected": 234,
+      "chunks_total": 238,
+      "chunks_with_article_hint": 234,
+      "long_article_extra_parts": 5
+    },
+    {
+      "doc_id": "8d4a6b6f0635fb33",
+      "relative_path": "Code de la route/Loi n°2002-30 portant Code de la Route.pdf",
+      "blocks_total": 18,
+      "article_headers_detected": 17,
+      "chunks_total": 18,
+      "chunks_with_article_hint": 17,
+      "long_article_extra_parts": 0
+    },
+    {
+      "doc_id": "733ba44c856dff91",
+      "relative_path": "Code de la route/Loi n°2004-13 du 19 janvier 2004 fixant les règles dapplication de la loi n°2002-30 du 24 décembre 2002 du code la route (partie législative).pdf",
+      "blocks_total": 479,
+      "article_headers_detected": 478,
+      "chunks_total": 505,
+      "chunks_with_article_hint": 504,
+      "long_article_extra_parts": 31
+    }
+  ]
+}

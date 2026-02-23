@@ -1,0 +1,42 @@
+{
+  "started_at_utc": "2026-02-21T14:32:54.761856+00:00",
+  "finished_at_utc": "2026-02-21T14:36:56.327820+00:00",
+  "input_dir": "droit donnees",
+  "output_dir": "data\\ingestion-prescan",
+  "config": {
+    "min_native_chars": 1,
+    "ocr_dpi": 200,
+    "ocr_lang": "fra",
+    "workers": 22,
+    "ocr_requested": false,
+    "ocr_enabled": false,
+    "tessdata_dir": null,
+    "limit_docs": null
+  },
+  "ocr_readiness": {
+    "ocr_requested": false,
+    "tesseract_in_path": false,
+    "tesseract_path": null,
+    "tessdata_dir": null,
+    "tesseract_lang_available": false,
+    "available_langs": [],
+    "warnings": []
+  },
+  "stats": {
+    "docs_total": 107,
+    "pdf_docs": 107,
+    "docx_docs": 0,
+    "pages_total": 3867,
+    "low_text_pages": 647,
+    "ocr_attempted_pages": 0,
+    "ocr_used_pages": 0,
+    "ocr_error_pages": 0,
+    "empty_pages_after_processing": 647,
+    "doc_errors": 0
+  },
+  "artifacts": {
+    "manifest": "data\\ingestion-prescan\\manifest.jsonl",
+    "pages": "data\\ingestion-prescan\\pages.jsonl",
+    "doc_report": "data\\ingestion-prescan\\doc_report.jsonl"
+  }
+}

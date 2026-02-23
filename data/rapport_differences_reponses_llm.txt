@@ -1,0 +1,112 @@
+RAPPORT DE COMPARAISON - R?PONSES LLM VS R?PONSES ATTENDUES
+
+Fichier attendu: c:/Users/abtru/Desktop/Chatbot juridique/data/reponses_attendues_20.txt
+Fichier LLM: c:/Users/abtru/Desktop/Chatbot juridique/data/reponses_llm_20_auto.txt
+
+R?sum?:
+- Total questions: 20
+- Correctes: 0
+- Partielles: 17
+- Incorrectes: 3
+
+D?tails (questions non correctes):
+
+Question 1 - PARTIELLE
+- Couverture texte (approx): 52.2%
+- Couverture valeurs (approx): 50.0%
+- Mots/?l?ments manquants probables: duree, legale, peut, exceder, exception, fixees, variable, fixee, arrete, charge. Valeurs manquantes: 2.352.
+
+Question 2 - PARTIELLE
+- Couverture texte (approx): 70.0%
+- Couverture valeurs (approx): 50.0%
+- Mots/?l?ments manquants probables: force, legales, exiges, resultant, interet, general, definis, obligations, civiques. Valeurs manquantes: 2, 3.
+
+Question 3 - PARTIELLE
+- Couverture texte (approx): 60.7%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: consecutives, minimum, posterieures, delivrance, duree, etre, prolongee, supplementaires, resultant, enceinte, periode.
+
+Question 4 - PARTIELLE
+- Couverture texte (approx): 26.1%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: beneficie, indemnite, speciale, egale, payee, egalement, priorite, reembauche, pendant, deux, ans, son.
+
+Question 5 - INCORRECTE
+- Couverture texte (approx): 0.0%
+- Couverture valeurs (approx): 0.0%
+- R?ponse vide.
+
+Question 6 - PARTIELLE
+- Couverture texte (approx): 26.3%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: etre, metres, enterres, implantes, reservoirs, peuvent, distants, ecuries, depots, fumier, immondices.
+
+Question 7 - INCORRECTE
+- Couverture texte (approx): 0.0%
+- Couverture valeurs (approx): 0.0%
+- R?ponse vide.
+
+Question 8 - PARTIELLE
+- Couverture texte (approx): 50.0%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: reparti, ainsi, general, etat, collectivite, concernee.
+
+Question 9 - INCORRECTE
+- Couverture texte (approx): 0.0%
+- Couverture valeurs (approx): 0.0%
+- R?ponse vide.
+
+Question 10 - PARTIELLE
+- Couverture texte (approx): 52.5%
+- Couverture valeurs (approx): 70.0%
+- Mots/?l?ments manquants probables: cena, activite, prefets, etre, ministeriel, exercant, electif, elections, controlees, jusqu, degre, presidence. Valeurs manquantes: 6, 7, 8.
+
+Question 11 - PARTIELLE
+- Couverture texte (approx): 61.8%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: senegalais, etrangers, nationalite, electeurs, ages, naturalises, conserve, decret, delai, age.
+
+Question 12 - PARTIELLE
+- Couverture texte (approx): 66.7%
+- Couverture valeurs (approx): 50.0%
+- Mots/?l?ments manquants probables: doivent, etre, inscrits, stupefiants, etc, delits, etat, rehabilites, frappes, vote, penale. Valeurs manquantes: 1, 4, 5, 7.
+
+Question 13 - PARTIELLE
+- Couverture texte (approx): 55.2%
+- Couverture valeurs (approx): 66.7%
+- Mots/?l?ments manquants probables: travaux, forces, categories, delit, ans, superieure, peine, afflictive, infamante, perpetuite, detention. Valeurs manquantes: 10, 20.000.
+
+Question 14 - PARTIELLE
+- Couverture texte (approx): 69.7%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: incapacite, etre, degradation, publiques, eligibilite, jure, membre, ordre.
+
+Question 15 - PARTIELLE
+- Couverture texte (approx): 63.9%
+- Couverture valeurs (approx): 16.7%
+- Mots/?l?ments manquants probables: delits, amenagement, benefice, societe, liberte, etre, appliques, recidive, matiere, detournements, pedophilie, stupefiants. Valeurs manquantes: 2, 3, 4, 5, 6.
+
+Question 16 - PARTIELLE
+- Couverture texte (approx): 84.6%
+- Couverture valeurs (approx): 75.0%
+- Mots/?l?ments manquants probables: telle, punie. Valeurs manquantes: 25.000.
+
+Question 17 - PARTIELLE
+- Couverture texte (approx): 68.0%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: personnalite, juridique, deces, acquerir, nait, fixee, legalement, precedant.
+
+Question 18 - PARTIELLE
+- Couverture texte (approx): 72.7%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: pere, mere, legitime, desaveu.
+
+Question 19 - PARTIELLE
+- Couverture texte (approx): 79.4%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: mariee, propre, cependant, separee, egalement, sauf, decision.
+
+Question 20 - PARTIELLE
+- Couverture texte (approx): 69.2%
+- Couverture valeurs (approx): 100.0%
+- Mots/?l?ments manquants probables: domicilie, domiciliee, principal, etablissement, activite, professionnelle, emancipe.

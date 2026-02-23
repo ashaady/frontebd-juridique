@@ -1,0 +1,42 @@
+{
+  "criteria": {
+    "bad_page": "len>=120 and alnum<0.18 and ctrl>0.25",
+    "suspect": "bad_ratio>=0.5 and avg_ctrl>0.2 and avg_alnum<0.25"
+  },
+  "strong_suspects": [
+    {
+      "relative_path": "code securite social/code_secutrite_sociale.pdf",
+      "pages": 26,
+      "native_pages": 26,
+      "ocr_pages": 0,
+      "bad_pages": 25,
+      "bad_ratio": 0.9615384615384616,
+      "severe_bad_pages": 25,
+      "severe_ratio": 0.9615384615384616,
+      "avg_alnum": 0.023060959482990584,
+      "avg_ctrl": 0.6742176352596853,
+      "sample_bad": [
+        1,
+        "\u0001 \u0002\u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001\u0002\u0002\u0003\u0002\u0002\u0004\u0002\u0002\u0005\u0002 \u0002 \u0004\u0005\u0002\u0002\u0002\u0006\u0007\u0002 \u0002 \b\u0005\u0001 \u0005\u0002\u0002\u0002\u0002\u0002\b\u0003\u0001 \u0007\u0006\u0005\u0002 \u0002 \u0002 \u0002 \u0001\u0002\u0003\u0004\u0005\u0006\u0004\u0007\b\u0004\t\u0004\b\u0007\u0004 \u0004\b \u0004 \u0003\u000e\u000e\u000f\u0010\u0004 \u0011\u0007\b\u0004 \u0004 \u0012\u0004\u0013\u0014\u0004\u0015\u0016\u0017\u0018\u0003\u0019\u000e"
+      ]
+    }
+  ],
+  "suspects": [
+    {
+      "relative_path": "code securite social/code_secutrite_sociale.pdf",
+      "pages": 26,
+      "native_pages": 26,
+      "ocr_pages": 0,
+      "bad_pages": 25,
+      "bad_ratio": 0.9615384615384616,
+      "severe_bad_pages": 25,
+      "severe_ratio": 0.9615384615384616,
+      "avg_alnum": 0.023060959482990584,
+      "avg_ctrl": 0.6742176352596853,
+      "sample_bad": [
+        1,
+        "\u0001 \u0002\u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001 \u0001\u0002\u0002\u0003\u0002\u0002\u0004\u0002\u0002\u0005\u0002 \u0002 \u0004\u0005\u0002\u0002\u0002\u0006\u0007\u0002 \u0002 \b\u0005\u0001 \u0005\u0002\u0002\u0002\u0002\u0002\b\u0003\u0001 \u0007\u0006\u0005\u0002 \u0002 \u0002 \u0002 \u0001\u0002\u0003\u0004\u0005\u0006\u0004\u0007\b\u0004\t\u0004\b\u0007\u0004 \u0004\b \u0004 \u0003\u000e\u000e\u000f\u0010\u0004 \u0011\u0007\b\u0004 \u0004 \u0012\u0004\u0013\u0014\u0004\u0015\u0016\u0017\u0018\u0003\u0019\u000e"
+      ]
+    }
+  ]
+}

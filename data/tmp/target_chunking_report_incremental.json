@@ -1,0 +1,92 @@
+{
+  "started_at_utc": "2026-02-23T04:40:40.519772+00:00",
+  "finished_at_utc": "2026-02-23T04:40:40.805201+00:00",
+  "config": {
+    "pages_path": "data\\tmp\\target_pages_incremental.jsonl",
+    "output_path": "data\\tmp\\target_chunks_incremental.jsonl",
+    "report_path": "data\\tmp\\target_chunking_report_incremental.json",
+    "max_tokens": 900,
+    "overlap_tokens": 120,
+    "min_chunk_chars": 120,
+    "max_page_span": 6,
+    "limit_docs": null,
+    "strict_article_chunks": false
+  },
+  "stats": {
+    "docs_total": 4,
+    "docs_with_any_article_header": 4,
+    "blocks_total": 849,
+    "chunks_total": 832,
+    "chunks_with_article_hint": 828,
+    "long_article_extra_parts": 11,
+    "dedup_removed": 0,
+    "oversized_units_split": 0,
+    "control_char_filtered": 0,
+    "strict_multi_header_splits": 0,
+    "toc_pages_skipped": 0,
+    "toc_lines_skipped": 1,
+    "skipped_input_lines": 0
+  },
+  "per_doc_stats": [
+    {
+      "doc_id": "686cb4fdaa85ee4e",
+      "relative_path": "code electoral/CODE_ELECTORAL_2023.pdf",
+      "blocks_total": 412,
+      "article_headers_detected": 412,
+      "chunks_total": 412,
+      "chunks_with_article_hint": 412,
+      "long_article_extra_parts": 11,
+      "dedup_removed": 0,
+      "oversized_units_split": 0,
+      "control_char_filtered": 0,
+      "strict_multi_header_splits": 0,
+      "toc_pages_skipped": 0,
+      "toc_lines_skipped": 0
+    },
+    {
+      "doc_id": "240a4fb087f73cd9",
+      "relative_path": "Notariat/code de deontologie_notaire.pdf",
+      "blocks_total": 94,
+      "article_headers_detected": 93,
+      "chunks_total": 93,
+      "chunks_with_article_hint": 92,
+      "long_article_extra_parts": 0,
+      "dedup_removed": 0,
+      "oversized_units_split": 0,
+      "control_char_filtered": 0,
+      "strict_multi_header_splits": 0,
+      "toc_pages_skipped": 0,
+      "toc_lines_skipped": 0
+    },
+    {
+      "doc_id": "5428e907ce8a31f3",
+      "relative_path": "Notariat/Decret-n-2017-596-du-24-avril-2017-abroge-remplace-decret-n-2017-462-fixant-emoluments-notaires-constitution-SARL-JO.pdf",
+      "blocks_total": 5,
+      "article_headers_detected": 4,
+      "chunks_total": 6,
+      "chunks_with_article_hint": 4,
+      "long_article_extra_parts": 0,
+      "dedup_removed": 0,
+      "oversized_units_split": 0,
+      "control_char_filtered": 0,
+      "strict_multi_header_splits": 0,
+      "toc_pages_skipped": 0,
+      "toc_lines_skipped": 1
+    },
+    {
+      "doc_id": "a803405ac2760e73",
+      "relative_path": "PDFs_OHADA/Acte-uniforme-portant-organisation-des-procedures-simplifiees-de-recouvrement-et-des-voies-dexecution-.pdf",
+      "blocks_total": 338,
+      "article_headers_detected": 337,
+      "chunks_total": 321,
+      "chunks_with_article_hint": 320,
+      "long_article_extra_parts": 0,
+      "dedup_removed": 0,
+      "oversized_units_split": 0,
+      "control_char_filtered": 0,
+      "strict_multi_header_splits": 0,
+      "toc_pages_skipped": 0,
+      "toc_lines_skipped": 0
+    }
+  ]
+}

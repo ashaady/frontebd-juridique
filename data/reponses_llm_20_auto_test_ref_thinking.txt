@@ -1,0 +1,21 @@
+REPONSES LLM - EVALUATION RAG (AUTO)
+
+Question 1
+Question: Quelle est la durée légale maximale du travail par semaine dans les établissements au Sénégal ? Y a-t-il des exceptions ?
+Reference: Art. L.135
+RAG sources: 5
+Reponse LLM:
+**Durée légale maximale du travail par semaine :**
+
+Selon l'article L.135 du Code du travail sénégalais, la durée légale du travail ne peut excéder **40 heures par semaine** dans les établissements visés à l'article L.3 [source 1].
+
+**Exceptions et modalités particulières :**
+
+1.  **Pour les exploitations agricoles** : Une exception existe. La durée du travail est fixée à **2 352 heures par an**. Dans cette limite annuelle, un arrêté du Ministre chargé du Travail fixe la durée légale hebdomadaire selon les saisons [source 1].
+2.  **Dérogations générales** : Des arrêtés du Ministre chargé du Travail peuvent déterminer des aménagements, des répartitions des horaires sur un cycle, ainsi que des **dérogations permanentes ou temporaires** applicables pour certaines branches d'activité, professions, cas ou emplois [source 1].
+3.  **Accords d'entreprise** : Des accords relatifs à l'aménagement et à la répartition des horaires de travail à l'intérieur de la semaine peuvent également être conclus au sein de l'entreprise ou de l'établissement [source 1].
+
+**Conclusion :**
+La durée légale maximale générale est de 40 heures par semaine. Les principales exceptions concernent le secteur agricole (régime annuel de 2 352 heures) et les dérogations prévues par arrêtés ministériels ou accords d'entreprise.
+
+--------------------------------------------------------------------------------

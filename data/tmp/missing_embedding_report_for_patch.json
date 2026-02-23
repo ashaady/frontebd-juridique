@@ -1,0 +1,37 @@
+{
+  "started_at_utc": "2026-02-23T05:05:40.736025+00:00",
+  "finished_at_utc": "2026-02-23T05:07:05.551825+00:00",
+  "config": {
+    "provider": "sentence-transformers",
+    "chunks_path": "data\\tmp\\missing_chunks_for_patch.jsonl",
+    "output_path": "data\\tmp\\missing_embeddings_for_patch.jsonl",
+    "report_path": "data\\tmp\\missing_embedding_report_for_patch.json",
+    "model": "Snowflake/snowflake-arctic-embed-l-v2.0",
+    "batch_size": 32,
+    "max_retries": 5,
+    "retry_base_seconds": 1.0,
+    "timeout_seconds": 120.0,
+    "input_type": "passage",
+    "truncate_chars": 20000,
+    "max_input_tokens": 4096,
+    "local_device": "cuda",
+    "normalize_embeddings": true,
+    "limit_chunks": null,
+    "resume": false
+  },
+  "stats": {
+    "chunks_total_input": 408,
+    "bad_chunk_lines": 0,
+    "missing_required_fields": 0,
+    "empty_text_skipped": 0,
+    "duplicate_chunk_id_skipped": 0,
+    "already_embedded_skipped": 0,
+    "truncated_inputs": 0,
+    "auto_token_shrinks": 0,
+    "batches_total": 13,
+    "batches_failed": 0,
+    "embedded_new": 408,
+    "embedded_total_after_run": 408,
+    "embedding_dim": 1024
+  }
+}
