@@ -1,0 +1,16 @@
+# Ignore everything by default to keep Railway build context minimal.
+**
+
+# Required for container build/runtime
+!Dockerfile
+!requirements.txt
+!backend/
+!backend/**
+!data/
+!data/index/
+!data/index/**
+
+# Keep common metadata files if needed by tooling
+!railway.toml
+!Procfile
+!.env.example
