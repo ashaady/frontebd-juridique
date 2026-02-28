@@ -1,6 +1,6 @@
 {
-  "started_at_utc": "2026-02-23T05:31:27.219600+00:00",
-  "finished_at_utc": "2026-02-23T05:31:37.529035+00:00",
+  "started_at_utc": "2026-02-28T01:49:11.307127+00:00",
+  "finished_at_utc": "2026-02-28T01:49:20.395028+00:00",
   "config": {
     "embeddings_path": "data\\embeddings\\embeddings.jsonl",
     "chunks_path": "data\\chunks\\chunks.jsonl",
@@ -12,21 +12,21 @@
   },
   "stats": {
     "chunks": {
-      "rows_valid_json": 13888,
+      "rows_valid_json": 22914,
       "bad_lines": 0,
       "missing_required_fields": 0,
       "empty_text_skipped": 0,
       "duplicate_chunk_id_skipped": 0
     },
     "embeddings": {
-      "rows_valid_json": 13888,
+      "rows_valid_json": 22935,
       "bad_lines": 0,
       "missing_required_fields": 0,
       "invalid_vector_skipped": 0,
       "dimension_mismatch_skipped": 0,
       "duplicate_chunk_id_skipped": 0,
-      "missing_chunk_text_skipped": 0,
-      "rows_indexed": 13888,
+      "missing_chunk_text_skipped": 21,
+      "rows_indexed": 22914,
       "embedding_dim": 1024,
       "embedding_models_detected": [
         "Snowflake/snowflake-arctic-embed-l-v2.0"
@@ -38,7 +38,7 @@
     "index": {
       "faiss_index_type": "IndexFlatIP",
       "faiss_metric": "IP",
-      "index_ntotal": 13888
+      "index_ntotal": 22914
     }
   }
 }

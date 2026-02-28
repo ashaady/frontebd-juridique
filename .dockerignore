@@ -4,6 +4,7 @@
 # Required for container build/runtime
 !Dockerfile
 !requirements.txt
+!requirements.runtime.txt
 !backend/
 !backend/**
 !data/

@@ -2,7 +2,7 @@
 builder = "DOCKERFILE"
 
 [deploy]
-startCommand = "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+startCommand = "python -c \"import os; from uvicorn import run; run('backend.app.main:app', host='0.0.0.0', port=int(os.getenv('PORT', '8000')))\""
 healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"

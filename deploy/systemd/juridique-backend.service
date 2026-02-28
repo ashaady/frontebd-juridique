@@ -1,0 +1,19 @@
+[Unit]
+Description=Chatbot Juridique Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/chatbot-juridique
+Environment=PORT=8000
+Environment=UVICORN_WORKERS=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/chatbot-juridique/scripts/vps/run_backend.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,13 +1,13 @@
 {
-  "started_at_utc": "2026-02-22T23:36:57.466847+00:00",
-  "finished_at_utc": "2026-02-22T23:38:25.158211+00:00",
+  "started_at_utc": "2026-02-27T23:34:42.724936+00:00",
+  "finished_at_utc": "2026-02-28T01:33:00.164471+00:00",
   "config": {
     "provider": "sentence-transformers",
     "chunks_path": "data\\chunks\\chunks.jsonl",
     "output_path": "data\\embeddings\\embeddings.jsonl",
     "report_path": "data\\embeddings\\embedding_report.json",
     "model": "Snowflake/snowflake-arctic-embed-l-v2.0",
-    "batch_size": 16,
+    "batch_size": 32,
     "max_retries": 5,
     "retry_base_seconds": 1.0,
     "timeout_seconds": 120.0,
@@ -20,18 +20,18 @@
     "resume": true
   },
   "stats": {
-    "chunks_total_input": 13184,
+    "chunks_total_input": 22914,
     "bad_chunk_lines": 0,
     "missing_required_fields": 0,
     "empty_text_skipped": 0,
     "duplicate_chunk_id_skipped": 0,
-    "already_embedded_skipped": 13184,
-    "truncated_inputs": 0,
+    "already_embedded_skipped": 20474,
+    "truncated_inputs": 4,
     "auto_token_shrinks": 0,
-    "batches_total": 0,
+    "batches_total": 77,
     "batches_failed": 0,
-    "embedded_new": 0,
-    "embedded_total_after_run": 14742,
-    "embedding_dim": 0
+    "embedded_new": 2440,
+    "embedded_total_after_run": 22935,
+    "embedding_dim": 1024
   }
 }

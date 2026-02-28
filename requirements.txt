@@ -1,5 +1,6 @@
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30,<1.0
+python-multipart>=0.0.9,<1.0
 openai>=1.50,<2.0
 python-dotenv>=1.0,<2.0
 numpy>=1.26,<3.0
@@ -12,3 +13,4 @@ Pillow>=10.0,<12.0
 pymupdf>=1.24,<2.0
 tqdm>=4.66,<5.0
 sentence-transformers>=5.0,<6.0
+faster-whisper>=1.1,<2.0

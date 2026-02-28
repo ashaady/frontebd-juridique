@@ -1,0 +1,3214 @@
+﻿"use client";
+
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { jsPDF } from "jspdf";
+import {
+  buildLibraryViewUrl,
+  clearConsultationsApi,
+  clearWorkspaceFilesApi,
+  listLibraryDocumentsApi,
+  readWorkspaceFilesApi,
+  readWorkspaceNotesApi,
+  transcribeSpeechApi,
+  upsertConsultationApi,
+  uploadWorkspaceFilesApi,
+  writeWorkspaceFilesApi,
+  writeWorkspaceNotesApi,
+  type LibraryDocumentRecord,
+} from "../_lib/workspace-api";
+import {
+  type WorkspaceFileRecord
+} from "../_lib/workspace-store";
+
+type RagSource = {
+  rank?: number;
+  score?: number;
+  chunk_id?: string;
+  citation?: string;
+  relative_path?: string | null;
+  source_path?: string | null;
+  page_start?: number | null;
+  page_end?: number | null;
+  article_hint?: string | null;
+};
+
+type TurnStatus = "done" | "streaming" | "error";
+
+type Turn = {
+  id: string;
+  question: string;
+  displayQuestion?: string;
+  answer: string;
+  status: TurnStatus;
+  ragSources: RagSource[];
+  ragNote: string;
+  finishReason: string;
+};
+
+type StreamMetaEvent = {
+  rag_sources?: RagSource[];
+  rag_note?: string;
+};
+
+type StreamTokenEvent = {
+  text?: string;
+};
+
+type StreamDoneEvent = {
+  finish_reason?: string;
+  rag_note?: string;
+};
+
+type StreamReplaceEvent = {
+  text?: string;
+};
+
+type StreamErrorEvent = {
+  detail?: string;
+};
+
+type ChatMessagePayload = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type CitationCard = {
+  badge: string;
+  excerpt: string;
+  meta: string;
+  sourcePath?: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+};
+
+type ChatWorkspaceProps = {
+  initialQuestion?: string;
+  autoOpenActGenerator?: boolean;
+};
+
+type RightPanelTab = "workspace" | "notes" | "files";
+type ActFieldType = "text" | "textarea" | "date" | "number" | "select";
+type ActType =
+  | "contrat_bail"
+  | "contrat_travail"
+  | "mise_en_demeure"
+  | "plainte_penale"
+  | "requete"
+  | "assignation"
+  | "procuration"
+  | "statuts_societe_ohada"
+  | "reconnaissance_dette";
+
+type ActFieldDefinition = {
+  key: string;
+  label: string;
+  required?: boolean;
+  placeholder?: string;
+  type?: ActFieldType;
+  options?: Array<{ value: string; label: string }>;
+  hint?: string;
+};
+
+type ActTemplateDefinition = {
+  type: ActType;
+  label: string;
+  description: string;
+  branch: string;
+  fields: ActFieldDefinition[];
+};
+
+type SendQuestionOptions = {
+  disableRagRewrite?: boolean;
+  displayQuestion?: string;
+};
+
+type PdfBlockKind = "h1" | "h2" | "h3" | "p" | "li";
+type PdfBlock = {
+  kind: PdfBlockKind;
+  text: string;
+};
+
+type ActWizardStep = 1 | 2 | 3;
+
+type PopupChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+};
+
+type ActValidationResult = {
+  status: "missing" | "complete";
+  missingItems: string[];
+  assistantReply: string;
+  documentText: string;
+};
+
+const QUICK_QUESTIONS: string[] = [
+  "Quelles sont les clauses abusives courantes au Senegal ?",
+  "Impact de la loi 2021 sur les contrats electroniques ?",
+  "Delais de prescription pour une creance commerciale ?"
+];
+
+const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
+  contrat_bail: {
+    type: "contrat_bail",
+    label: "Contrat de bail",
+    description: "Bail d'habitation ou commercial conforme au droit senegalais.",
+    branch: "Droit des obligations / baux",
+    fields: [
+      { key: "bailleur_nom", label: "Nom du bailleur", required: true, placeholder: "Ex: M. Abdou Ndiaye" },
+      { key: "locataire_nom", label: "Nom du locataire", required: true, placeholder: "Ex: Mme Awa Diop" },
+      { key: "adresse_bien", label: "Adresse du bien", required: true, placeholder: "Ex: Cite Keur Gorgui, Dakar" },
+      {
+        key: "usage_bien",
+        label: "Usage du bien",
+        required: true,
+        type: "select",
+        options: [
+          { value: "habitation", label: "Habitation" },
+          { value: "commercial", label: "Commercial" }
+        ]
+      },
+      { key: "duree_bail", label: "Duree du bail", required: true, placeholder: "Ex: 1 an renouvelable" },
+      { key: "loyer_mensuel", label: "Loyer mensuel", required: true, placeholder: "Ex: 250000 FCFA", type: "number" },
+      { key: "depot_garantie", label: "Depot de garantie", required: true, placeholder: "Ex: 2 mois de loyer" },
+      { key: "date_effet", label: "Date d'effet", required: true, type: "date" },
+      { key: "ville", label: "Ville", required: true, placeholder: "Ex: Dakar" },
+      { key: "clauses_particulieres", label: "Clauses particulieres", type: "textarea", placeholder: "Conditions speciales, charges, entretien..." }
+    ]
+  },
+  contrat_travail: {
+    type: "contrat_travail",
+    label: "Contrat de travail",
+    description: "Contrat adapte au Code du travail senegalais.",
+    branch: "Droit du travail",
+    fields: [
+      { key: "employeur_nom", label: "Nom de l'employeur", required: true, placeholder: "Entreprise ou personne" },
+      { key: "salarie_nom", label: "Nom du salarie", required: true, placeholder: "Nom complet" },
+      { key: "poste", label: "Poste", required: true, placeholder: "Ex: Assistant comptable" },
+      {
+        key: "type_contrat",
+        label: "Type de contrat",
+        required: true,
+        type: "select",
+        options: [
+          { value: "CDI", label: "CDI" },
+          { value: "CDD", label: "CDD" },
+          { value: "stage", label: "Stage" },
+          { value: "temps_partiel", label: "Temps partiel" }
+        ]
+      },
+      { key: "date_debut", label: "Date de debut", required: true, type: "date" },
+      { key: "date_fin", label: "Date de fin (si applicable)", type: "date" },
+      { key: "remuneration", label: "Remuneration", required: true, placeholder: "Ex: 300000 FCFA brut/mois" },
+      { key: "lieu_travail", label: "Lieu de travail", required: true, placeholder: "Ex: Dakar Plateau" },
+      { key: "convention_collective", label: "Convention collective", placeholder: "Ex: Commerce" },
+      { key: "periode_essai", label: "Periode d'essai", placeholder: "Ex: 3 mois" },
+      { key: "clauses_particulieres", label: "Clauses particulieres", type: "textarea", placeholder: "Non-concurrence, confidentialite..." }
+    ]
+  },
+  mise_en_demeure: {
+    type: "mise_en_demeure",
+    label: "Mise en demeure",
+    description: "Lettre de sommation formelle avant action judiciaire.",
+    branch: "Procedure civile / obligations",
+    fields: [
+      { key: "expediteur_nom", label: "Nom de l'expediteur", required: true, placeholder: "Nom complet" },
+      { key: "destinataire_nom", label: "Nom du destinataire", required: true, placeholder: "Nom complet" },
+      { key: "objet_litige", label: "Objet du litige", required: true, placeholder: "Ex: Loyers impayes" },
+      { key: "faits", label: "Faits", required: true, type: "textarea", placeholder: "Expose chronologique des faits" },
+      { key: "montant_reclame", label: "Montant reclame", placeholder: "Ex: 900000 FCFA", type: "number" },
+      { key: "delai_accorde", label: "Delai accorde", required: true, placeholder: "Ex: 8 jours" },
+      { key: "date_lettre", label: "Date de la lettre", required: true, type: "date" },
+      { key: "ville", label: "Ville", required: true, placeholder: "Ex: Dakar" },
+      { key: "pieces_justificatives", label: "Pieces justificatives", type: "textarea", placeholder: "Contrat, recus, courriers..." }
+    ]
+  },
+  plainte_penale: {
+    type: "plainte_penale",
+    label: "Plainte penale",
+    description: "Plainte fondee sur le Code penal et le Code de procedure penale senegalais.",
+    branch: "Droit penal / procedure penale",
+    fields: [
+      { key: "plaignant_nom", label: "Nom du plaignant", required: true, placeholder: "Nom complet" },
+      { key: "mis_en_cause", label: "Personne mise en cause", placeholder: "Nom si connu" },
+      { key: "faits_detail", label: "Description des faits", required: true, type: "textarea", placeholder: "Date, lieu, circonstances" },
+      { key: "date_faits", label: "Date des faits", required: true, type: "date" },
+      { key: "lieu_faits", label: "Lieu des faits", required: true, placeholder: "Ex: Medina, Dakar" },
+      { key: "infractions_suspectees", label: "Infractions suspectees", placeholder: "Ex: abus de confiance, escroquerie" },
+      { key: "prejudice_subi", label: "Prejudice subi", required: true, placeholder: "Ex: 1500000 FCFA" },
+      { key: "temoins_preuves", label: "Temoins / preuves", type: "textarea", placeholder: "Temoins, photos, messages, documents" },
+      { key: "ville", label: "Ville", required: true, placeholder: "Ex: Dakar" }
+    ]
+  },
+  requete: {
+    type: "requete",
+    label: "Requete",
+    description: "Requete adressee a une juridiction ou une autorite competente.",
+    branch: "Procedure",
+    fields: [
+      { key: "requerant_nom", label: "Nom du requerant", required: true, placeholder: "Nom complet" },
+      { key: "juridiction_cible", label: "Juridiction cible", required: true, placeholder: "Ex: Tribunal de Grande Instance de Dakar" },
+      { key: "objet_requete", label: "Objet de la requete", required: true, placeholder: "Ex: Delivrance d'ordonnance" },
+      { key: "faits", label: "Faits", required: true, type: "textarea", placeholder: "Exposes precis et circonstancies" },
+      { key: "demandes_precises", label: "Demandes precises", required: true, type: "textarea", placeholder: "Ce que vous demandez au juge" },
+      { key: "base_legale", label: "Base legale (si connue)", placeholder: "Articles ou textes applicables" },
+      { key: "pieces_jointes", label: "Pieces jointes", type: "textarea", placeholder: "Liste des pieces" },
+      { key: "ville", label: "Ville", required: true, placeholder: "Ex: Dakar" }
+    ]
+  },
+  assignation: {
+    type: "assignation",
+    label: "Assignation",
+    description: "Assignation introductive d'instance en matiere civile ou commerciale.",
+    branch: "Procedure civile / commerciale",
+    fields: [
+      { key: "demandeur_nom", label: "Nom du demandeur", required: true, placeholder: "Nom complet" },
+      { key: "defendeur_nom", label: "Nom du defendeur", required: true, placeholder: "Nom complet" },
+      { key: "juridiction_cible", label: "Juridiction competente", required: true, placeholder: "Ex: Tribunal de Commerce de Dakar" },
+      { key: "objet_assignation", label: "Objet", required: true, placeholder: "Ex: Recouvrement de creance" },
+      { key: "faits", label: "Faits", required: true, type: "textarea", placeholder: "Faits et manquements" },
+      { key: "demandes", label: "Demandes", required: true, type: "textarea", placeholder: "Condamnations sollicitees" },
+      { key: "base_legale", label: "Base legale (si connue)", placeholder: "Articles applicables" },
+      { key: "ville", label: "Ville", required: true, placeholder: "Ex: Dakar" }
+    ]
+  },
+  procuration: {
+    type: "procuration",
+    label: "Procuration",
+    description: "Mandat donne a une personne pour agir au nom d'une autre.",
+    branch: "Droit civil / representation",
+    fields: [
+      { key: "mandant_nom", label: "Nom du mandant", required: true, placeholder: "Nom complet" },
+      { key: "mandataire_nom", label: "Nom du mandataire", required: true, placeholder: "Nom complet" },
+      { key: "pouvoirs_conferes", label: "Pouvoirs conferes", required: true, type: "textarea", placeholder: "Actes autorises" },
+      { key: "date_debut", label: "Date de debut", required: true, type: "date" },
+      { key: "date_fin", label: "Date de fin", type: "date" },
+      { key: "ville", label: "Ville", required: true, placeholder: "Ex: Dakar" },
+      { key: "identification_piece", label: "Piece d'identite", placeholder: "Ex: CNI n°..." }
+    ]
+  },
+  statuts_societe_ohada: {
+    type: "statuts_societe_ohada",
+    label: "Statuts de societe (OHADA)",
+    description: "Projet de statuts conforme au droit des societes OHADA.",
+    branch: "Droit OHADA / societes",
+    fields: [
+      { key: "denomination_sociale", label: "Denomination sociale", required: true, placeholder: "Nom de la societe" },
+      {
+        key: "forme_sociale",
+        label: "Forme sociale",
+        required: true,
+        type: "select",
+        options: [
+          { value: "SARL", label: "SARL" },
+          { value: "SA", label: "SA" },
+          { value: "SNC", label: "SNC" },
+          { value: "SCS", label: "SCS" }
+        ]
+      },
+      { key: "siege_social", label: "Siege social", required: true, placeholder: "Adresse complete" },
+      { key: "objet_social", label: "Objet social", required: true, type: "textarea", placeholder: "Activites de la societe" },
+      { key: "capital_social", label: "Capital social", required: true, placeholder: "Ex: 1000000 FCFA", type: "number" },
+      { key: "associes", label: "Associes", required: true, type: "textarea", placeholder: "Noms et repartition des parts/actions" },
+      { key: "duree_societe", label: "Duree de la societe", required: true, placeholder: "Ex: 99 ans" },
+      { key: "gerance_direction", label: "Gerance / direction", required: true, placeholder: "Nom du gerant / DG" },
+      { key: "ville", label: "Ville", required: true, placeholder: "Ex: Dakar" }
+    ]
+  },
+  reconnaissance_dette: {
+    type: "reconnaissance_dette",
+    label: "Reconnaissance de dette",
+    description: "Acte constatant une dette et ses modalites de remboursement.",
+    branch: "Droit des obligations",
+    fields: [
+      { key: "creancier_nom", label: "Nom du creancier", required: true, placeholder: "Nom complet" },
+      { key: "debiteur_nom", label: "Nom du debiteur", required: true, placeholder: "Nom complet" },
+      { key: "montant_dette", label: "Montant de la dette", required: true, placeholder: "Ex: 500000 FCFA", type: "number" },
+      { key: "cause_dette", label: "Cause de la dette", required: true, placeholder: "Ex: Pret personnel" },
+      { key: "date_exigibilite", label: "Date d'exigibilite", required: true, type: "date" },
+      { key: "modalites_paiement", label: "Modalites de paiement", required: true, placeholder: "Ex: 5 mensualites" },
+      { key: "interets", label: "Interets (si applicables)", placeholder: "Ex: 5% annuel" },
+      { key: "garanties", label: "Garanties (si prevues)", placeholder: "Ex: caution personnelle" },
+      { key: "ville", label: "Ville", required: true, placeholder: "Ex: Dakar" }
+    ]
+  }
+};
+
+const DEFAULT_ACT_TYPE: ActType = "contrat_bail";
+
+const EMPTY_TURNS: Turn[] = [];
+
+function buildInitialActFormValues(type: ActType): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const field of ACT_TEMPLATES[type].fields) {
+    values[field.key] = "";
+  }
+  return values;
+}
+
+function buildActGenerationPrompt(
+  template: ActTemplateDefinition,
+  values: Record<string, string>,
+  userIntent: string
+): string {
+  const lines: string[] = [];
+  for (const field of template.fields) {
+    const value = (values[field.key] ?? "").trim();
+    if (!value) {
+      continue;
+    }
+    lines.push(`- ${field.label}: ${value}`);
+  }
+
+  const freeIntent = userIntent.trim();
+  const maybeIntentBlock =
+    freeIntent.length > 0 ? `\nContexte complementaire utilisateur:\n${freeIntent}\n` : "\n";
+
+  return [
+    `Generer un modele d'acte juridique: ${template.label}.`,
+    `Branche juridique prioritaire: ${template.branch}.`,
+    maybeIntentBlock.trimEnd(),
+    "Informations disponibles:",
+    lines.length > 0 ? lines.join("\n") : "- Aucune information fournie.",
+    "",
+    "Consignes de redaction:",
+    "1) Si des informations essentielles manquent, poser d'abord une liste courte de questions ciblees et ne pas rediger l'acte final.",
+    "2) Si les informations sont suffisantes, rediger un document complet et structure avec:",
+    "- Titre",
+    "- Identification des parties",
+    "- Visa juridique pertinent (Senegal / OHADA selon le cas)",
+    "- Articles/clauses numerotes",
+    "- Date et lieu",
+    "- Signatures",
+    "3) Adapter strictement au droit applicable (Code du travail senegalais, Code penal senegalais, OHADA, etc.).",
+    "4) Repondre uniquement en francais.",
+    "5) Terminer obligatoirement par cette mention:",
+    "\"Ce document est un modele genere automatiquement et doit etre verifie par un professionnel du droit avant utilisation.\""
+  ].join("\n");
+}
+
+function normalizeForMatch(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function extractJsonObjectFromText(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    return null;
+  }
+  return trimmed.slice(firstBrace, lastBrace + 1).trim();
+}
+
+function parseActValidationResponse(rawAnswer: string): ActValidationResult {
+  const jsonCandidate = extractJsonObjectFromText(rawAnswer);
+  if (jsonCandidate) {
+    try {
+      const parsed = JSON.parse(jsonCandidate) as {
+        status?: string;
+        missing_items?: unknown;
+        assistant_reply?: unknown;
+        document?: unknown;
+      };
+      const status = String(parsed.status || "").toLowerCase() === "missing" ? "missing" : "complete";
+      const missingItems = Array.isArray(parsed.missing_items)
+        ? parsed.missing_items
+            .map((item) => String(item ?? "").trim())
+            .filter((item) => item.length > 0)
+        : [];
+      const assistantReply = String(parsed.assistant_reply ?? "").trim();
+      const documentText = String(parsed.document ?? "").trim();
+      if (status === "missing" || missingItems.length > 0) {
+        return {
+          status: "missing",
+          missingItems,
+          assistantReply:
+            assistantReply || "Il manque des informations pour rediger l'acte final.",
+          documentText: "",
+        };
+      }
+      return {
+        status: "complete",
+        missingItems: [],
+        assistantReply: assistantReply || "Le projet d'acte est pret.",
+        documentText: documentText || rawAnswer.trim(),
+      };
+    } catch {
+      // fallback below
+    }
+  }
+  return {
+    status: "complete",
+    missingItems: [],
+    assistantReply: rawAnswer.trim(),
+    documentText: rawAnswer.trim(),
+  };
+}
+
+function buildActValidationPrompt(
+  template: ActTemplateDefinition,
+  values: Record<string, string>,
+  userIntent: string,
+  popupConversation: PopupChatMessage[] = [],
+  userMessage: string = "Analyse les informations actuelles et produis la prochaine meilleure sortie."
+): string {
+  const filledLines = template.fields.map((field) => {
+    const rawValue = (values[field.key] ?? "").trim();
+    const value = rawValue.length > 0 ? rawValue : "[MANQUANT]";
+    return `- ${field.label}: ${value}`;
+  });
+
+  const contextBlock =
+    userIntent.trim().length > 0
+      ? `Contexte utilisateur:\n${userIntent.trim()}\n`
+      : "Contexte utilisateur:\nAucun contexte complementaire.\n";
+  const conversationLines =
+    popupConversation.length > 0
+      ? popupConversation
+          .slice(-12)
+          .map((message) =>
+            `${message.role === "user" ? "Utilisateur" : "Assistant"}: ${message.content}`
+          )
+          .join("\n")
+      : "Aucun echange precedent dans le mini chat.";
+
+  return [
+    `Tu dois verifier et rediger un ${template.label} (${template.branch}).`,
+    "Tu es dans un mini chat de generation d'acte. Reponds uniquement en francais.",
+    contextBlock,
+    "Informations collectees:",
+    ...filledLines,
+    "",
+    "Historique mini chat:",
+    conversationLines,
+    "",
+    `Dernier message utilisateur: ${userMessage}`,
+    "",
+    "Regles:",
+    "1) Retourne uniquement un JSON valide et rien d'autre.",
+    "2) Schema JSON obligatoire:",
+    '{"status":"missing|complete","missing_items":["..."],"assistant_reply":"...","document":"..."}',
+    "3) Si des informations essentielles manquent: status=missing, missing_items non vide, assistant_reply contient des questions precises, document vide.",
+    "4) Si les informations sont suffisantes: status=complete, missing_items vide, assistant_reply court, document complet.",
+    "5) Le document final doit etre structure: titre, parties, base legale, clauses/articles, date/lieu, signatures.",
+    "6) Adapter au droit applicable Senegal/OHADA selon la matiere.",
+    "7) Ne produis jamais de code informatique.",
+    "8) Terminer le document par cette mention exacte:",
+    '"Ce document est un modele genere automatiquement et doit etre verifie par un professionnel du droit avant utilisation."',
+    "9) Ne retourne aucun texte hors JSON."
+  ].join("\n");
+}
+
+function _extractStringsDeep(value: unknown, depth: number = 0): string[] {
+  if (depth > 6 || value == null) {
+    return [];
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? [trimmed] : [];
+  }
+  if (Array.isArray(value)) {
+    const out: string[] = [];
+    for (const item of value) {
+      out.push(..._extractStringsDeep(item, depth + 1));
+    }
+    return out;
+  }
+  if (typeof value !== "object") {
+    return [];
+  }
+
+  const dict = value as Record<string, unknown>;
+  const preferredKeys = [
+    "answer",
+    "output_text",
+    "generated_text",
+    "text",
+    "content",
+    "message",
+    "output",
+    "choices",
+    "data",
+    "result",
+    "response",
+  ];
+  const forbiddenKeys = new Set([
+    "rag_note",
+    "rag_error",
+    "status",
+    "model",
+    "finish_reason",
+    "rag_enabled",
+    "rag_source_count",
+    "citation_underuse",
+  ]);
+
+  const out: string[] = [];
+  for (const key of preferredKeys) {
+    if (key in dict) {
+      out.push(..._extractStringsDeep(dict[key], depth + 1));
+    }
+  }
+  for (const [key, nested] of Object.entries(dict)) {
+    if (preferredKeys.includes(key) || forbiddenKeys.has(key)) {
+      continue;
+    }
+    out.push(..._extractStringsDeep(nested, depth + 1));
+  }
+  return out;
+}
+
+function extractAssistantTextFromChatPayload(payload: unknown): string {
+  if (typeof payload === "string") {
+    return payload.trim();
+  }
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const dict = payload as Record<string, unknown>;
+
+  const directAnswer = dict.answer;
+  if (typeof directAnswer === "string" && directAnswer.trim().length > 0) {
+    return directAnswer.trim();
+  }
+
+  const choices = Array.isArray(dict.choices) ? dict.choices : [];
+  if (choices.length > 0) {
+    const firstChoice = choices[0] as Record<string, unknown>;
+    const message = firstChoice?.message as Record<string, unknown> | undefined;
+    const delta = firstChoice?.delta as Record<string, unknown> | undefined;
+    const candidateParts = [
+      message?.content,
+      delta?.content,
+      firstChoice?.text,
+    ];
+    for (const part of candidateParts) {
+      const strings = _extractStringsDeep(part);
+      if (strings.length > 0) {
+        return strings.join("\n").trim();
+      }
+    }
+  }
+
+  const output = dict.output;
+  if (Array.isArray(output) && output.length > 0) {
+    const outputStrings = _extractStringsDeep(output);
+    if (outputStrings.length > 0) {
+      return outputStrings.join("\n").trim();
+    }
+  }
+
+  return "";
+}
+
+function parseConfidenceFromRagNote(ragNote: string): "high" | "medium" | "low" | "none" {
+  const lowered = ragNote.toLowerCase();
+  if (lowered.includes("confidence=high")) {
+    return "high";
+  }
+  if (lowered.includes("confidence=medium")) {
+    return "medium";
+  }
+  if (lowered.includes("confidence=low")) {
+    return "low";
+  }
+  return "none";
+}
+
+function confidenceToPercent(level: "high" | "medium" | "low" | "none"): number {
+  if (level === "high") {
+    return 98;
+  }
+  if (level === "medium") {
+    return 86;
+  }
+  if (level === "low") {
+    return 72;
+  }
+  return 60;
+}
+
+function buildMessageHistory(turns: Turn[]): ChatMessagePayload[] {
+  const history: ChatMessagePayload[] = [];
+  for (const turn of turns) {
+    if (turn.question.trim().length > 0) {
+      history.push({ role: "user", content: turn.question });
+    }
+    if (turn.answer.trim().length > 0) {
+      history.push({ role: "assistant", content: turn.answer });
+    }
+  }
+  return history;
+}
+
+function extractArticleBadge(source: RagSource, index: number): string {
+  const hint = (source.article_hint ?? "").trim();
+  if (hint.length > 0) {
+    const match = hint.match(/Article\s+[A-Za-z0-9.\-]+/i);
+    if (match) {
+      return `${match[0]} - COCC`;
+    }
+  }
+  if (typeof source.rank === "number") {
+    return `Source ${source.rank}`;
+  }
+  return `Source ${index + 1}`;
+}
+
+function buildCitationCards(sources: RagSource[]): CitationCard[] {
+  return sources.slice(0, 8).map((source, index) => {
+    const badge = extractArticleBadge(source, index);
+    const excerpt = (source.article_hint ?? source.citation ?? "Reference juridique").trim();
+    const meta = (source.citation ?? source.relative_path ?? source.source_path ?? "Base documentaire").trim();
+    return {
+      badge,
+      excerpt,
+      meta,
+      sourcePath: source.relative_path ?? source.source_path ?? undefined,
+      pageStart: source.page_start ?? null,
+      pageEnd: source.page_end ?? null,
+    };
+  });
+}
+
+function normalizeSourceValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const unified = trimmed
+    .replaceAll("\\", "/")
+    .replace(/%2F/gi, "/")
+    .replaceAll('"', "")
+    .replaceAll("'", "")
+    .replaceAll("`", "")
+    .toLowerCase();
+  let cleaned = unified
+    .replace(/^[a-z]:/, "")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+/, "");
+  const marker = "droit donnees/";
+  const markerIndex = cleaned.indexOf(marker);
+  if (markerIndex >= 0) {
+    cleaned = cleaned.slice(markerIndex + marker.length);
+  }
+  return cleaned.trim();
+}
+
+function scoreCitationDocumentMatch(candidate: string, document: LibraryDocumentRecord): number {
+  if (!candidate) {
+    return 0;
+  }
+  const relativePath = normalizeSourceValue(document.relativePath);
+  const fileName = normalizeSourceValue(document.fileName);
+  if (!relativePath && !fileName) {
+    return 0;
+  }
+  if (relativePath && candidate === relativePath) {
+    return 120;
+  }
+  if (relativePath && candidate.endsWith(`/${relativePath}`)) {
+    return 110;
+  }
+  if (relativePath && candidate.includes(relativePath)) {
+    return 95;
+  }
+  if (fileName && candidate === fileName) {
+    return 80;
+  }
+  if (fileName && candidate.endsWith(`/${fileName}`)) {
+    return 72;
+  }
+  if (fileName && candidate.includes(fileName)) {
+    return 60;
+  }
+  return 0;
+}
+
+function resolveCitationDocument(
+  card: CitationCard,
+  documents: LibraryDocumentRecord[]
+): LibraryDocumentRecord | null {
+  if (documents.length === 0) {
+    return null;
+  }
+  const candidates = [normalizeSourceValue(card.sourcePath ?? ""), normalizeSourceValue(card.meta)].filter(
+    (value) => value.length > 0
+  );
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  let bestScore = 0;
+  let bestDocument: LibraryDocumentRecord | null = null;
+  for (const candidate of candidates) {
+    for (const document of documents) {
+      const score = scoreCitationDocumentMatch(candidate, document);
+      if (score > bestScore) {
+        bestScore = score;
+        bestDocument = document;
+      }
+    }
+  }
+  return bestDocument;
+}
+
+function parsePageFromCitationText(value: string): number | null {
+  const match = value.match(/\b(?:p\.|pp\.)\s*(\d{1,4})/i);
+  if (!match?.[1]) {
+    return null;
+  }
+  const page = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(page) || page <= 0) {
+    return null;
+  }
+  return page;
+}
+
+function nowTimeLabel(): string {
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function formatDateLabel(dateIso: string): string {
+  const date = new Date(dateIso);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes <= 0) {
+    return "0 B";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function toSafeFileName(value: string): string {
+  const base = value
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .toLowerCase();
+  if (!base) {
+    return "document_juridique";
+  }
+  return base.slice(0, 80);
+}
+
+function isActGenerationPrompt(question: string): boolean {
+  const lowered = question.toLowerCase();
+  return lowered.includes("generer un modele d'acte juridique");
+}
+
+function buildStructuredDocumentBlocks(answer: string): PdfBlock[] {
+  const lines = answer
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const blocks: PdfBlock[] = [];
+  let listBuffer: string[] = [];
+
+  const flushList = () => {
+    if (listBuffer.length === 0) {
+      return;
+    }
+    for (const item of listBuffer) {
+      blocks.push({ kind: "li", text: item });
+    }
+    listBuffer = [];
+  };
+
+  for (const line of lines) {
+    const bulletMatch = line.match(/^(?:[-*•]\s+)(.+)$/);
+    if (bulletMatch) {
+      listBuffer.push(bulletMatch[1].trim());
+      continue;
+    }
+
+    flushList();
+
+    if (/^article\s+[a-z0-9.\-]+/i.test(line)) {
+      blocks.push({ kind: "h3", text: line });
+      continue;
+    }
+    if (line.endsWith(":") && line.length <= 90) {
+      blocks.push({ kind: "h2", text: line });
+      continue;
+    }
+    if (/^[A-Z0-9\s'’.,:-]{12,}$/.test(line) && line.length <= 120) {
+      blocks.push({ kind: "h1", text: line });
+      continue;
+    }
+    blocks.push({ kind: "p", text: line });
+  }
+
+  flushList();
+
+  return blocks.length > 0 ? blocks : [{ kind: "p", text: "Aucun contenu." }];
+}
+
+function highlightArticleReference(text: string): ReactNode[] {
+  const articleRegex =
+    /(\bArticle\s+(?:[A-Za-z]\.?\s*)?\d+[A-Za-z0-9.\-]*(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\b|\bArticle\b)/gi;
+  const chunks = text.split(articleRegex);
+  return chunks.map((chunk, index) => {
+    if (articleRegex.test(chunk)) {
+      articleRegex.lastIndex = 0;
+      return (
+        <span className="text-[#21DF6C] font-semibold" key={`article-ref-${index}`}>
+          {chunk}
+        </span>
+      );
+    }
+    articleRegex.lastIndex = 0;
+    return <span key={`chunk-${index}`}>{chunk}</span>;
+  });
+}
+
+function renderAnswerContent(answer: string): ReactNode {
+  const rows = answer
+    .split("\n")
+    .map((row) => row.trim())
+    .filter((row) => row.length > 0);
+
+  const paragraphs: string[] = [];
+  const bullets: string[] = [];
+
+  for (const row of rows) {
+    if (row.startsWith("- ")) {
+      bullets.push(row.slice(2).trim());
+      continue;
+    }
+    paragraphs.push(row);
+  }
+
+  return (
+    <>
+      {paragraphs.map((paragraph, index) => {
+        const isLastParagraph = index === paragraphs.length - 1;
+        const withMargin = !isLastParagraph || bullets.length > 0;
+        return (
+          <p className={`leading-relaxed ${withMargin ? "mb-4" : ""}`} key={`${paragraph}-${index}`}>
+            {highlightArticleReference(paragraph)}
+          </p>
+        );
+      })}
+      {bullets.length > 0 ? (
+        <ul className="list-disc pl-5 mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">
+          {bullets.map((bullet, index) => (
+            <li key={`${bullet}-${index}`}>{highlightArticleReference(bullet)}</li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  );
+}
+
+export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = false }: ChatWorkspaceProps) {
+  const [turns, setTurns] = useState<Turn[]>(EMPTY_TURNS);
+  const [input, setInput] = useState<string>("");
+  const [notes, setNotes] = useState<string>("");
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileRecord[]>([]);
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("workspace");
+  const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState<boolean>(false);
+  const [isMobileRightPanelOpen, setIsMobileRightPanelOpen] = useState<boolean>(false);
+  const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState<boolean>(false);
+  const [hasAutoOpenedWorkspacePanel, setHasAutoOpenedWorkspacePanel] = useState<boolean>(false);
+  const [hasDismissedWorkspacePanel, setHasDismissedWorkspacePanel] = useState<boolean>(false);
+  const [isSending, setIsSending] = useState<boolean>(false);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+  const [landingQuery, setLandingQuery] = useState<string>("");
+  const [isActGeneratorOpen, setIsActGeneratorOpen] = useState<boolean>(false);
+  const [actType, setActType] = useState<ActType>(DEFAULT_ACT_TYPE);
+  const [actValues, setActValues] = useState<Record<string, string>>(
+    () => buildInitialActFormValues(DEFAULT_ACT_TYPE)
+  );
+  const [actUserIntent, setActUserIntent] = useState<string>("");
+  const [actStep, setActStep] = useState<ActWizardStep>(1);
+  const [actFieldError, setActFieldError] = useState<string>("");
+  const [actMissingItems, setActMissingItems] = useState<string[]>([]);
+  const [actGeneratedDocument, setActGeneratedDocument] = useState<string>("");
+  const [actValidationError, setActValidationError] = useState<string>("");
+  const [isActValidating, setIsActValidating] = useState<boolean>(false);
+  const [popupChatMessages, setPopupChatMessages] = useState<PopupChatMessage[]>([]);
+  const [popupChatInput, setPopupChatInput] = useState<string>("");
+  const [isPopupChatSending, setIsPopupChatSending] = useState<boolean>(false);
+  const [globalError, setGlobalError] = useState<string>("");
+  const [uiMessage, setUiMessage] = useState<string>("");
+  const abortRef = useRef<AbortController | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderStreamRef = useRef<MediaStream | null>(null);
+  const recorderChunksRef = useRef<BlobPart[]>([]);
+  const turnsRef = useRef<Turn[]>(EMPTY_TURNS);
+  const persistedTurnFingerprintRef = useRef<Map<string, string>>(new Map());
+  const autoActOpenedRef = useRef(false);
+  const autoSubmittedRef = useRef<string>("");
+  const composerFileInputRef = useRef<HTMLInputElement | null>(null);
+  const workspaceFileInputRef = useRef<HTMLInputElement | null>(null);
+  const libraryDocumentsCacheRef = useRef<LibraryDocumentRecord[]>([]);
+
+  const backendBaseUrl = useMemo(() => {
+    const raw = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
+    return raw.replace(/\/+$/, "");
+  }, []);
+
+  const activeTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+  const hasConversationStarted = turns.length > 0;
+  const hasGeneratedResponse = useMemo(
+    () => turns.some((turn) => turn.answer.trim().length > 0 || turn.status === "done" || turn.status === "error"),
+    [turns]
+  );
+  const activeActTemplate = ACT_TEMPLATES[actType];
+  const requiredActFields = useMemo(
+    () => activeActTemplate.fields.filter((field) => Boolean(field.required)),
+    [activeActTemplate.fields]
+  );
+  const completedRequiredActFields = useMemo(
+    () =>
+      requiredActFields.filter(
+        (field) => (actValues[field.key] ?? "").trim().length > 0
+      ).length,
+    [actValues, requiredActFields]
+  );
+  const actProgressPercent = useMemo(() => {
+    const total = requiredActFields.length || 1;
+    return Math.round((completedRequiredActFields / total) * 100);
+  }, [completedRequiredActFields, requiredActFields.length]);
+  const actWizardProgressPercent = useMemo(() => {
+    if (actStep === 1) {
+      return 18;
+    }
+    if (actStep === 2) {
+      return Math.round(33 + actProgressPercent * 0.34);
+    }
+    return 100;
+  }, [actProgressPercent, actStep]);
+  const missingFieldLabelSet = useMemo(
+    () => new Set(actMissingItems.map((item) => normalizeForMatch(item))),
+    [actMissingItems]
+  );
+  const citationCards = useMemo(() => buildCitationCards(activeTurn?.ragSources ?? []), [activeTurn]);
+  const confidenceLevel = parseConfidenceFromRagNote(activeTurn?.ragNote ?? "");
+  const confidencePercent = confidenceToPercent(confidenceLevel);
+  const displayedSourceCount = citationCards.length;
+  const filesFromSources = useMemo(() => {
+    const rows = citationCards
+      .map((card, index) => {
+        const base = card.sourcePath ?? card.meta;
+        return {
+          id: `source-${index}-${base}`,
+          name: base,
+          size: 0,
+          addedAt: new Date().toISOString()
+        };
+      })
+      .filter((row) => row.name.trim().length > 0);
+    return rows;
+  }, [citationCards]);
+  const allWorkspaceFiles = useMemo(() => {
+    const map = new Map<string, WorkspaceFileRecord>();
+    for (const file of workspaceFiles) {
+      map.set(file.id, file);
+    }
+    for (const file of filesFromSources) {
+      if (!map.has(file.id)) {
+        map.set(file.id, file);
+      }
+    }
+    return Array.from(map.values()).sort(
+      (a, b) =>
+        new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime()
+    );
+  }, [filesFromSources, workspaceFiles]);
+
+  const appendToTurnAnswer = (turnId: string, text: string) => {
+    setTurns((previous) =>
+      previous.map((turn) =>
+        turn.id === turnId ? { ...turn, answer: `${turn.answer}${text}` } : turn
+      )
+    );
+  };
+
+  const patchTurn = (turnId: string, patch: Partial<Turn>) => {
+    setTurns((previous) =>
+      previous.map((turn) => (turn.id === turnId ? { ...turn, ...patch } : turn))
+    );
+  };
+
+  const replaceTurnAnswer = (turnId: string, text: string) => {
+    setTurns((previous) =>
+      previous.map((turn) =>
+        turn.id === turnId ? { ...turn, answer: text } : turn
+      )
+    );
+  };
+
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
+
+  useEffect(() => {
+    let active = true;
+    const loadWorkspace = async () => {
+      const [remoteNotes, remoteFiles] = await Promise.all([
+        readWorkspaceNotesApi(),
+        readWorkspaceFilesApi(),
+      ]);
+      if (!active) {
+        return;
+      }
+      setNotes(remoteNotes);
+      setWorkspaceFiles(remoteFiles);
+    };
+    void loadWorkspace();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void writeWorkspaceNotesApi(notes);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [notes]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void writeWorkspaceFilesApi(workspaceFiles);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [workspaceFiles]);
+
+  useEffect(() => {
+    const onResize = () => {
+      if (window.innerWidth >= 1024) {
+        setIsMobileLeftPanelOpen(false);
+        setIsMobileRightPanelOpen(false);
+      }
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    const pending: Promise<unknown>[] = [];
+    for (const turn of turns) {
+      const status = turn.status === "error" ? "error" : turn.status === "done" ? "done" : null;
+      if (!status) {
+        continue;
+      }
+      if (!turn.question.trim() || !turn.answer.trim()) {
+        continue;
+      }
+      const fingerprint = [
+        turn.answer,
+        status,
+        turn.finishReason,
+        turn.ragNote,
+        String(turn.ragSources.length),
+      ].join("|");
+      const previousFingerprint = persistedTurnFingerprintRef.current.get(turn.id);
+      if (previousFingerprint === fingerprint) {
+        continue;
+      }
+      persistedTurnFingerprintRef.current.set(turn.id, fingerprint);
+      pending.push(upsertConsultationApi({
+        id: turn.id,
+        question: turn.question,
+        answer: turn.answer,
+        status,
+        finishReason: turn.finishReason,
+        ragNote: turn.ragNote,
+        sourceCount: turn.ragSources.length,
+        createdAt: new Date(Number(turn.id.replace("turn-", "")) || Date.now()).toISOString(),
+        updatedAt: new Date().toISOString()
+      }));
+    }
+    if (pending.length > 0) {
+      void Promise.allSettled(pending);
+    }
+  }, [turns]);
+
+  const sendQuestion = useCallback(async (question: string, options?: SendQuestionOptions) => {
+    const trimmedQuestion = question.trim();
+    if (!trimmedQuestion || isSending) {
+      return;
+    }
+    const displayQuestion = (options?.displayQuestion ?? trimmedQuestion).trim() || trimmedQuestion;
+
+    setGlobalError("");
+    const turnId = `turn-${Date.now()}`;
+    const turnSeed: Turn = {
+      id: turnId,
+      question: trimmedQuestion,
+      displayQuestion,
+      answer: "",
+      status: "streaming",
+      ragSources: [],
+      ragNote: "",
+      finishReason: ""
+    };
+
+    const historyBeforeQuestion = buildMessageHistory(turnsRef.current);
+    setTurns((previous) => [...previous, turnSeed]);
+    setInput("");
+    setIsSending(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const response = await fetch(`${backendBaseUrl}/chat/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          messages: [...historyBeforeQuestion, { role: "user", content: trimmedQuestion }],
+          temperature: 0.0,
+          top_p: 0.9,
+          max_tokens: 650,
+          thinking: false,
+          rag_query_rewrite: options?.disableRagRewrite === true ? false : undefined
+        }),
+        signal: controller.signal
+      });
+
+      if (!response.ok || !response.body) {
+        const detail = `Erreur HTTP ${response.status}`;
+        patchTurn(turnId, {
+          answer: detail,
+          status: "error",
+          finishReason: "http_error"
+        });
+        setGlobalError(detail);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamDone = false;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true }).replace(/\r/g, "");
+
+        while (true) {
+          const boundary = buffer.indexOf("\n\n");
+          if (boundary === -1) {
+            break;
+          }
+
+          const packet = buffer.slice(0, boundary).trim();
+          buffer = buffer.slice(boundary + 2);
+          if (!packet) {
+            continue;
+          }
+
+          let eventName = "message";
+          const dataLines: string[] = [];
+
+          for (const line of packet.split("\n")) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+              continue;
+            }
+            if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+          }
+
+          if (dataLines.length === 0) {
+            continue;
+          }
+
+          let payload: unknown;
+          try {
+            payload = JSON.parse(dataLines.join("\n"));
+          } catch {
+            continue;
+          }
+
+          if (eventName === "meta") {
+            const metaPayload = payload as StreamMetaEvent;
+            patchTurn(turnId, {
+              ragSources: Array.isArray(metaPayload.rag_sources) ? metaPayload.rag_sources : [],
+              ragNote: typeof metaPayload.rag_note === "string" ? metaPayload.rag_note : ""
+            });
+            continue;
+          }
+
+          if (eventName === "token") {
+            const tokenPayload = payload as StreamTokenEvent;
+            if (typeof tokenPayload.text === "string" && tokenPayload.text.length > 0) {
+              appendToTurnAnswer(turnId, tokenPayload.text);
+            }
+            continue;
+          }
+
+          if (eventName === "done") {
+            const donePayload = payload as StreamDoneEvent;
+            patchTurn(turnId, {
+              status: "done",
+              finishReason:
+                typeof donePayload.finish_reason === "string" ? donePayload.finish_reason : "stop",
+              ragNote: typeof donePayload.rag_note === "string" ? donePayload.rag_note : ""
+            });
+            streamDone = true;
+            break;
+          }
+
+          if (eventName === "replace") {
+            const replacePayload = payload as StreamReplaceEvent;
+            if (typeof replacePayload.text === "string") {
+              replaceTurnAnswer(turnId, replacePayload.text);
+            }
+            continue;
+          }
+
+          if (eventName === "error") {
+            const errorPayload = payload as StreamErrorEvent;
+            const detail =
+              typeof errorPayload.detail === "string"
+                ? errorPayload.detail
+                : "Une erreur est survenue pendant le streaming.";
+            patchTurn(turnId, {
+              status: "error",
+              answer: detail,
+              finishReason: "stream_error"
+            });
+            setGlobalError(detail);
+            streamDone = true;
+            break;
+          }
+        }
+
+        if (streamDone) {
+          break;
+        }
+      }
+
+      if (!streamDone) {
+        patchTurn(turnId, {
+          status: "done",
+          finishReason: "stop"
+        });
+      }
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : "Impossible de contacter le backend.";
+      patchTurn(turnId, {
+        status: "error",
+        answer: detail,
+        finishReason: "network_error"
+      });
+      setGlobalError(detail);
+    } finally {
+      abortRef.current = null;
+      setIsSending(false);
+    }
+  }, [backendBaseUrl, isSending]);
+
+  const pendingDashboardQuestion = initialQuestion.trim();
+
+  const clearQuestionParamFromUrl = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("q")) {
+      return;
+    }
+    url.searchParams.delete("q");
+    const cleanedUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", cleanedUrl || "/chat");
+  }, []);
+
+  useEffect(() => {
+    if (!pendingDashboardQuestion) {
+      return;
+    }
+    if (autoSubmittedRef.current === pendingDashboardQuestion) {
+      return;
+    }
+    autoSubmittedRef.current = pendingDashboardQuestion;
+    setInput(pendingDashboardQuestion);
+    clearQuestionParamFromUrl();
+    void sendQuestion(pendingDashboardQuestion);
+  }, [clearQuestionParamFromUrl, pendingDashboardQuestion, sendQuestion]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await sendQuestion(input);
+  };
+
+  const handleCancel = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setIsSending(false);
+  };
+
+  const copyAnswer = async (text: string) => {
+    if (!text.trim()) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      setGlobalError("Copie impossible sur ce navigateur.");
+    }
+  };
+
+  const pushUiMessage = useCallback((message: string) => {
+    setUiMessage(message);
+    window.setTimeout(() => {
+      setUiMessage((current) => (current === message ? "" : current));
+    }, 2400);
+  }, []);
+
+  const exportPdfDocument = useCallback((title: string, content: string) => {
+    const finalContent = content.trim();
+    if (!finalContent) {
+      setGlobalError("Aucun contenu a exporter.");
+      return;
+    }
+    const generatedAt = new Date().toLocaleString("fr-FR");
+    const blocks = buildStructuredDocumentBlocks(finalContent);
+    const safeFileName = `${toSafeFileName(title)}.pdf`;
+    const disclaimer = "Ce document est un modele genere automatiquement et doit etre verifie par un professionnel du droit avant utilisation.";
+
+    try {
+      const doc = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4"
+      });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const left = 18;
+      const right = 18;
+      const top = 16;
+      const bottom = 16;
+      const contentWidth = pageWidth - left - right;
+
+      let y = top;
+
+      const ensureSpace = (requiredHeight: number) => {
+        if (y + requiredHeight <= pageHeight - bottom) {
+          return;
+        }
+        doc.addPage();
+        y = top;
+      };
+
+      const drawWrappedText = (
+        text: string,
+        fontSize: number,
+        lineHeight: number,
+        options: { bold?: boolean; color?: [number, number, number]; indent?: number } = {}
+      ) => {
+        const drawX = left + (options.indent ?? 0);
+        const maxWidth = contentWidth - (options.indent ?? 0);
+        const lines = doc.splitTextToSize(text, maxWidth);
+        const required = lines.length * lineHeight;
+        ensureSpace(required + 1);
+        doc.setFont("helvetica", options.bold ? "bold" : "normal");
+        doc.setFontSize(fontSize);
+        if (options.color) {
+          doc.setTextColor(options.color[0], options.color[1], options.color[2]);
+        } else {
+          doc.setTextColor(31, 41, 55);
+        }
+        doc.text(lines, drawX, y);
+        y += required;
+      };
+
+      doc.setDrawColor(33, 200, 83);
+      doc.setLineWidth(0.6);
+      doc.line(left, y, pageWidth - right, y);
+      y += 6;
+
+      drawWrappedText("Juridique SN", 10, 4.6, { bold: true, color: [33, 200, 83] });
+      y += 1;
+      drawWrappedText(title, 16, 6.5, { bold: true, color: [15, 23, 42] });
+      y += 1;
+      drawWrappedText(`Document genere le ${generatedAt}`, 9.5, 4.4, { color: [107, 114, 128] });
+      y += 4;
+
+      doc.setDrawColor(229, 231, 235);
+      doc.setLineWidth(0.3);
+      doc.line(left, y, pageWidth - right, y);
+      y += 6;
+
+      for (const block of blocks) {
+        if (block.kind === "h1") {
+          drawWrappedText(block.text, 14, 6.2, { bold: true, color: [15, 23, 42] });
+          y += 2.5;
+          continue;
+        }
+        if (block.kind === "h2") {
+          drawWrappedText(block.text, 12.5, 5.6, { bold: true, color: [15, 23, 42] });
+          y += 2;
+          continue;
+        }
+        if (block.kind === "h3") {
+          drawWrappedText(block.text, 11.5, 5.2, { bold: true, color: [17, 24, 39] });
+          y += 1.8;
+          continue;
+        }
+        if (block.kind === "li") {
+          drawWrappedText(`• ${block.text}`, 10.5, 4.8, { indent: 2 });
+          y += 1.2;
+          continue;
+        }
+        drawWrappedText(block.text, 10.8, 5.0);
+        y += 1.8;
+      }
+
+      y += 4;
+      ensureSpace(16);
+      doc.setDrawColor(229, 231, 235);
+      doc.line(left, y, pageWidth - right, y);
+      y += 5;
+      drawWrappedText(disclaimer, 9.5, 4.5, { color: [75, 85, 99] });
+
+      const pageCount = doc.getNumberOfPages();
+      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+        doc.setPage(pageNumber);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.setTextColor(156, 163, 175);
+        doc.text(
+          `Page ${pageNumber}/${pageCount}`,
+          pageWidth - right,
+          pageHeight - 8,
+          { align: "right" }
+        );
+      }
+
+      doc.save(safeFileName);
+      pushUiMessage("Document exporte.");
+    } catch {
+      setGlobalError("Export du document impossible.");
+    }
+  }, [pushUiMessage]);
+
+  const exportTurnDocument = useCallback((turn: Turn) => {
+    const title = (turn.displayQuestion ?? turn.question).trim() || "Document juridique";
+    exportPdfDocument(title, turn.answer);
+  }, [exportPdfDocument]);
+
+  const exportPopupActDocument = useCallback(() => {
+    const title = `${activeActTemplate.label} - version finale`;
+    exportPdfDocument(title, actGeneratedDocument);
+  }, [actGeneratedDocument, activeActTemplate.label, exportPdfDocument]);
+
+  const stopRecorderStream = useCallback(() => {
+    const stream = recorderStreamRef.current;
+    if (stream) {
+      for (const track of stream.getTracks()) {
+        track.stop();
+      }
+    }
+    recorderStreamRef.current = null;
+  }, []);
+
+  const stopVoiceCapture = useCallback(() => {
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+      return;
+    }
+    stopRecorderStream();
+    recorderRef.current = null;
+    setIsRecording(false);
+  }, [stopRecorderStream]);
+
+  const handleVoiceCapture = useCallback(async () => {
+    if (isTranscribing) {
+      return;
+    }
+    if (isRecording) {
+      stopVoiceCapture();
+      return;
+    }
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setGlobalError("La reconnaissance vocale n'est pas supportee sur ce navigateur.");
+      return;
+    }
+
+    setGlobalError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recorderStreamRef.current = stream;
+      recorderChunksRef.current = [];
+
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "";
+
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      recorderRef.current = recorder;
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data && event.data.size > 0) {
+          recorderChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        setGlobalError("Erreur pendant l'enregistrement audio.");
+        setIsRecording(false);
+        stopRecorderStream();
+        recorderRef.current = null;
+      };
+
+      recorder.onstop = async () => {
+        setIsRecording(false);
+        stopRecorderStream();
+        const chunks = recorderChunksRef.current;
+        recorderChunksRef.current = [];
+        recorderRef.current = null;
+        if (!chunks.length) {
+          return;
+        }
+
+        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        if (blob.size === 0) {
+          return;
+        }
+
+        setIsTranscribing(true);
+        try {
+          const transcript = await transcribeSpeechApi(blob);
+          setInput((previous) => {
+            const base = previous.trim();
+            return base.length > 0 ? `${base} ${transcript}` : transcript;
+          });
+          pushUiMessage("Transcription ajoutee.");
+        } catch (error) {
+          const detail =
+            error instanceof Error
+              ? error.message
+              : "Transcription vocale impossible pour le moment.";
+          setGlobalError(detail);
+        } finally {
+          setIsTranscribing(false);
+        }
+      };
+
+      recorder.start(250);
+      setIsRecording(true);
+    } catch {
+      setGlobalError("Acces au microphone refuse.");
+      setIsRecording(false);
+      stopRecorderStream();
+      recorderRef.current = null;
+    }
+  }, [isRecording, isTranscribing, pushUiMessage, stopRecorderStream, stopVoiceCapture]);
+
+  useEffect(() => {
+    return () => {
+      const recorder = recorderRef.current;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+      stopRecorderStream();
+      recorderRef.current = null;
+    };
+  }, [stopRecorderStream]);
+
+  const handleStartNewChat = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    stopVoiceCapture();
+    setIsTranscribing(false);
+    autoSubmittedRef.current = "";
+    setIsSending(false);
+    setTurns([]);
+    setInput("");
+    setGlobalError("");
+    setIsMobileLeftPanelOpen(false);
+    setIsMobileRightPanelOpen(false);
+    setIsWorkspacePanelOpen(false);
+    setHasAutoOpenedWorkspacePanel(false);
+    setHasDismissedWorkspacePanel(false);
+    setRightPanelTab("workspace");
+    clearQuestionParamFromUrl();
+    pushUiMessage("Nouvelle session demarree.");
+  }, [clearQuestionParamFromUrl, pushUiMessage, stopVoiceCapture]);
+
+  const handleClearHistory = useCallback(async () => {
+    if (turnsRef.current.length === 0) {
+      return;
+    }
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm("Supprimer tout l'historique des consultations ?");
+      if (!confirmed) {
+        return;
+      }
+    }
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setIsSending(false);
+    setTurns([]);
+    setInput("");
+    setGlobalError("");
+    persistedTurnFingerprintRef.current.clear();
+    autoSubmittedRef.current = "";
+    try {
+      await clearConsultationsApi();
+      pushUiMessage("Historique supprime.");
+    } catch {
+      pushUiMessage("Historique local supprime.");
+    }
+  }, [pushUiMessage]);
+
+  const openActGenerator = useCallback(() => {
+    setActType(DEFAULT_ACT_TYPE);
+    setActValues(buildInitialActFormValues(DEFAULT_ACT_TYPE));
+    setActUserIntent("");
+    setActStep(1);
+    setActFieldError("");
+    setActMissingItems([]);
+    setActGeneratedDocument("");
+    setActValidationError("");
+    setIsActValidating(false);
+    setIsPopupChatSending(false);
+    setPopupChatInput("");
+    setPopupChatMessages([
+      {
+        id: `popup-${Date.now()}`,
+        role: "assistant",
+        content:
+          "Je suis pret a vous aider a rediger l'acte. Remplissez le formulaire puis utilisez ce mini chat pour completer/valider avant export PDF.",
+      },
+    ]);
+    setIsActGeneratorOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (autoOpenActGenerator && !autoActOpenedRef.current) {
+      autoActOpenedRef.current = true;
+      openActGenerator();
+    }
+  }, [autoOpenActGenerator, openActGenerator]);
+
+  const openContractCheck = useCallback(async () => {
+    const preset = "Verifier un contrat au regard du droit senegalais.";
+    setInput(preset);
+    await sendQuestion(preset);
+    setIsMobileLeftPanelOpen(false);
+  }, [sendQuestion]);
+
+  const handleLandingSubmit = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const trimmed = landingQuery.trim();
+      if (!trimmed) return;
+      setInput(trimmed);
+      setLandingQuery(trimmed);
+      await sendQuestion(trimmed);
+    },
+    [landingQuery, sendQuestion]
+  );
+
+  const handleOpenWorkspacePanel = useCallback(() => {
+    setIsWorkspacePanelOpen(true);
+    setRightPanelTab("workspace");
+  }, []);
+
+  const handleCloseWorkspacePanel = useCallback(() => {
+    setIsWorkspacePanelOpen(false);
+    setIsMobileRightPanelOpen(false);
+    setHasDismissedWorkspacePanel(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hasGeneratedResponse) {
+      return;
+    }
+    if (hasAutoOpenedWorkspacePanel || hasDismissedWorkspacePanel) {
+      return;
+    }
+    setIsWorkspacePanelOpen(true);
+    setHasAutoOpenedWorkspacePanel(true);
+  }, [hasAutoOpenedWorkspacePanel, hasDismissedWorkspacePanel, hasGeneratedResponse]);
+
+  const closeActGenerator = useCallback(() => {
+    setIsActGeneratorOpen(false);
+    setActStep(1);
+    setActFieldError("");
+    setActMissingItems([]);
+    setActGeneratedDocument("");
+    setActValidationError("");
+    setIsActValidating(false);
+    setIsPopupChatSending(false);
+    setPopupChatInput("");
+    setPopupChatMessages([]);
+  }, []);
+
+  const handleActTypeChange = useCallback((nextType: ActType) => {
+    setActType(nextType);
+    setActValues(buildInitialActFormValues(nextType));
+    setActFieldError("");
+    setActMissingItems([]);
+    setActGeneratedDocument("");
+    setActValidationError("");
+  }, []);
+
+  const handleActFieldChange = useCallback((fieldKey: string, nextValue: string) => {
+    setActFieldError("");
+    setActValidationError("");
+    setActMissingItems([]);
+    setActGeneratedDocument("");
+    setActValues((previous) => ({ ...previous, [fieldKey]: nextValue }));
+  }, []);
+
+  const handleActStepOneContinue = useCallback(() => {
+    setActStep(2);
+  }, []);
+
+  const handleActPrevious = useCallback(() => {
+    if (actStep === 3) {
+      setActStep(2);
+      return;
+    }
+    if (actStep === 2) {
+      setActStep(1);
+    }
+  }, [actStep]);
+
+  const runActAssistant = useCallback(
+    async (userMessage: string, mode: "chat" | "validate") => {
+      const trimmedUserMessage = userMessage.trim();
+      if (!trimmedUserMessage) {
+        return;
+      }
+      if (mode === "chat" && isPopupChatSending) {
+        return;
+      }
+      if (mode === "validate" && isActValidating) {
+        return;
+      }
+
+      setActValidationError("");
+      const conversationForPrompt: PopupChatMessage[] = [
+        ...popupChatMessages,
+        {
+          id: `popup-user-shadow-${Date.now()}`,
+          role: "user",
+          content: trimmedUserMessage,
+        },
+      ];
+      setPopupChatMessages((previous) => [
+        ...previous,
+        {
+          id: `popup-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: "user",
+          content: trimmedUserMessage,
+        },
+      ]);
+
+      if (mode === "chat") {
+        setIsPopupChatSending(true);
+      } else {
+        setIsActValidating(true);
+      }
+
+      const prompt = buildActValidationPrompt(
+        activeActTemplate,
+        actValues,
+        actUserIntent,
+        conversationForPrompt,
+        trimmedUserMessage
+      );
+      try {
+        const response = await fetch(`${backendBaseUrl}/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.1,
+            top_p: 0.95,
+            max_tokens: 1900,
+            thinking: false,
+            rag_query_rewrite: false,
+          }),
+        });
+
+        const rawBody = await response.text();
+        let parsedPayload: unknown = null;
+        if (rawBody.trim().length > 0) {
+          try {
+            parsedPayload = JSON.parse(rawBody);
+          } catch {
+            parsedPayload = rawBody;
+          }
+        }
+
+        if (!response.ok) {
+          const detailFromPayload =
+            parsedPayload && typeof parsedPayload === "object"
+              ? String(
+                  ((parsedPayload as Record<string, unknown>).detail as string | undefined) ??
+                    ""
+                ).trim()
+              : "";
+          const fallback = detailFromPayload || `Erreur HTTP ${response.status}`;
+          setActValidationError(fallback);
+          setPopupChatMessages((previous) => [
+            ...previous,
+            {
+              id: `popup-assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              role: "assistant",
+              content: fallback,
+            },
+          ]);
+          return;
+        }
+
+        let answer = "";
+        if (typeof parsedPayload === "string") {
+          answer = parsedPayload.trim();
+        } else {
+          answer = extractAssistantTextFromChatPayload(parsedPayload);
+        }
+        if (!answer) {
+          const debugRaw =
+            typeof parsedPayload === "string"
+              ? parsedPayload.slice(0, 320)
+              : JSON.stringify(parsedPayload ?? {}).slice(0, 320);
+          const detail =
+            `Le generateur n'a retourne aucune reponse exploitable (reponse vide ou format inattendu). ` +
+            `Extrait brut: ${debugRaw || "[vide]"}`;
+          setActValidationError(detail);
+          setPopupChatMessages((previous) => [
+            ...previous,
+            {
+              id: `popup-assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              role: "assistant",
+              content: detail,
+            },
+          ]);
+          return;
+        }
+
+        const parsed = parseActValidationResponse(answer);
+        const assistantReply =
+          parsed.assistantReply.trim() ||
+          (parsed.status === "missing"
+            ? "Il manque des informations pour finaliser l'acte."
+            : "Document final pret.");
+
+        setPopupChatMessages((previous) => [
+          ...previous,
+          {
+            id: `popup-assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: "assistant",
+            content: assistantReply,
+          },
+        ]);
+
+        if (parsed.status === "missing") {
+          const fallbackMissing = activeActTemplate.fields
+            .filter((field) => field.required)
+            .filter((field) => (actValues[field.key] ?? "").trim().length === 0)
+            .map((field) => field.label);
+          const missing =
+            parsed.missingItems.length > 0 ? parsed.missingItems : fallbackMissing;
+          setActMissingItems(missing);
+          setActGeneratedDocument("");
+          return;
+        }
+
+        setActMissingItems([]);
+        if (parsed.documentText.trim().length > 0) {
+          setActGeneratedDocument(parsed.documentText.trim());
+          pushUiMessage("Acte genere dans la previsualisation.");
+        } else {
+          setActValidationError(
+            "Le modele n'a pas fourni de document final. Precisez davantage les informations."
+          );
+        }
+      } catch (error) {
+        const detail =
+          error instanceof Error
+            ? error.message
+            : "Generation impossible pour le moment.";
+        setActValidationError(detail);
+        setPopupChatMessages((previous) => [
+          ...previous,
+          {
+            id: `popup-assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: "assistant",
+            content: detail,
+          },
+        ]);
+      } finally {
+        if (mode === "chat") {
+          setIsPopupChatSending(false);
+        } else {
+          setIsActValidating(false);
+        }
+      }
+    },
+    [
+      actUserIntent,
+      actValues,
+      activeActTemplate,
+      backendBaseUrl,
+      isActValidating,
+      isPopupChatSending,
+      popupChatMessages,
+      pushUiMessage,
+    ]
+  );
+
+  const handleActValidateAndGenerate = useCallback(async () => {
+    await runActAssistant(
+      "Valide les informations saisies. Si elles sont insuffisantes, demande uniquement les informations manquantes. Sinon redige l'acte final complet.",
+      "validate"
+    );
+  }, [runActAssistant]);
+
+  const handleActNext = useCallback(() => {
+    if (actStep !== 2) {
+      return;
+    }
+    setActStep(3);
+    void handleActValidateAndGenerate();
+  }, [actStep, handleActValidateAndGenerate]);
+
+  const handlePopupChatSubmit = useCallback(async () => {
+    const message = popupChatInput.trim();
+    if (!message || isPopupChatSending) {
+      return;
+    }
+    setPopupChatInput("");
+    await runActAssistant(message, "chat");
+  }, [isPopupChatSending, popupChatInput, runActAssistant]);
+
+  const handleComposerKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key !== "Enter" || event.shiftKey) {
+        return;
+      }
+      event.preventDefault();
+      if (isSending || input.trim().length === 0) {
+        return;
+      }
+      void sendQuestion(input);
+    },
+    [input, isSending, sendQuestion]
+  );
+
+  const handleShare = useCallback(async () => {
+    const url = window.location.href;
+    try {
+      await navigator.clipboard.writeText(url);
+      pushUiMessage("Lien copie dans le presse-papiers.");
+    } catch {
+      setGlobalError("Partage impossible sur ce navigateur.");
+    }
+  }, [pushUiMessage]);
+
+  const handleExport = useCallback(() => {
+    window.print();
+  }, []);
+
+  const persistWorkspaceSnapshot = useCallback(async () => {
+    try {
+      await Promise.all([
+        writeWorkspaceNotesApi(notes),
+        writeWorkspaceFilesApi(workspaceFiles),
+      ]);
+      pushUiMessage("Workspace synchronise.");
+    } catch {
+      setGlobalError("Synchronisation impossible pour le moment.");
+    }
+  }, [notes, pushUiMessage, workspaceFiles]);
+
+  const handleCitationOpen = useCallback(
+    async (card: CitationCard) => {
+      const rawReference = (card.sourcePath ?? card.meta).trim();
+      if (!rawReference) {
+        return;
+      }
+
+      let documents = libraryDocumentsCacheRef.current;
+      if (documents.length === 0) {
+        try {
+          documents = await listLibraryDocumentsApi();
+          if (documents.length > 0) {
+            libraryDocumentsCacheRef.current = documents;
+          }
+        } catch {
+          // fallback to copy below
+        }
+      }
+
+      const matched = resolveCitationDocument(card, documents);
+      if (matched) {
+        const pageFromCard =
+          (typeof card.pageStart === "number" && card.pageStart > 0
+            ? card.pageStart
+            : parsePageFromCitationText(card.meta) ?? parsePageFromCitationText(card.excerpt)) ?? null;
+        const viewUrl = buildLibraryViewUrl(matched.id);
+        const targetUrl = pageFromCard ? `${viewUrl}#page=${pageFromCard}` : viewUrl;
+        window.location.assign(targetUrl);
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(rawReference);
+        pushUiMessage("Source non reliee: reference copiee.");
+      } catch {
+        setGlobalError("Impossible de copier la reference.");
+      }
+    },
+    [pushUiMessage]
+  );
+
+  const addWorkspaceFiles = useCallback(async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) {
+      return;
+    }
+    const files = Array.from(fileList);
+    const response = await uploadWorkspaceFilesApi(files);
+    setWorkspaceFiles(response.items);
+
+    const uploadedCount = response.uploaded?.length ?? 0;
+    const uploadedChunkCount = (response.uploaded ?? []).reduce(
+      (sum, row) => sum + Number(row.chunk_count || 0),
+      0
+    );
+    const errorCount = response.errors?.length ?? 0;
+    if (uploadedCount > 0) {
+      pushUiMessage(
+        `${uploadedCount} fichier(s) indexe(s) (${uploadedChunkCount} chunk(s)).`
+      );
+    } else if (errorCount > 0) {
+      setGlobalError(
+        response.errors
+          ?.map((row) => `${row.filename}: ${row.detail}`)
+          .slice(0, 3)
+          .join(" | ") ?? "Import impossible."
+      );
+    } else {
+      pushUiMessage(`${files.length} fichier(s) ajoute(s) au workspace.`);
+    }
+  }, [pushUiMessage]);
+
+  const handleClearWorkspaceFiles = useCallback(async () => {
+    const cleared = await clearWorkspaceFilesApi();
+    setWorkspaceFiles(cleared);
+    pushUiMessage("Fichiers locaux nettoyes.");
+  }, [pushUiMessage]);
+
+  return (
+    <div className="bg-[#112117] dark:bg-[#112117] font-display text-slate-100 flex flex-col min-h-screen lg:h-screen overflow-x-hidden lg:overflow-hidden">
+      <header className="flex items-center gap-4 px-3 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
+        <button
+          className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+          onClick={() => {
+            setIsMobileLeftPanelOpen((previous) => {
+              const next = !previous;
+              if (next) {
+                setIsSidebarCollapsed(false);
+              }
+              return next;
+            });
+            setIsMobileRightPanelOpen(false);
+          }}
+          type="button"
+        >
+          <span className="material-symbols-outlined text-base">menu</span>
+        </button>
+        <div className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0`}>
+          <div className="size-8 bg-[#13221a] border border-[#49DE80]/40 rounded flex items-center justify-center">
+            <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
+          </div>
+          <h1 className={`text-lg font-bold tracking-tight truncate ${isSidebarCollapsed ? "lg:hidden" : ""}`}>
+            Juridique <span className="text-[#7ef1a9]">SN</span>
+          </h1>
+        </div>
+        <div className="hidden md:flex items-center gap-4 min-w-0 flex-1">
+          <span className="flex items-center gap-1 text-[10px] font-bold text-[#49DE80] uppercase tracking-wider shrink-0">
+            <span className="size-2 bg-[#49DE80] rounded-full animate-pulse"></span>
+            Actualites
+          </span>
+          <div className="news-ticker flex-1 overflow-hidden">
+            <div className="news-ticker-track text-sm text-slate-400">
+              <span className="news-ticker-item pr-16">
+                Publication du nouveau decret sur l&apos;amenagement foncier urbain au Journal Officiel...
+                | Reforme du Code du Travail : Consultation nationale en cours...
+              </span>
+              <span aria-hidden="true" className="news-ticker-item pr-16">
+                Publication du nouveau decret sur l&apos;amenagement foncier urbain au Journal Officiel...
+                | Reforme du Code du Travail : Consultation nationale en cours...
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="lg:hidden flex items-center gap-2 ml-auto">
+          <button
+            className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+            onClick={() => {
+              if (isMobileRightPanelOpen) {
+                handleCloseWorkspacePanel();
+              } else {
+                handleOpenWorkspacePanel();
+                setIsMobileRightPanelOpen(true);
+              }
+              setIsMobileLeftPanelOpen(false);
+            }}
+            type="button"
+          >
+            <span className="material-symbols-outlined text-base">tune</span>
+          </button>
+        </div>
+      </header>
+
+      <div className="flex-1 flex overflow-hidden relative">
+        {isMobileLeftPanelOpen || isMobileRightPanelOpen ? (
+          <button
+            aria-label="Fermer les panneaux"
+            className="lg:hidden fixed inset-0 z-30 bg-black/45 backdrop-blur-[1px]"
+            onClick={() => {
+              setIsMobileLeftPanelOpen(false);
+              handleCloseWorkspacePanel();
+            }}
+            type="button"
+          />
+        ) : null}
+
+        <aside
+          className={`${
+            isMobileLeftPanelOpen ? "fixed inset-y-0 left-0 z-40 flex w-[84vw] max-w-xs shadow-2xl" : "hidden"
+          } lg:static lg:z-auto lg:flex ${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0c1811] flex-col shrink-0 transition-all duration-300`}
+        >
+          <div className={isSidebarCollapsed ? "p-2" : "p-6"}>
+            <div className={`flex ${isSidebarCollapsed ? "flex-col items-center gap-2" : "items-center justify-between"} mb-6`}>
+              <div className={`flex items-center ${isSidebarCollapsed ? "" : "gap-3"}`}>
+                <div
+                  className={`${isSidebarCollapsed ? "size-9" : "size-10"} bg-[#1a2e22] border border-[#49DE80]/40 rounded-lg flex items-center justify-center shadow-lg shadow-[#49DE80]/10`}
+                >
+                  <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
+                </div>
+                {!isSidebarCollapsed ? <span className="text-lg font-bold tracking-tight">JuridiqueSN</span> : null}
+              </div>
+              <button
+                aria-label={isSidebarCollapsed ? "Etendre le menu" : "Reduire le menu"}
+                className={`hidden lg:inline-flex items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/60 text-slate-300 transition-all hover:border-[#49DE80]/60 hover:bg-[#49DE80]/10 hover:text-[#49DE80] ${
+                  isSidebarCollapsed ? "size-8" : "size-9"
+                }`}
+                onClick={() => setIsSidebarCollapsed((value) => !value)}
+                type="button"
+              >
+                <span className="material-symbols-outlined text-[18px]">
+                  {isSidebarCollapsed ? "chevron_right" : "chevron_left"}
+                </span>
+              </button>
+            </div>
+            {!isSidebarCollapsed ? (
+              <button
+                className="w-full flex items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
+                onClick={() => {
+                  handleStartNewChat();
+                  setIsMobileLeftPanelOpen(false);
+                }}
+                type="button"
+              >
+                <span className="material-symbols-outlined">add</span>
+                Nouvelle Consultation
+              </button>
+            ) : null}
+            <nav className="space-y-1">
+              {!isSidebarCollapsed ? (
+                <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-4 px-2">
+                  Navigation
+                </p>
+              ) : null}
+              <Link
+                className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
+                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
+                }`}
+                href="/bibliotheque"
+                onClick={() => setIsMobileLeftPanelOpen(false)}
+                title="Codes & Lois"
+              >
+                <span className="material-symbols-outlined">library_books</span>
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Codes &amp; Lois</span> : null}
+              </Link>
+              <Link
+                className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
+                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
+                }`}
+                href="/bibliotheque-v2"
+                onClick={() => setIsMobileLeftPanelOpen(false)}
+                title="Modeles de documents"
+              >
+                <span className="material-symbols-outlined">description</span>
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Modeles de documents</span> : null}
+              </Link>
+              <button
+                className={`w-full flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
+                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
+                }`}
+                onClick={() => {
+                  void openContractCheck();
+                  setIsMobileLeftPanelOpen(false);
+                }}
+                title="Verifier un contrat"
+                type="button"
+              >
+                <span className="material-symbols-outlined">rule</span>
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Verifier un contrat</span> : null}
+              </button>
+              <button
+                className={`w-full flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
+                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
+                }`}
+                onClick={() => {
+                  openActGenerator();
+                  setIsMobileLeftPanelOpen(false);
+                }}
+                title="Generer un acte"
+                type="button"
+              >
+                <span className="material-symbols-outlined">history_edu</span>
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Generer un acte</span> : null}
+              </button>
+            </nav>
+          </div>
+          {!isSidebarCollapsed ? (
+            <div className="flex-1 overflow-y-auto px-6">
+              <div className="mb-4 px-2 flex items-center justify-between gap-2">
+                <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">
+                  Historique recent
+                </p>
+                <button
+                  aria-label="Supprimer l'historique"
+                  className="inline-flex items-center justify-center rounded-md p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  disabled={turns.length === 0}
+                  onClick={() => {
+                    void handleClearHistory();
+                  }}
+                  title="Supprimer l'historique"
+                  type="button"
+                >
+                  <span className="material-symbols-outlined text-base">delete</span>
+                </button>
+              </div>
+              <div className="space-y-2">
+                {turns.length === 0 ? (
+                  <div className="p-3 rounded-lg border border-slate-800">
+                    <p className="text-xs text-slate-500">Aucune consultation enregistree pour le moment.</p>
+                  </div>
+                ) : (
+                  turns
+                    .slice(-6)
+                    .reverse()
+                    .map((turn) => (
+                      <div
+                        className="group p-3 rounded-lg hover:bg-white/5 transition-colors border border-transparent hover:border-slate-800"
+                        key={turn.id}
+                      >
+                        <div className="flex items-start gap-2">
+                          <button
+                            className="flex-1 min-w-0 text-left cursor-pointer"
+                            onClick={() => {
+                              setInput(turn.question);
+                              setIsMobileLeftPanelOpen(false);
+                            }}
+                            type="button"
+                          >
+                            <p className="text-sm font-medium text-slate-200 truncate">{turn.question}</p>
+                            <p className="text-xs text-slate-500 mt-1">{nowTimeLabel()}</p>
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                )}
+              </div>
+            </div>
+          ) : null}
+        </aside>
+
+        <main className="flex-1 min-w-0 flex flex-col bg-[#112117] dark:bg-[#112117] relative lg:border-r border-slate-200 dark:border-slate-800">
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-8 scroll-smooth no-scrollbar">
+            <div className="max-w-3xl mx-auto space-y-8">
+              {turns.length === 0 ? (
+                <section className="text-center max-w-3xl mx-auto min-h-[calc(100vh-260px)] sm:min-h-[calc(100vh-180px)] md:min-h-[calc(100vh-240px)] flex flex-col justify-center gap-5 md:gap-6 pt-8 md:pt-14">
+                  <h2 className="text-3xl md:text-5xl font-bold tracking-tight">
+                    Comment puis-je vous <span className="text-primary">aider</span> aujourd&apos;hui ?
+                  </h2>
+                  <p className="text-base md:text-lg text-slate-400">
+                    Accedez instantanement au droit senegalais. Posez vos questions sur le COCC, le Code du Travail ou les procedures administratives.
+                  </p>
+                  <form className="relative group hidden sm:block" onSubmit={handleLandingSubmit}>
+                    <div className="absolute inset-y-0 left-5 flex items-center pointer-events-none">
+                      <span className="material-symbols-outlined text-slate-400 group-focus-within:text-primary transition-colors">
+                        search
+                      </span>
+                    </div>
+                    <input
+                      className="w-full bg-[#1a2e22] border-slate-800 focus:border-primary focus:ring-1 focus:ring-primary rounded-2xl py-4 sm:py-5 pl-12 sm:pl-14 pr-4 sm:pr-24 text-base sm:text-lg text-white placeholder:text-slate-400 shadow-2xl transition-all"
+                      onChange={(event) => setLandingQuery(event.target.value)}
+                      placeholder="Decrivez votre situation juridique..."
+                      type="text"
+                      value={landingQuery}
+                    />
+                    <div className="mt-3 sm:mt-0 sm:absolute sm:inset-y-2 sm:right-2 flex items-center justify-end">
+                      <button
+                        className="w-full sm:w-auto bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-bold px-4 h-11 sm:h-full rounded-xl transition-colors inline-flex items-center justify-center"
+                        type="submit"
+                      >
+                        <span className="material-symbols-outlined filled text-[18px]">north</span>
+                      </button>
+                    </div>
+                  </form>
+                  <div className="w-full pt-2 space-y-3 text-center sm:text-left">
+                    <div className="flex items-end justify-center sm:justify-between">
+                      <div>
+                        <h3 className="text-base font-bold">Domaines d&apos;expertise</h3>
+                        <p className="text-xs text-slate-500">
+                          Parcourez les principales branches du droit senegalais
+                        </p>
+                      </div>
+                      <button className="hidden sm:inline text-[#49DE80] text-sm font-semibold hover:underline" type="button">
+                        Voir tout
+                      </button>
+                    </div>
+                    <div className="sm:hidden space-y-2">
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          ["family_restroom", "Famille", "blue"],
+                          ["work", "Travail", "orange"],
+                          ["home_work", "Immobilier", "teal"]
+                        ].map(([icon, title, tone]) => (
+                          <div className="bg-[#1a2e22] px-2 py-2 rounded-lg border border-slate-800 text-center" key={title}>
+                            <div
+                              className={`size-5 rounded-md flex items-center justify-center mb-1 mx-auto border ${
+                                tone === "blue"
+                                  ? "bg-gradient-to-br from-blue-500/25 to-blue-500/5 text-blue-300 border-blue-400/25"
+                                  : tone === "orange"
+                                    ? "bg-gradient-to-br from-orange-500/25 to-orange-500/5 text-orange-300 border-orange-400/25"
+                                    : "bg-gradient-to-br from-cyan-500/25 to-cyan-500/5 text-cyan-300 border-cyan-400/25"
+                              }`}
+                            >
+                              <span className="material-symbols-outlined filled text-[11px]">{icon}</span>
+                            </div>
+                            <h4 className="font-semibold text-[10px] leading-tight">{title}</h4>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex justify-center">
+                        <div className="w-[32%] min-w-[104px] max-w-[132px] bg-[#1a2e22] px-2 py-2 rounded-lg border border-slate-800 text-center">
+                          <div className="size-5 rounded-md flex items-center justify-center mb-1 mx-auto border bg-gradient-to-br from-[#49DE80]/25 to-[#49DE80]/5 text-[#7ef1a9] border-[#49DE80]/30">
+                            <span className="material-symbols-outlined filled text-[11px]">corporate_fare</span>
+                          </div>
+                          <h4 className="font-semibold text-[10px] leading-tight">Affaires</h4>
+                        </div>
+                      </div>
+                      <button className="text-[#49DE80] text-xs font-semibold hover:underline" type="button">
+                        Voir tout
+                      </button>
+                    </div>
+                    <div className="hidden sm:grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      {[
+                        ["family_restroom", "Droit de la Famille", "Mariage, divorce, autorite parentale et successions au Senegal.", "blue"],
+                        ["work", "Droit du Travail", "Contrats, licenciements, preavis et droits des salaries.", "orange"],
+                        ["home_work", "Immobilier", "Baux d'habitation, foncier et contentieux locatifs.", "teal"],
+                        ["corporate_fare", "Droit des Affaires", "OHADA, creation d'entreprise et fiscalite des societes.", "primary"]
+                      ].map(([icon, title, desc, tone]) => (
+                        <div className="bg-[#1a2e22] p-3 rounded-lg border border-slate-800 hover:border-primary/40 transition-all group cursor-pointer shadow-sm" key={title}>
+                          <div
+                            className={`size-7 rounded-md flex items-center justify-center mb-2 border transition-transform group-hover:scale-105 ${
+                              tone === "blue"
+                                ? "bg-gradient-to-br from-blue-500/25 to-blue-500/5 text-blue-300 border-blue-400/25"
+                                : tone === "orange"
+                                  ? "bg-gradient-to-br from-orange-500/25 to-orange-500/5 text-orange-300 border-orange-400/25"
+                                  : tone === "teal"
+                                    ? "bg-gradient-to-br from-cyan-500/25 to-cyan-500/5 text-cyan-300 border-cyan-400/25"
+                                    : "bg-gradient-to-br from-[#49DE80]/25 to-[#49DE80]/5 text-[#7ef1a9] border-[#49DE80]/30"
+                            }`}
+                          >
+                            <span className="material-symbols-outlined filled text-[14px]">{icon}</span>
+                          </div>
+                          <h4 className="font-semibold text-xs mb-1">{title}</h4>
+                          <p className="text-[11px] text-slate-400 leading-snug">{desc}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              ) : null}
+
+              {turns.map((turn) => (
+                <div className="space-y-6" key={turn.id}>
+                  <div className="flex items-start gap-4 justify-end">
+                    <div className="flex flex-col items-end max-w-[80%]">
+                      <div className="bg-[#21DF6C] text-black px-5 py-3 rounded-2xl rounded-tr-sm shadow-md font-medium">
+                        {turn.displayQuestion ?? turn.question}
+                      </div>
+                      <span className="text-[10px] text-slate-400 mt-2">{nowTimeLabel()} - Lu</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-4">
+                    <div className="size-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0 border border-primary/30">
+                      <span className="material-symbols-outlined text-primary text-xl">smart_toy</span>
+                    </div>
+                    <div className="flex flex-col items-start max-w-[85%]">
+                      <div className="bg-white dark:bg-[#1e2e24] text-slate-900 dark:text-slate-100 px-6 py-5 rounded-2xl rounded-tl-sm shadow-sm border border-slate-200 dark:border-slate-800">
+                        {turn.answer.trim().length > 0 ? (
+                          renderAnswerContent(turn.answer)
+                        ) : (
+                          <p className="leading-relaxed">Analyse en cours...</p>
+                        )}
+                      </div>
+                      <div className="flex gap-4 mt-2 ml-1">
+                        <button
+                          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-primary transition-colors"
+                          onClick={() => copyAnswer(turn.answer)}
+                          type="button"
+                        >
+                          <span className="material-symbols-outlined text-sm">content_copy</span> Copier
+                        </button>
+                        {isActGenerationPrompt(turn.question) ? (
+                          <button
+                            className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-primary transition-colors disabled:opacity-50"
+                            disabled={turn.answer.trim().length === 0}
+                            onClick={() => exportTurnDocument(turn)}
+                            type="button"
+                          >
+                            <span className="material-symbols-outlined text-sm">download</span> Exporter document
+                          </button>
+                        ) : null}
+                        <button
+                          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-primary transition-colors disabled:opacity-50"
+                          disabled={isSending}
+                          onClick={() => sendQuestion(turn.question)}
+                          type="button"
+                        >
+                          <span className="material-symbols-outlined text-sm">refresh</span> Regenerer
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className={`p-3 sm:p-4 lg:p-6 bg-transparent ${!hasConversationStarted ? "sm:hidden" : ""}`}>
+            <div className="max-w-3xl mx-auto">
+              <form
+                className="bg-white dark:bg-[#122118] rounded-2xl p-2 shadow-xl border border-slate-200 dark:border-slate-700 focus-within:ring-2 focus-within:ring-primary/30 transition-all"
+                onSubmit={handleSubmit}
+              >
+                <div className="flex items-end gap-2">
+                  <button
+                    className="p-2.5 text-slate-400 hover:text-primary transition-colors rounded-xl hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+                    onClick={() => composerFileInputRef.current?.click()}
+                    type="button"
+                  >
+                    <span className="material-symbols-outlined">attach_file</span>
+                  </button>
+                  <input
+                    accept=".pdf,.doc,.docx,.txt,.md"
+                    className="hidden"
+                    multiple
+                    onChange={(event) => {
+                      void addWorkspaceFiles(event.target.files);
+                      event.currentTarget.value = "";
+                    }}
+                    ref={composerFileInputRef}
+                    type="file"
+                  />
+                  <textarea
+                    className="flex-1 bg-transparent border-0 p-2.5 text-white caret-white placeholder:text-slate-400 focus:ring-0 resize-none max-h-40 text-base"
+                    onChange={(event) => setInput(event.target.value)}
+                    onKeyDown={handleComposerKeyDown}
+                    placeholder="Analysez un contrat ou posez une question..."
+                    rows={1}
+                    value={input}
+                  ></textarea>
+                  <div className="ml-1 flex items-center gap-1">
+                    <button
+                      className={`p-2.5 transition-colors rounded-xl ${
+                        isRecording
+                          ? "text-red-400 bg-red-500/10 hover:bg-red-500/20"
+                          : "text-slate-400 hover:text-primary hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+                      } ${isTranscribing ? "opacity-60 cursor-not-allowed" : ""}`}
+                      disabled={isTranscribing}
+                      onClick={() => void handleVoiceCapture()}
+                      title={isRecording ? "Arreter l'enregistrement" : "Dicter votre question"}
+                      type="button"
+                    >
+                      <span className="material-symbols-outlined filled text-[24px]">
+                        {isRecording ? "stop_circle" : "mic"}
+                      </span>
+                    </button>
+                    {isSending ? (
+                      <button
+                        className="p-2.5 bg-slate-900 hover:bg-slate-700 text-white rounded-xl transition-all flex items-center justify-center"
+                        onClick={handleCancel}
+                        type="button"
+                      >
+                        <span className="material-symbols-outlined filled">stop</span>
+                      </button>
+                    ) : (
+                      <button
+                        className="p-2.5 bg-[#142A1C] hover:bg-[#1f3d2b] text-[#21C853] rounded-xl transition-all flex items-center justify-center shadow-lg shadow-primary/20 disabled:opacity-50"
+                        disabled={input.trim().length === 0}
+                        type="submit"
+                      >
+                        <span className="material-symbols-outlined filled text-[#21C853]">send</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </form>
+              <p className="text-[10px] text-center text-slate-400 mt-4">
+                Analyses basees sur la legislation senegalaise en vigueur. Consultez un expert pour les decisions critiques.
+              </p>
+              {uiMessage ? <p className="text-xs text-emerald-500 mt-2 text-center">{uiMessage}</p> : null}
+              {globalError ? <p className="text-xs text-red-500 mt-2 text-center">{globalError}</p> : null}
+            </div>
+          </div>
+        </main>
+
+        <aside
+          className={`${isMobileRightPanelOpen ? "fixed inset-y-0 right-0 z-40 flex w-[90vw] max-w-sm shadow-2xl" : "hidden"} ${
+            isWorkspacePanelOpen ? "lg:static lg:z-auto lg:flex lg:w-[400px]" : "lg:hidden"
+          } bg-white dark:bg-[#122118] flex-col shrink-0 overflow-hidden`}
+        >
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Workspace</p>
+            <button
+              className="inline-flex items-center justify-center rounded-md border border-slate-300 dark:border-slate-700 p-1.5"
+              onClick={handleCloseWorkspacePanel}
+              type="button"
+            >
+              <span className="material-symbols-outlined text-sm">close</span>
+            </button>
+          </div>
+          <div className="flex border-b border-slate-200 dark:border-slate-800">
+            <button
+              className={`flex-1 py-4 text-xs font-bold uppercase tracking-widest transition-colors ${
+                rightPanelTab === "workspace"
+                  ? "border-b-2 border-primary text-[#21C853] bg-[#142A1C]"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+              onClick={() => setRightPanelTab("workspace")}
+              type="button"
+            >
+              Workspace
+            </button>
+            <button
+              className={`flex-1 py-4 text-xs font-bold uppercase tracking-widest transition-colors ${
+                rightPanelTab === "notes"
+                  ? "border-b-2 border-primary text-[#21C853] bg-[#142A1C]"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+              onClick={() => setRightPanelTab("notes")}
+              type="button"
+            >
+              Notes
+            </button>
+            <button
+              className={`flex-1 py-4 text-xs font-bold uppercase tracking-widest transition-colors ${
+                rightPanelTab === "files"
+                  ? "border-b-2 border-primary text-[#21C853] bg-[#142A1C]"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+              onClick={() => setRightPanelTab("files")}
+              type="button"
+            >
+              Fichiers
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-5 no-scrollbar">
+            {rightPanelTab === "workspace" ? (
+              <div className="space-y-6">
+                <button
+                  className="w-full border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center text-center group hover:border-primary/50 transition-colors cursor-pointer bg-slate-50/30 dark:bg-[#0a120e]/20"
+                  onClick={() => workspaceFileInputRef.current?.click()}
+                  type="button"
+                >
+                  <div className="size-12 rounded-full bg-slate-100 dark:bg-[#1e2e24] flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                    <span className="material-symbols-outlined text-slate-400 group-hover:text-primary">upload_file</span>
+                  </div>
+                  <p className="text-sm font-semibold">Deposez vos documents ici</p>
+                  <p className="text-[10px] text-slate-500 mt-1">PDF, DOCX, TXT jusqu&apos;a 20MB</p>
+                </button>
+                <input
+                  accept=".pdf,.doc,.docx,.txt,.md"
+                  className="hidden"
+                  multiple
+                  onChange={(event) => {
+                    void addWorkspaceFiles(event.target.files);
+                    event.currentTarget.value = "";
+                  }}
+                  ref={workspaceFileInputRef}
+                  type="file"
+                />
+
+                <div>
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                    <span className="material-symbols-outlined text-sm text-primary">menu_book</span>
+                    Citations Mentionnees
+                  </h3>
+                  <div className="space-y-3">
+                    {citationCards.length === 0 ? (
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                        <p className="text-xs text-slate-500">Aucune citation disponible pour cette reponse.</p>
+                      </div>
+                    ) : (
+                      citationCards.map((card) => (
+                        <div
+                          className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800 group hover:border-primary/30 transition-all"
+                          key={`${card.badge}-${card.meta}`}
+                        >
+                          <div className="flex justify-between items-start mb-2">
+                            <span className="text-[10px] font-bold text-primary px-2 py-0.5 bg-primary/10 rounded">
+                              {card.badge}
+                            </span>
+                            <button className="text-slate-500 hover:text-white" onClick={() => void handleCitationOpen(card)} type="button">
+                              <span className="material-symbols-outlined text-sm">open_in_new</span>
+                            </button>
+                          </div>
+                          <p className="text-xs text-slate-600 dark:text-slate-300 italic leading-relaxed">
+                            "{card.excerpt}"
+                          </p>
+                          <p className="text-[10px] text-slate-500 mt-2">{card.meta}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                    <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Confiance</p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg font-bold">{confidencePercent}%</span>
+                      <div className="flex-1 h-1 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                        <div className="h-full bg-primary" style={{ width: `${confidencePercent}%` }}></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                    <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Sources</p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg font-bold">{displayedSourceCount}</span>
+                      <span className="text-[10px] text-slate-500">textes de loi</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {rightPanelTab === "notes" ? (
+              <div className="space-y-3 pt-2">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                  <span className="material-symbols-outlined text-sm text-primary">edit_note</span>
+                  Prise de notes rapide
+                </h3>
+                <div className="bg-slate-50 dark:bg-[#1e2e24] rounded-xl p-3 border border-slate-100 dark:border-slate-800">
+                  <textarea
+                    className="w-full bg-transparent border-0 p-0 text-sm text-slate-600 dark:text-slate-300 focus:ring-0 min-h-[220px] resize-none"
+                    onChange={(event) => setNotes(event.target.value)}
+                    placeholder="Prenez des notes sur cette analyse..."
+                    value={notes}
+                  ></textarea>
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-700 mt-2">
+                    <span className="text-[10px] text-slate-500">{notes.trim().length} caracteres</span>
+                    <button className="text-[10px] font-bold text-primary uppercase" onClick={() => void persistWorkspaceSnapshot()} type="button">
+                      Sauvegarder maintenant
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {rightPanelTab === "files" ? (
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                  <span className="material-symbols-outlined text-sm text-primary">folder</span>
+                  Fichiers du Workspace
+                </h3>
+                {allWorkspaceFiles.length === 0 ? (
+                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                    <p className="text-xs text-slate-500">Aucun fichier pour le moment. Ajoutez un document depuis le chat.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {allWorkspaceFiles.map((file) => (
+                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800" key={file.id}>
+                        <p className="text-sm font-semibold break-all">{file.name}</p>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          {formatFileSize(file.size)} - {formatDateLabel(file.addedAt)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-[#0a120e]/30">
+            {rightPanelTab === "workspace" ? (
+              <button className="w-full py-3 rounded-xl border border-primary/40 text-primary hover:bg-primary/10 transition-colors text-sm font-bold flex items-center justify-center gap-2" onClick={() => void persistWorkspaceSnapshot()} type="button">
+                <span className="material-symbols-outlined text-sm">cloud_sync</span> Synchroniser le Workspace
+              </button>
+            ) : null}
+            {rightPanelTab === "notes" ? (
+              <button className="w-full py-3 rounded-xl border border-primary/40 text-primary hover:bg-primary/10 transition-colors text-sm font-bold flex items-center justify-center gap-2" onClick={() => setNotes("")} type="button">
+                <span className="material-symbols-outlined text-sm">ink_eraser</span> Vider les notes
+              </button>
+            ) : null}
+            {rightPanelTab === "files" ? (
+              <button className="w-full py-3 rounded-xl border border-primary/40 text-primary hover:bg-primary/10 transition-colors text-sm font-bold flex items-center justify-center gap-2" onClick={() => void handleClearWorkspaceFiles()} type="button">
+                <span className="material-symbols-outlined text-sm">delete</span> Nettoyer les fichiers locaux
+              </button>
+            ) : null}
+          </div>
+        </aside>
+
+        {!isWorkspacePanelOpen ? (
+          <button
+            className="hidden lg:inline-flex fixed right-5 top-20 z-30 items-center gap-2 rounded-full border border-slate-700 bg-[#122118] px-4 py-2 text-xs font-semibold text-slate-200 shadow-xl hover:border-[#49DE80]/40 hover:text-[#49DE80] transition-colors"
+            onClick={handleOpenWorkspacePanel}
+            type="button"
+          >
+            <span className="material-symbols-outlined text-sm">workspaces</span>
+            Workspace
+          </button>
+        ) : null}
+      </div>
+
+      {isActGeneratorOpen ? (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-[1px] flex items-center justify-center p-4">
+          <div className="w-full max-w-6xl max-h-[92vh] overflow-hidden rounded-2xl border border-slate-700 bg-[#122118] shadow-2xl flex flex-col">
+            <div className="p-5 border-b border-slate-800 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-white">Generateur d'acte juridique</h3>
+                <p className="text-sm text-slate-400 mt-1">
+                  Assistant guide en 3 etapes: selection, formulaire, validation.
+                </p>
+              </div>
+              <button
+                className="p-2 rounded-lg border border-slate-700 text-slate-300 hover:bg-white/5 transition-colors"
+                onClick={closeActGenerator}
+                type="button"
+              >
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+
+            <div className="px-5 pt-4">
+              <div className="w-full h-2 rounded-full bg-[#0f1c15] overflow-hidden border border-slate-800">
+                <div className="h-full bg-[#21C853] transition-all duration-300" style={{ width: `${actWizardProgressPercent}%` }} />
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
+                <div className={`rounded-md px-2 py-1 border ${actStep >= 1 ? "border-[#21C853]/40 text-[#21C853] bg-[#21C853]/10" : "border-slate-800"}`}>1. Type d'acte</div>
+                <div className={`rounded-md px-2 py-1 border ${actStep >= 2 ? "border-[#21C853]/40 text-[#21C853] bg-[#21C853]/10" : "border-slate-800"}`}>2. Formulaire guide</div>
+                <div className={`rounded-md px-2 py-1 border ${actStep >= 3 ? "border-[#21C853]/40 text-[#21C853] bg-[#21C853]/10" : "border-slate-800"}`}>3. Previsualisation</div>
+              </div>
+            </div>
+
+            <div className="p-5 overflow-y-auto">
+              {actStep === 1 ? (
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-100">
+                      Contexte complementaire (optionnel)
+                    </label>
+                    <textarea
+                      className="w-full rounded-xl bg-[#0f1c15] border border-slate-700 p-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/40 min-h-[88px]"
+                      onChange={(event) => setActUserIntent(event.target.value)}
+                      placeholder="Ex: urgence, contraintes specifiques, objectif de negociation..."
+                      value={actUserIntent}
+                    ></textarea>
+                  </div>
+
+                  <div className="space-y-3">
+                    <p className="text-sm font-semibold text-slate-100">Choisir le type d'acte</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                      {Object.values(ACT_TEMPLATES).map((template) => {
+                        const isActive = template.type === actType;
+                        return (
+                          <button
+                            className={`text-left rounded-xl border p-3 transition-colors ${
+                              isActive
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-slate-700 bg-[#0f1c15] text-slate-300 hover:border-primary/50"
+                            }`}
+                            key={template.type}
+                            onClick={() => handleActTypeChange(template.type)}
+                            type="button"
+                          >
+                            <p className="font-semibold text-sm">{template.label}</p>
+                            <p className="text-[11px] mt-1 text-slate-400">{template.description}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {actStep === 2 ? (
+                <div className="space-y-5">
+                  <div className="rounded-xl border border-slate-700 bg-[#0f1c15] p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-100">{activeActTemplate.label}</p>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Champs obligatoires remplis: {completedRequiredActFields} / {requiredActFields.length}
+                        </p>
+                      </div>
+                      <span className="text-[11px] px-2 py-1 rounded-full bg-primary/15 text-primary font-semibold">
+                        {activeActTemplate.branch}
+                      </span>
+                    </div>
+                    <div className="mt-3 w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                      <div className="h-full bg-[#21C853]" style={{ width: `${actProgressPercent}%` }} />
+                    </div>
+                  </div>
+
+                  {actMissingItems.length > 0 ? (
+                    <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
+                      <p className="text-sm font-semibold text-amber-300">Le modele signale des informations manquantes:</p>
+                      <ul className="mt-2 list-disc pl-5 space-y-1 text-sm text-amber-100">
+                        {actMissingItems.map((item) => (
+                          <li key={`missing-${item}`}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  <div className="rounded-xl border border-slate-700 bg-[#0f1c15] p-4 space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {activeActTemplate.fields.map((field) => {
+                        const isMissingByModel = missingFieldLabelSet.has(normalizeForMatch(field.label));
+                        const hasValue = (actValues[field.key] ?? "").trim().length > 0;
+                        const fieldBorderClass = isMissingByModel
+                          ? "border-amber-500/60"
+                          : hasValue
+                            ? "border-slate-700"
+                            : "border-slate-800";
+                        const fieldHint =
+                          field.hint ||
+                          field.placeholder ||
+                          "Renseignez l'information la plus precise possible.";
+
+                        return (
+                          <div
+                            className="rounded-xl border border-slate-800 bg-[#13221a] p-3"
+                            key={`act-field-${field.key}`}
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              <p className="text-sm font-semibold text-slate-100">
+                                {field.label}
+                                {field.required ? <span className="text-red-400"> *</span> : null}
+                              </p>
+                              <span
+                                className="material-symbols-outlined text-sm text-slate-400 cursor-help"
+                                title={fieldHint}
+                              >
+                                help
+                              </span>
+                            </div>
+
+                            {field.type === "textarea" ? (
+                              <textarea
+                                className={`w-full rounded-xl bg-[#102017] border ${fieldBorderClass} p-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/40 min-h-[92px]`}
+                                onChange={(event) => handleActFieldChange(field.key, event.target.value)}
+                                placeholder={field.placeholder ?? ""}
+                                value={actValues[field.key] ?? ""}
+                              />
+                            ) : null}
+
+                            {field.type === "select" ? (
+                              <select
+                                className={`w-full rounded-xl bg-[#102017] border ${fieldBorderClass} p-3 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary/40`}
+                                onChange={(event) => handleActFieldChange(field.key, event.target.value)}
+                                value={actValues[field.key] ?? ""}
+                              >
+                                <option value="">Selectionner...</option>
+                                {(field.options ?? []).map((option) => (
+                                  <option key={`${field.key}-${option.value}`} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : null}
+
+                            {(!field.type ||
+                              field.type === "text" ||
+                              field.type === "date" ||
+                              field.type === "number") ? (
+                              <input
+                                className={`w-full rounded-xl bg-[#102017] border ${fieldBorderClass} p-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/40`}
+                                onChange={(event) => handleActFieldChange(field.key, event.target.value)}
+                                placeholder={field.placeholder ?? ""}
+                                type={field.type ?? "text"}
+                                value={actValues[field.key] ?? ""}
+                              />
+                            ) : null}
+
+                            {isMissingByModel ? (
+                              <p className="text-[11px] text-amber-300 mt-2">
+                                A completer selon le dernier retour du modele.
+                              </p>
+                            ) : (
+                              <p className="text-[11px] text-slate-500 mt-2">{fieldHint}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {actFieldError ? (
+                      <p className="text-sm text-red-300">{actFieldError}</p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {actStep === 3 ? (
+                <div className="space-y-4">
+                  {actValidationError ? (
+                    <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
+                      {actValidationError}
+                    </div>
+                  ) : null}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="rounded-xl border border-slate-700 bg-[#0f1c15] p-4">
+                      <h4 className="text-sm font-bold text-slate-100 mb-3">Resume des informations saisies</h4>
+                      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                        {activeActTemplate.fields.map((field) => {
+                          const value = (actValues[field.key] ?? "").trim();
+                          return (
+                            <div className="rounded-lg bg-[#13221a] border border-slate-800 p-2.5" key={`summary-${field.key}`}>
+                              <p className="text-[11px] text-slate-400">{field.label}</p>
+                              <p className={`text-sm ${value ? "text-slate-100" : "text-amber-300"}`}>
+                                {value || "[MANQUANT]"}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {actGeneratedDocument.trim().length > 0 ? (
+                        <div className="mt-3 rounded-lg border border-[#21C853]/35 bg-[#21C853]/10 p-3">
+                          <p className="text-[11px] text-[#7ff0a5] font-semibold uppercase tracking-wide">
+                            Document final pret
+                          </p>
+                          <p className="text-xs text-slate-200 mt-1">
+                            Cliquez sur &quot;Valider et exporter PDF&quot; pour telecharger la version finale.
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="rounded-xl border border-slate-700 bg-[#0f1c15] p-4 flex flex-col">
+                      <div className="flex items-center justify-between gap-3 mb-3">
+                        <h4 className="text-sm font-bold text-slate-100">Mini chat de redaction</h4>
+                        <span className="text-[11px] px-2 py-1 rounded-full bg-[#21C853]/15 text-[#21C853] font-semibold">
+                          A droite
+                        </span>
+                      </div>
+
+                      {actMissingItems.length > 0 ? (
+                        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 mb-3">
+                          <p className="text-sm font-semibold text-amber-300">Informations a completer:</p>
+                          <ul className="mt-2 list-disc pl-5 space-y-1 text-sm text-amber-100">
+                            {actMissingItems.map((item) => (
+                              <li key={`preview-missing-${item}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+
+                      <div className="rounded-xl border border-slate-800 bg-[#0a120e] p-3 h-[300px] overflow-y-auto space-y-2">
+                        {popupChatMessages.length === 0 ? (
+                          <p className="text-xs text-slate-500">
+                            Lancez une premiere demande pour que l&apos;assistant redige ou demande les informations manquantes.
+                          </p>
+                        ) : (
+                          popupChatMessages.map((message) => (
+                            <div
+                              className={`max-w-[92%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap ${
+                                message.role === "user"
+                                  ? "ml-auto bg-[#21C853] text-black"
+                                  : "mr-auto bg-[#13221a] text-slate-100 border border-slate-800"
+                              }`}
+                              key={message.id}
+                            >
+                              {message.content}
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <form
+                        className="mt-3 flex items-center gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void handlePopupChatSubmit();
+                        }}
+                      >
+                        <input
+                          className="flex-1 rounded-xl bg-[#13221a] border border-slate-700 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                          disabled={isPopupChatSending}
+                          onChange={(event) => setPopupChatInput(event.target.value)}
+                          placeholder="Ajoutez une precision (montant, date, parties, clause...)"
+                          value={popupChatInput}
+                        />
+                        <button
+                          className="px-4 py-2.5 rounded-xl bg-[#21C853] hover:bg-[#1db64a] text-[#0a120e] font-semibold transition-colors disabled:opacity-50"
+                          disabled={isPopupChatSending || popupChatInput.trim().length === 0}
+                          type="submit"
+                        >
+                          {isPopupChatSending ? "..." : "Envoyer"}
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="p-4 border-t border-slate-800 flex items-center justify-between gap-2">
+              <div className="text-xs text-slate-500">
+                Etape {actStep} / 3
+              </div>
+              <div className="flex items-center gap-2">
+                {actStep === 1 ? (
+                  <button
+                    className="px-4 py-2 rounded-lg bg-[#21C853] hover:bg-[#1db64a] text-[#0a120e] font-semibold transition-colors"
+                    onClick={handleActStepOneContinue}
+                    type="button"
+                  >
+                    Continuer
+                  </button>
+                ) : null}
+
+                {actStep === 2 ? (
+                  <>
+                    <button
+                      className="px-4 py-2 rounded-lg border border-slate-700 text-slate-300 hover:bg-white/5 transition-colors"
+                      onClick={handleActPrevious}
+                      type="button"
+                    >
+                      Precedent
+                    </button>
+                    <button
+                      className="px-4 py-2 rounded-lg bg-[#21C853] hover:bg-[#1db64a] text-[#0a120e] font-semibold transition-colors"
+                      onClick={handleActNext}
+                      type="button"
+                    >
+                      Previsualiser
+                    </button>
+                  </>
+                ) : null}
+
+                {actStep === 3 ? (
+                  <>
+                    <button
+                      className="px-4 py-2 rounded-lg border border-slate-700 text-slate-300 hover:bg-white/5 transition-colors"
+                      onClick={() => setActStep(2)}
+                      type="button"
+                    >
+                      ✏️ Modifier
+                    </button>
+                    <button
+                      className="px-4 py-2 rounded-lg border border-[#21C853]/40 text-[#21C853] hover:bg-[#21C853]/10 transition-colors disabled:opacity-50"
+                      disabled={actGeneratedDocument.trim().length === 0 || isActValidating}
+                      onClick={exportPopupActDocument}
+                      type="button"
+                    >
+                      {isActValidating ? "Analyse en cours..." : "Valider et exporter PDF"}
+                    </button>
+                  </>
+                ) : null}
+
+                <button
+                  className="px-4 py-2 rounded-lg border border-slate-700 text-slate-300 hover:bg-white/5 transition-colors"
+                  onClick={closeActGenerator}
+                  type="button"
+                >
+                  Fermer
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

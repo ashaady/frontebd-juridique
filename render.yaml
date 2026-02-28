@@ -1,0 +1,52 @@
+services:
+  - type: web
+    name: chatbot-juridique-backend
+    env: python
+    plan: starter
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT --workers 2
+    healthCheckPath: /ready
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LLM_PROVIDER
+        value: nvidia
+      - key: NVIDIA_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: NVIDIA_MODEL
+        value: deepseek-ai/deepseek-v3.2
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: API_DOCS_ENABLED
+        value: "false"
+      - key: REQUEST_MAX_BODY_MB
+        value: "25"
+      - key: GZIP_ENABLED
+        value: "true"
+      - key: GZIP_MIN_SIZE
+        value: "500"
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_REQUESTS_PER_MINUTE
+        value: "120"
+      - key: RAG_ENABLED
+        value: "true"
+      - key: RAG_INDEX_DIR
+        value: data/index
+      - key: LEGAL_DATA_DIR
+        value: droit donnees
+      - key: RAG_EMBEDDING_MODEL
+        value: Snowflake/snowflake-arctic-embed-l-v2.0
+      - key: SPEECH_ENABLED
+        value: "false"
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: ALLOWED_ORIGIN_REGEX
+        sync: false
+      - key: TRUSTED_HOSTS
+        sync: false
+    disk:
+      name: app-state
+      mountPath: /opt/render/project/src/data/app_state
+      sizeGB: 1

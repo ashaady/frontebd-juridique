@@ -18,7 +18,17 @@ Example `.env`:
 NVIDIA_API_KEY=your_new_key_here
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 NVIDIA_MODEL=deepseek-ai/deepseek-v3.2
-ALLOWED_ORIGINS=http://localhost:3000
+ALLOWED_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
+ALLOWED_ORIGIN_REGEX=
+```
+
+DeepSeek official API (local test only) example:
+
+```env
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=your_deepseek_key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
 ```
 
 ## 2) Install and run
@@ -33,6 +43,7 @@ uvicorn backend.app.main:app --reload --port 8000
 ## 3) Endpoints
 
 - `GET /health`
+- `GET /ready`
 - `POST /chat` (JSON final, non-streaming)
 - `POST /chat/stream` (SSE)
 
@@ -40,6 +51,12 @@ uvicorn backend.app.main:app --reload --port 8000
 
 ```bash
 curl http://localhost:8000/health
+```
+
+### `/ready` example
+
+```bash
+curl http://localhost:8000/ready
 ```
 
 ### `/chat/stream` example
@@ -328,10 +345,118 @@ npm run dev
 ```
 
 The app runs on:
-- `http://localhost:3000`
+- `http://localhost:3001`
 
 If needed, set backend URL in `frontend/.env.local`:
 
 ```env
 NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000
 ```
+
+## 10) Production deployment checklist
+
+OVH VPS step-by-step guide:
+- `docs/DEPLOY_VPS_OVH.md`
+
+### Backend environment (required)
+
+Use `.env` with production-safe values:
+
+```env
+APP_ENV=production
+LLM_PROVIDER=nvidia
+NVIDIA_API_KEY=your_real_key
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_MODEL=deepseek-ai/deepseek-v3.2
+
+ALLOWED_ORIGINS=https://your-frontend-domain.com
+ALLOWED_ORIGIN_REGEX=https://.*\.vercel\.app
+TRUSTED_HOSTS=your-api-domain.com
+API_DOCS_ENABLED=false
+REQUEST_MAX_BODY_MB=25
+GZIP_ENABLED=true
+GZIP_MIN_SIZE=500
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_REQUESTS_PER_MINUTE=120
+
+RAG_ENABLED=true
+RAG_INDEX_DIR=data/index
+LEGAL_DATA_DIR=droit donnees
+RAG_EMBEDDING_MODEL=Snowflake/snowflake-arctic-embed-l-v2.0
+
+SPEECH_ENABLED=false
+```
+
+Notes:
+- `TRUSTED_HOSTS` must match your API host(s).
+- Use `ALLOWED_ORIGIN_REGEX` to authorize Vercel preview domains.
+- `LEGAL_DATA_DIR` controls where downloadable PDF files are discovered (recursive scan).
+- Keep `SPEECH_ENABLED=false` unless your server is sized for Whisper.
+- Ensure `data/index/index.faiss` and `data/index/meta.jsonl` exist on the server.
+
+### Render blueprint
+
+The repository now includes `render.yaml` for one-click backend deployment on Render.
+You still need to set sensitive values in Render dashboard:
+- `NVIDIA_API_KEY`
+- `ALLOWED_ORIGINS`
+- `TRUSTED_HOSTS`
+
+### Railway deployment (ready)
+
+The repository now includes:
+- `railway.toml`
+- `Procfile`
+
+Both point to the same backend start command:
+
+```bash
+uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+Minimal Railway variables to set:
+- `APP_ENV=production`
+- `LLM_PROVIDER=nvidia`
+- `NVIDIA_API_KEY=...`
+- `NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1`
+- `NVIDIA_MODEL=deepseek-ai/deepseek-v3.2`
+- `ALLOWED_ORIGINS=https://your-frontend-domain.com`
+- `TRUSTED_HOSTS=your-railway-domain.up.railway.app`
+- `RAG_ENABLED=true`
+- `RAG_INDEX_DIR=data/index`
+- `LEGAL_DATA_DIR=droit donnees`
+
+Optional (recommended for browser testing from multiple origins):
+- `ALLOWED_ORIGIN_REGEX=^https?://(localhost|127\\.0\\.0\\.1|.*\\.railway\\.app|.*\\.vercel\\.app)(:\\d+)?$`
+
+### Backend run command (Linux production)
+
+```bash
+uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --workers 2
+```
+
+### Frontend build/start (production)
+
+```bash
+cd frontend
+npm ci
+npm run build
+npm run start:fast
+```
+
+Set frontend env:
+
+```env
+NEXT_PUBLIC_BACKEND_URL=https://your-api-domain.com
+```
+
+### Readiness validation before traffic
+
+```bash
+curl https://your-api-domain.com/health
+curl https://your-api-domain.com/ready
+```
+
+Expected:
+- `/health` returns `status=ok`
+- `/ready` returns `status=ready`

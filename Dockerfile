@@ -2,20 +2,20 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    SPEECH_ENABLED=false
 
 WORKDIR /app
 
 # Runtime system dependencies:
 # - libgomp1: required by faiss CPU wheels
-# - ffmpeg: used by speech/audio transcription path
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 ffmpeg \
+    && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./requirements.txt
+COPY requirements.runtime.txt ./requirements.runtime.txt
 RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && pip install -r requirements.runtime.txt
 
 # Application code
 COPY backend ./backend

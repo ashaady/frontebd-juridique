@@ -1,0 +1,457 @@
+GUIDE COMPLET DEPLOIEMENT - CHATBOT JURIDIQUE (OVH VPS)
+Version: 2026-02-26
+Public: Windows + VPS OVH Ubuntu
+Format: pas a pas, tres detaille, copy/paste
+
+========================================================================
+0) OBJECTIF
+========================================================================
+Ce guide te permet de:
+1. Deployer ton backend RAG sur ton VPS OVH.
+2. Garder toutes les fonctionnalites locales en ligne:
+   - chat
+   - RAG
+   - bibliotheque PDF
+   - ouverture PDF en lecture (pas telechargement force)
+   - sources workspace
+3. Exposer le backend proprement (Nginx + SSL optionnel).
+4. Connecter le frontend web et l'app mobile au backend VPS.
+
+IMPORTANT:
+- Le backend attend les fichiers RAG deja construits dans data/index.
+- Le backend attend les PDF dans le dossier droit donnees.
+- Sans ces fichiers, /ready peut etre en erreur ou le RAG sera incomplet.
+
+========================================================================
+1) ARCHITECTURE CIBLE
+========================================================================
+[Frontend Web] ----HTTP/HTTPS----\
+                                  > [Nginx] -> [Uvicorn FastAPI backend]
+[App mobile]  ----HTTP/HTTPS----/                     |
+                                                      -> data/index (FAISS)
+                                                      -> droit donnees (PDF)
+
+Sur VPS:
+- Service Python: backend.app.main:app
+- Port interne app: 8000
+- Port externe: 80/443 via Nginx
+
+========================================================================
+2) PRE-REQUIS LOCAL (TON PC WINDOWS)
+========================================================================
+Tu dois avoir:
+1. Git installe.
+2. Un terminal (PowerShell + idealement Git Bash).
+3. Acces SSH au VPS OVH.
+4. Le repo projet local complet (avec data/index + droit donnees si non versionnes).
+
+Verification rapide (PowerShell):
+1. git --version
+2. ssh -V
+
+========================================================================
+3) INFOS OVH ET CONNEXION INITIALE
+========================================================================
+D'apres ton email OVH:
+- Hostname: vps-8e372960.vps.ovh.net
+- IPv4: 51.77.211.7
+- User: ubuntu
+
+Etape 1 - Recuperer le mot de passe:
+1. Ouvre le lien "secret" OVH recu par email.
+2. Genere/recupere le mot de passe du user ubuntu.
+
+Etape 2 - Premiere connexion SSH:
+1. Ouvre PowerShell.
+2. Lance:
+   ssh ubuntu@51.77.211.7
+3. Si demande "Are you sure...":
+   tape yes
+4. Entre le mot de passe OVH.
+
+Tu dois arriver sur un shell Linux du VPS.
+
+========================================================================
+4) SECURISATION MINIMALE VPS (RECOMMANDE)
+========================================================================
+4.1 Mise a jour systeme:
+1. sudo apt-get update
+2. sudo apt-get upgrade -y
+
+4.2 Firewall UFW:
+1. sudo ufw allow OpenSSH
+2. sudo ufw allow 80/tcp
+3. sudo ufw allow 443/tcp
+4. sudo ufw enable
+5. sudo ufw status
+
+4.3 Timezone (optionnel):
+1. timedatectl status
+2. sudo timedatectl set-timezone Africa/Dakar
+
+========================================================================
+5) TRANSFERER LE PROJET SUR LE VPS
+========================================================================
+Tu as 2 methodes. Prends UNE methode.
+
+METHODE A (recommandee): rsync depuis ton PC
+Prerequis: utiliser Git Bash (ou WSL) pour rsync.
+
+Depuis ton PC, dans le dossier parent du projet:
+1. cd "C:/Users/abtru/Desktop"
+2. rsync -avz --delete \
+   --exclude ".git" \
+   --exclude "frontend/node_modules" \
+   --exclude "frontend/.next" \
+   --exclude "mobile_flutter/build" \
+   --exclude "mobile_flutter/.dart_tool" \
+   --exclude ".venv" \
+   "Chatbot juridique - Copie/" \
+   ubuntu@51.77.211.7:/home/ubuntu/chatbot-juridique/
+
+METHODE B: Git clone sur VPS (si tout est versionne)
+1. ssh ubuntu@51.77.211.7
+2. cd /home/ubuntu
+3. git clone <URL_REPO_BACKEND> chatbot-juridique
+
+ATTENTION:
+- Si data/index ou droit donnees ne sont PAS dans git, utilise METHODE A.
+
+========================================================================
+6) BOOTSTRAP BACKEND SUR VPS
+========================================================================
+Connecte-toi au VPS:
+1. ssh ubuntu@51.77.211.7
+2. cd /home/ubuntu/chatbot-juridique
+
+Rendre scripts executables:
+1. chmod +x scripts/vps/bootstrap_backend.sh
+2. chmod +x scripts/vps/run_backend.sh
+
+Installer dependances runtime:
+1. ./scripts/vps/bootstrap_backend.sh
+
+Si tu veux aussi executer ingestion/chunking/embedding sur VPS:
+1. ./scripts/vps/bootstrap_backend.sh --with-ingestion
+
+Ce que le script installe:
+- python3, venv, pip
+- libgomp1 (faiss)
+- tesseract-ocr + fra
+- ffmpeg, poppler-utils
+- requirements runtime (ou complet)
+
+========================================================================
+7) VERIFIER LES FICHIERS CRITIQUES (RAG + PDF)
+========================================================================
+Depuis /home/ubuntu/chatbot-juridique:
+
+7.1 Verifier index RAG:
+1. ls -lh data/index/index.faiss
+2. ls -lh data/index/meta.jsonl
+
+7.2 Verifier PDF bibliotheque:
+1. find "droit donnees" -type f -iname "*.pdf" | wc -l
+
+7.3 Verifier quelques dossiers cibles:
+1. ls -la "droit donnees/Code-de-Déontologie-vers°mars2019"
+2. ls -la "droit donnees/Loi n° 2010-03 du 9 avril 2010 relative au VIH SIDA"
+3. ls -la "droit donnees/loi_sur_la_cybercriminalite"
+
+Si un dossier n'existe pas, recopie les donnees avant d'aller plus loin.
+
+========================================================================
+8) CONFIGURER .env PRODUCTION
+========================================================================
+Depuis /home/ubuntu/chatbot-juridique:
+1. cp .env.example .env
+2. nano .env
+
+Configuration minimale conseillee (NVIDIA):
+
+APP_ENV=production
+LLM_PROVIDER=nvidia
+NVIDIA_API_KEY=TA_CLE_REELLE
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_MODEL=deepseek-ai/deepseek-v3.2
+
+RAG_ENABLED=true
+RAG_INDEX_DIR=data/index
+LEGAL_DATA_DIR=droit donnees
+
+SPEECH_ENABLED=false
+RAG_RERANKER_ENABLED=false
+
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:7410,http://127.0.0.1:7410,https://TON_FRONTEND_WEB
+TRUSTED_HOSTS=localhost,127.0.0.1,51.77.211.7,TON_DOMAINE_BACKEND
+
+Si tu utilises OLLAMA a la place:
+APP_ENV=production
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+OLLAMA_MODEL=deepseek-v3.1:671b-cloud
+OLLAMA_API_KEY=ollama
+
+IMPORTANT:
+- Si tu laisses NVIDIA_API_KEY vide avec LLM_PROVIDER=nvidia, le chat echouera.
+- Pour mobile + web + local, garde ALLOWED_ORIGINS large pendant tests.
+
+========================================================================
+9) TEST MANUEL BACKEND (AVANT SERVICE)
+========================================================================
+Lancer backend manuellement:
+1. ./scripts/vps/run_backend.sh
+
+Ouvre un 2e terminal SSH et teste:
+1. curl http://127.0.0.1:8000/health
+2. curl http://127.0.0.1:8000/ready
+3. curl http://127.0.0.1:8000/docs
+
+Resultat attendu:
+- /health -> status ok
+- /ready -> status ready
+
+Test bibliotheque:
+1. curl "http://127.0.0.1:8000/library/documents"
+2. Recupere un id de document
+3. curl -I "http://127.0.0.1:8000/library/documents/<ID>/view"
+
+Resultat attendu sur /view:
+- HTTP 200
+- Content-Type: application/pdf
+- Content-Disposition: inline
+
+Arreter le backend manuel:
+- Ctrl+C
+
+========================================================================
+10) PASSER EN SERVICE SYSTEMD
+========================================================================
+Le projet contient:
+- deploy/systemd/juridique-backend.service
+
+10.1 Adapter le fichier si besoin:
+1. nano deploy/systemd/juridique-backend.service
+2. Verifie:
+   - User=ubuntu
+   - WorkingDirectory=/home/ubuntu/chatbot-juridique
+   - ExecStart=/home/ubuntu/chatbot-juridique/scripts/vps/run_backend.sh
+
+10.2 Installer le service:
+1. sudo cp deploy/systemd/juridique-backend.service /etc/systemd/system/
+2. sudo systemctl daemon-reload
+3. sudo systemctl enable juridique-backend
+4. sudo systemctl start juridique-backend
+5. sudo systemctl status juridique-backend --no-pager
+
+10.3 Logs en direct:
+1. journalctl -u juridique-backend -f
+
+========================================================================
+11) NGINX REVERSE PROXY (RECOMMANDE)
+========================================================================
+11.1 Installer Nginx:
+1. sudo apt-get install -y nginx
+
+11.2 Copier la config fournie:
+1. sudo cp deploy/nginx/juridique-backend.conf /etc/nginx/sites-available/juridique-backend
+2. sudo ln -s /etc/nginx/sites-available/juridique-backend /etc/nginx/sites-enabled/juridique-backend
+
+11.3 Editer server_name:
+1. sudo nano /etc/nginx/sites-available/juridique-backend
+2. Remplace backend.example.com par ton vrai domaine.
+
+11.4 Tester et recharger:
+1. sudo nginx -t
+2. sudo systemctl reload nginx
+
+Test:
+1. curl -I http://TON_DOMAINE
+2. curl http://TON_DOMAINE/health
+
+========================================================================
+12) SSL HTTPS (CERTBOT)
+========================================================================
+Prerequis:
+- Domaine pointe vers 51.77.211.7 (A record).
+
+12.1 Installer certbot:
+1. sudo apt-get install -y certbot python3-certbot-nginx
+
+12.2 Generer certificat:
+1. sudo certbot --nginx -d TON_DOMAINE
+
+12.3 Verifier renouvellement auto:
+1. sudo systemctl status certbot.timer
+2. sudo certbot renew --dry-run
+
+========================================================================
+13) DNS (SI TU UTILISES UN DOMAINE)
+========================================================================
+Chez ton registrar:
+1. Type: A
+2. Name: backend (ou @)
+3. Value: 51.77.211.7
+4. TTL: 300 ou Auto
+
+Attendre propagation (5 min a 24h).
+
+========================================================================
+14) BRANCHER LE FRONTEND WEB
+========================================================================
+En local (repo frontend):
+1. cd frontend
+2. cree/edite .env.local
+3. ajoute:
+   NEXT_PUBLIC_BACKEND_URL=https://TON_DOMAINE
+
+Puis:
+1. npm install
+2. npm run dev
+
+Test web:
+1. Ouvre la page chat
+2. Pose une question
+3. Verifie que la reponse complete arrive (stream tokens)
+4. Va dans bibliotheque
+5. Ouvre un PDF (lecture, pas telechargement force)
+
+========================================================================
+15) BRANCHER L'APP MOBILE
+========================================================================
+L'app lit BACKEND_URL via --dart-define.
+
+Exemple Android:
+1. cd mobile_flutter
+2. flutter clean
+3. flutter pub get
+4. flutter run --dart-define=BACKEND_URL=https://TON_DOMAINE
+
+Exemple iOS:
+1. flutter run --dart-define=BACKEND_URL=https://TON_DOMAINE
+
+Test mobile:
+1. Ouvre bibliotheque
+2. Clique un PDF
+3. Il doit s'ouvrir dans le reader integre de l'app
+4. Depuis workspace source, clique une source
+5. Il doit ouvrir le PDF cible, idealement a la page d'article si fournie
+
+========================================================================
+16) CHECKLIST FINALE POST-DEPLOIEMENT
+========================================================================
+Backend:
+1. /health = OK
+2. /ready = OK
+3. /docs = OK
+4. /chat = OK
+5. /chat/stream = OK
+
+RAG:
+1. data/index/index.faiss present
+2. data/index/meta.jsonl present
+3. reponse avec sources
+
+Bibliotheque:
+1. /library/documents retourne des items
+2. /library/documents/<id>/view renvoie PDF inline
+3. web et mobile ouvrent le PDF sans telechargement force
+
+Securite:
+1. APP_ENV=production
+2. Cles API correctes
+3. UFW actif
+4. HTTPS actif (si domaine)
+
+========================================================================
+17) MISE A JOUR FUTURE (WORKFLOW SIMPLE)
+========================================================================
+Quand tu modifies le code en local:
+1. rsync vers VPS (meme commande section 5)
+2. ssh ubuntu@51.77.211.7
+3. cd /home/ubuntu/chatbot-juridique
+4. source .venv/bin/activate
+5. pip install -r requirements.runtime.txt   (si deps changent)
+6. sudo systemctl restart juridique-backend
+7. sudo systemctl status juridique-backend --no-pager
+8. curl http://127.0.0.1:8000/ready
+
+Si tu ajoutes de nouveaux PDF et reconstruis le RAG en local:
+1. Rebuild local ingestion/chunk/embedding/index
+2. rsync du repo (incluant data/index et droit donnees)
+3. restart service
+
+========================================================================
+18) TROUBLESHOOTING RAPIDE
+========================================================================
+Cas A - 502 Bad Gateway (Nginx):
+1. sudo systemctl status juridique-backend --no-pager
+2. journalctl -u juridique-backend -n 200 --no-pager
+3. curl http://127.0.0.1:8000/health
+4. si backend KO, corrige .env / deps / index manquant
+
+Cas B - /ready en 503:
+Cause frequente:
+- index.faiss ou meta.jsonl manquant
+Action:
+1. ls -lh data/index/
+2. recopier index
+
+Cas C - CORS bloque dans navigateur:
+1. verifier ALLOWED_ORIGINS dans .env
+2. inclure exactement l'origine frontend (schema + domaine + port)
+3. restart service
+
+Cas D - PDF ne s'ouvre pas et telecharge:
+1. tester endpoint /view avec curl -I
+2. verifier Content-Disposition inline
+3. verifier frontend/mobile utilise bien /view (pas /download)
+
+Cas E - Mobile n'atteint pas backend:
+1. verifier --dart-define BACKEND_URL
+2. verifier que l'URL est accessible depuis le telephone (reseau)
+3. si HTTP non-SSL externe, certains appareils le bloquent
+
+Cas F - Reponses RAG lentes:
+1. garder UVICORN_WORKERS=1 sur 8GB RAM
+2. SPEECH_ENABLED=false
+3. RAG_RERANKER_ENABLED=false (ou ajuster plus tard)
+
+========================================================================
+19) COMMANDES UTILES MEMO
+========================================================================
+Service:
+1. sudo systemctl start juridique-backend
+2. sudo systemctl stop juridique-backend
+3. sudo systemctl restart juridique-backend
+4. sudo systemctl status juridique-backend --no-pager
+5. journalctl -u juridique-backend -f
+
+Nginx:
+1. sudo nginx -t
+2. sudo systemctl reload nginx
+3. sudo systemctl status nginx --no-pager
+
+API tests:
+1. curl http://127.0.0.1:8000/health
+2. curl http://127.0.0.1:8000/ready
+3. curl "http://127.0.0.1:8000/library/documents"
+
+========================================================================
+20) CHEMINS IMPORTANTS DANS TON PROJET
+========================================================================
+/home/ubuntu/chatbot-juridique/.env
+/home/ubuntu/chatbot-juridique/data/index/index.faiss
+/home/ubuntu/chatbot-juridique/data/index/meta.jsonl
+/home/ubuntu/chatbot-juridique/droit donnees/
+/home/ubuntu/chatbot-juridique/scripts/vps/bootstrap_backend.sh
+/home/ubuntu/chatbot-juridique/scripts/vps/run_backend.sh
+/etc/systemd/system/juridique-backend.service
+/etc/nginx/sites-available/juridique-backend
+
+========================================================================
+FIN DU GUIDE
+========================================================================
+
+Si tu veux, tu peux dupliquer ce fichier et faire une version "checklist courte"
+pour les redeploiements quotidiens.

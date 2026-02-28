@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,23 @@ HEADING_PATTERNS = {
     "titre": re.compile(r"^\s*titre\b.*$", re.IGNORECASE),
     "chapitre": re.compile(r"^\s*chapitre\b.*$", re.IGNORECASE),
     "section": re.compile(r"^\s*section\b.*$", re.IGNORECASE),
+}
+JURIS_CASE_HEADER_RE = re.compile(
+    r"^ARRET\s+N(?:°|O)?\s*(?P<number>[0-9]+(?:[-/][0-9]+)?)\s+DU\s+(?P<date>.+)$"
+)
+JURIS_ANCHOR_RE = re.compile(r"\bLA COUR SUPREME\b")
+JURIS_CHAMBER_RE = re.compile(
+    r"\bCHAMBRE[S]?\s+(CRIMINELLE|SOCIALE|ADMINISTRATIVE|CIVILE(?:\s+ET\s+COMMERCIALE)?|REUNIES?)\b"
+)
+JURIS_NOISE_LINE_PATTERNS = [
+    re.compile(r"^BULLETIN DES ARRETS\b"),
+    re.compile(r"^ARRETS DE LA COUR SUPREME\b"),
+    re.compile(r"^CHAMBRE (CRIMINELLE|SOCIALE|ADMINISTRATIVE|CIVILE(?: ET COMMERCIALE)?)\s+\d+\b"),
+    re.compile(r"^\d+\s*$"),
+]
+JURIS_EXCLUDED_BASENAMES_FOLDED = {
+    "LOI-ORGANIQUE_N_2022-16_DU_23_MAI_2022.PDF",
+    "LOI ORGANIQUE N°2017-09 DU 17 JANVIER 2017 ABROGEANT ET REMPLACANT LA LOI ORGANIQUE N° 2008-35 DU 8 AOUT 2008 SUR LA COUR SUPREME.PDF",
 }
 
 
@@ -121,6 +139,299 @@ def normalize_text(text: str) -> str:
         prev_empty = False
         compacted.append(line)
     return "\n".join(compacted).strip()
+
+
+def fold_for_match(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text)
+    stripped = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return " ".join(stripped.replace("\xa0", " ").split()).upper()
+
+
+def should_use_jurisprudence_chunking(doc: dict[str, Any]) -> bool:
+    relative_path = str(doc.get("relative_path") or "")
+    if not relative_path:
+        return False
+    folded = fold_for_match(relative_path)
+    if "COUR SUPREME/" not in folded:
+        return False
+    basename = folded.rsplit("/", 1)[-1]
+    if basename in JURIS_EXCLUDED_BASENAMES_FOLDED:
+        return False
+    return True
+
+
+def parse_juris_case_header(line: str) -> dict[str, str] | None:
+    clean_line = " ".join(line.split())
+    if not clean_line:
+        return None
+    folded = fold_for_match(clean_line)
+    match = JURIS_CASE_HEADER_RE.match(folded)
+    if not match:
+        return None
+    return {
+        "raw_header": clean_line,
+        "case_number": match.group("number").strip(),
+        "case_date": match.group("date").strip(),
+    }
+
+
+def clean_juris_line(line: str) -> str:
+    clean_line = " ".join(line.split())
+    if not clean_line:
+        return ""
+    folded = fold_for_match(clean_line)
+    for pattern in JURIS_NOISE_LINE_PATTERNS:
+        if pattern.match(folded):
+            return ""
+    return clean_line
+
+
+def detect_juris_chamber(text: str) -> str | None:
+    folded = fold_for_match(text)
+    match = JURIS_CHAMBER_RE.search(folded)
+    if not match:
+        return None
+    chamber = match.group(1).strip().lower()
+    return chamber
+
+
+def split_juris_sections(text: str) -> dict[str, str]:
+    normalized = normalize_text(text)
+    if not normalized:
+        return {"headnote": "", "motifs": "", "dispositif": ""}
+
+    intro_match = re.search(r"\b(La\s+Cour\s+supr[eê]me|Attendu(?:\s+que)?)\b", normalized, re.IGNORECASE)
+    dispo_match = re.search(r"\bPar\s+ces\s+motifs\b", normalized, re.IGNORECASE)
+
+    intro_start = intro_match.start() if intro_match else None
+    dispo_start = dispo_match.start() if dispo_match else None
+
+    if intro_start is None and dispo_start is None:
+        return {"headnote": normalized, "motifs": "", "dispositif": ""}
+    if intro_start is None and dispo_start is not None:
+        return {
+            "headnote": normalize_text(normalized[:dispo_start]),
+            "motifs": "",
+            "dispositif": normalize_text(normalized[dispo_start:]),
+        }
+    if intro_start is not None and dispo_start is None:
+        return {
+            "headnote": normalize_text(normalized[:intro_start]),
+            "motifs": normalize_text(normalized[intro_start:]),
+            "dispositif": "",
+        }
+    # Both intro and dispositif found.
+    if intro_start is not None and dispo_start is not None and dispo_start < intro_start:
+        return {
+            "headnote": normalize_text(normalized[:dispo_start]),
+            "motifs": normalize_text(normalized[dispo_start:]),
+            "dispositif": "",
+        }
+    return {
+        "headnote": normalize_text(normalized[: intro_start or 0]),
+        "motifs": normalize_text(normalized[intro_start:dispo_start]),
+        "dispositif": normalize_text(normalized[dispo_start:]),
+    }
+
+
+def extract_juris_cases(doc: dict[str, Any]) -> list[dict[str, Any]]:
+    pages = doc.get("pages", [])
+    if not pages:
+        return []
+
+    lines_by_page: list[list[str]] = []
+    folded_by_page: list[list[str]] = []
+    page_numbers: list[int] = []
+    methods_by_page: list[str] = []
+
+    for page in pages:
+        text = normalize_text(page.get("text", ""))
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        lines_by_page.append(lines)
+        folded_by_page.append([fold_for_match(line) for line in lines])
+        page_numbers.append(int(page.get("page_number", 0)))
+        methods_by_page.append(str(page.get("extraction_method", "native")))
+
+    starts: list[dict[str, Any]] = []
+    for page_idx, lines in enumerate(lines_by_page):
+        folded_lines = folded_by_page[page_idx]
+        if not lines:
+            continue
+        has_sommaire = any(
+            folded.startswith("SOMMAIRE") or folded.startswith("SOMMAIRES")
+            for folded in folded_lines[:25]
+        )
+        next_folded: list[str] = []
+        if page_idx + 1 < len(folded_by_page):
+            next_folded = folded_by_page[page_idx + 1][:40]
+
+        for line_idx, raw_line in enumerate(lines):
+            header = parse_juris_case_header(raw_line)
+            if header is None:
+                continue
+            if has_sommaire:
+                continue
+            context = "\n".join(folded_lines[line_idx: line_idx + 140] + next_folded)
+            if not JURIS_ANCHOR_RE.search(context):
+                continue
+            starts.append(
+                {
+                    "page_idx": page_idx,
+                    "line_idx": line_idx,
+                    "page_number": page_numbers[page_idx],
+                    "raw_header": header["raw_header"],
+                    "case_number": header["case_number"],
+                    "case_date": header["case_date"],
+                }
+            )
+
+    if not starts:
+        return []
+
+    cases: list[dict[str, Any]] = []
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else None
+        collected_lines: list[str] = []
+        collected_pages: list[int] = []
+        source_methods: set[str] = set()
+
+        for page_idx in range(start["page_idx"], (end["page_idx"] + 1) if end else len(lines_by_page)):
+            lines = lines_by_page[page_idx]
+            start_line = start["line_idx"] if page_idx == start["page_idx"] else 0
+            end_line = end["line_idx"] if end and page_idx == end["page_idx"] else len(lines)
+            for raw_line in lines[start_line:end_line]:
+                clean_line = clean_juris_line(raw_line)
+                if not clean_line:
+                    continue
+                collected_lines.append(clean_line)
+                collected_pages.append(page_numbers[page_idx])
+            if collected_pages:
+                source_methods.add(methods_by_page[page_idx])
+
+        case_text = normalize_text("\n".join(collected_lines))
+        if len(case_text) < 240:
+            continue
+        folded_case_text = fold_for_match(case_text)
+        if "LA COUR SUPREME" not in folded_case_text:
+            continue
+        if "ATTENDU" not in folded_case_text and "PAR CES MOTIFS" not in folded_case_text:
+            continue
+
+        chamber = detect_juris_chamber(case_text)
+        page_start = min(collected_pages) if collected_pages else start["page_number"]
+        page_end = max(collected_pages) if collected_pages else start["page_number"]
+
+        cases.append(
+            {
+                "raw_header": start["raw_header"],
+                "case_number": start["case_number"],
+                "case_date": start["case_date"],
+                "chamber": chamber,
+                "page_start": page_start,
+                "page_end": page_end,
+                "page_numbers": sorted(set(collected_pages)) if collected_pages else [start["page_number"]],
+                "source_methods": sorted(source_methods) if source_methods else ["native"],
+                "text": case_text,
+            }
+        )
+
+    return cases
+
+
+def build_jurisprudence_chunks_for_document(
+    doc: dict[str, Any],
+    max_tokens: int,
+    min_chunk_chars: int,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    cases = extract_juris_cases(doc)
+    if not cases:
+        stats = {
+            "blocks_total": 0,
+            "article_headers_detected": 0,
+            "chunks_total": 0,
+            "chunks_with_article_hint": 0,
+            "long_article_extra_parts": 0,
+            "dedup_removed": 0,
+            "oversized_units_split": 0,
+            "control_char_filtered": 0,
+            "strict_multi_header_splits": 0,
+            "toc_pages_skipped": 0,
+            "toc_lines_skipped": 0,
+        }
+        return [], stats
+
+    chunks: list[dict[str, Any]] = []
+    chunk_idx = 0
+    split_count = 0
+    control_char_filtered = 0
+
+    for case in cases:
+        article_hint = f"Arrêt N°{case['case_number']} du {case['case_date']}"
+        sections = split_juris_sections(case["text"])
+
+        for section_type in ("headnote", "motifs", "dispositif"):
+            section_text = normalize_text(sections.get(section_type, ""))
+            if not section_text:
+                continue
+
+            if section_type == "motifs":
+                parts = split_text_to_max_tokens(section_text, max_tokens=min(max_tokens, 700))
+            else:
+                parts = [section_text]
+
+            if len(parts) > 1:
+                split_count += len(parts) - 1
+
+            for part_idx, part_text in enumerate(parts, start=1):
+                if len(part_text) < min_chunk_chars:
+                    continue
+                if control_char_ratio(part_text) > 0.05:
+                    control_char_filtered += 1
+                    continue
+                chunks.append(
+                    {
+                        "chunk_id": f"{doc['doc_id']}_{chunk_idx:05d}",
+                        "doc_id": doc["doc_id"],
+                        "relative_path": doc["relative_path"],
+                        "domain": doc.get("domain"),
+                        "source_path": doc.get("source_path"),
+                        "article_hint": article_hint,
+                        "heading_livre": None,
+                        "heading_titre": None,
+                        "heading_chapitre": None,
+                        "heading_section": None,
+                        "page_start": case["page_start"],
+                        "page_end": case["page_end"],
+                        "page_numbers": case["page_numbers"],
+                        "source_methods": case["source_methods"],
+                        "chunk_part_index": part_idx,
+                        "chunk_part_total": len(parts),
+                        "text": part_text,
+                        "char_count": len(part_text),
+                        "token_count_est": estimate_tokens(part_text),
+                        "jurisprudence": True,
+                        "juris_case_number": case["case_number"],
+                        "juris_case_date": case["case_date"],
+                        "juris_chamber": case["chamber"],
+                        "juris_section_type": section_type,
+                    }
+                )
+                chunk_idx += 1
+
+    stats = {
+        "blocks_total": len(cases),
+        "article_headers_detected": len(cases),
+        "chunks_total": len(chunks),
+        "chunks_with_article_hint": len(chunks),
+        "long_article_extra_parts": split_count,
+        "dedup_removed": 0,
+        "oversized_units_split": 0,
+        "control_char_filtered": control_char_filtered,
+        "strict_multi_header_splits": 0,
+        "toc_pages_skipped": 0,
+        "toc_lines_skipped": 0,
+    }
+    return chunks, stats
 
 
 def estimate_tokens(text: str) -> int:
@@ -585,6 +896,15 @@ def build_chunks_for_document(
     max_page_span: int,
     strict_article_chunks: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if should_use_jurisprudence_chunking(doc):
+        juris_chunks, juris_stats = build_jurisprudence_chunks_for_document(
+            doc,
+            max_tokens=max_tokens,
+            min_chunk_chars=min_chunk_chars,
+        )
+        if juris_chunks:
+            return juris_chunks, juris_stats
+
     blocks, block_stats = build_blocks_for_document(
         doc,
         strict_article_chunks=strict_article_chunks,
