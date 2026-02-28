@@ -3,12 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "clean": "node ./scripts/dev-clean.mjs",
+    "dev": "npm run clean && next dev -p 3001",
+    "dev:fast": "next dev -p 3001",
+    "dev:fresh": "npm run clean && next dev -p 3001",
     "build": "next build",
-    "start": "next start",
+    "build:fresh": "npm run clean && next build",
+    "start": "npm run build && next start -p 3001",
+    "start:fast": "next start -p 3001",
     "lint": "next lint"
   },
   "dependencies": {
+    "jspdf": "^4.2.0",
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
