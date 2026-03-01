@@ -33,6 +33,9 @@ def get_retriever() -> Any:
         reranker_model_name=settings.rag_reranker_model if settings.rag_reranker_enabled else None,
         reranker_device=settings.rag_reranker_device,
         reranker_batch_size=settings.rag_reranker_batch_size,
+        reranker_cpu_max_candidates=settings.rag_reranker_cpu_max_candidates,
+        reranker_snippet_chars=settings.rag_reranker_snippet_chars,
+        reranker_cpu_snippet_chars=settings.rag_reranker_cpu_snippet_chars,
     )
 
 

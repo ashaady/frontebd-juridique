@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import Script from "next/script";
+import { ClerkProvider } from "@clerk/nextjs";
+import { clerkAppearance } from "./_lib/clerk-theme";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -12,6 +14,9 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const publishableKey =
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || "pk_test_Y2xlcmsuZXhhbXBsZS5jb20k";
+
   return (
     <html className="dark" lang="fr" suppressHydrationWarning>
       <head>
@@ -30,7 +35,8 @@ export default function RootLayout({
         style={{ backgroundColor: "#112117", color: "#e5e7eb", opacity: 0 }}
         suppressHydrationWarning
       >
-        <Script id="tailwind-config" strategy="beforeInteractive">{`
+        <ClerkProvider appearance={clerkAppearance} publishableKey={publishableKey}>
+          <Script id="tailwind-config" strategy="beforeInteractive">{`
           window.tailwind = window.tailwind || {};
           window.tailwind.config = {
             darkMode: "class",
@@ -61,20 +67,21 @@ export default function RootLayout({
               }
             }
           };
-        `}</Script>
-        <Script
-          src="https://cdn.tailwindcss.com?plugins=forms,container-queries"
-          strategy="beforeInteractive"
-        />
-        <Script id="fouc-fix" strategy="afterInteractive">{`
+          `}</Script>
+          <Script
+            src="https://cdn.tailwindcss.com?plugins=forms,container-queries"
+            strategy="beforeInteractive"
+          />
+          <Script id="fouc-fix" strategy="afterInteractive">{`
           (() => {
             const body = document.body;
             if (!body) return;
             body.style.transition = "opacity 150ms ease";
             body.style.opacity = "1";
           })();
-        `}</Script>
-        {children}
+          `}</Script>
+          {children}
+        </ClerkProvider>
       </body>
     </html>
   );

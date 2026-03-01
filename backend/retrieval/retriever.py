@@ -705,6 +705,9 @@ class FaissRetriever:
         reranker_model_name: str | None = None,
         reranker_device: str | None = None,
         reranker_batch_size: int = 16,
+        reranker_cpu_max_candidates: int = 20,
+        reranker_snippet_chars: int = 1600,
+        reranker_cpu_snippet_chars: int = 900,
     ) -> None:
         self.index_dir = index_dir
         self.model_name = model_name
@@ -713,6 +716,9 @@ class FaissRetriever:
         self.reranker_model_name = reranker_model_name
         self.reranker_device = reranker_device
         self.reranker_batch_size = max(1, int(reranker_batch_size))
+        self.reranker_cpu_max_candidates = max(1, int(reranker_cpu_max_candidates))
+        self.reranker_snippet_chars = max(200, int(reranker_snippet_chars))
+        self.reranker_cpu_snippet_chars = max(200, int(reranker_cpu_snippet_chars))
 
         self._index: Any | None = None
         self._metric_type: int | None = None
@@ -725,6 +731,14 @@ class FaissRetriever:
         self._bm25_doc_len: list[int] = []
         self._bm25_df: dict[str, int] = {}
         self._bm25_avgdl: float = 0.0
+
+    def warmup(self, *, load_reranker: bool = True, prepare_bm25: bool = True) -> None:
+        self._load_index()
+        self._load_model()
+        if prepare_bm25:
+            self._ensure_bm25_state()
+        if load_reranker and self.reranker_model_name:
+            self._load_reranker()
 
     def _load_index(self) -> None:
         if self._index is not None and self._meta is not None:
@@ -822,7 +836,14 @@ class FaissRetriever:
             convert_to_numpy=True,
             normalize_embeddings=self.normalize_query_embeddings,
         )
-        query_vector = np.asarray(vectors[0], dtype=np.float32)
+        matrix = np.asarray(vectors, dtype=np.float32)
+        if matrix.ndim == 1:
+            matrix = np.expand_dims(matrix, axis=0)
+        if matrix.ndim != 2 or matrix.shape[0] < 1:
+            raise RuntimeError("query embedding model returned no vectors")
+        query_vector = np.asarray(matrix[0], dtype=np.float32)
+        if query_vector.ndim != 1 or query_vector.size == 0:
+            raise RuntimeError("query embedding vector is empty")
         norm = float(np.linalg.norm(query_vector))
         if norm > 0.0:
             query_vector = query_vector / norm
@@ -1175,14 +1196,26 @@ class FaissRetriever:
                 for rank, chunk in enumerate(candidate_list[:top_k], start=1)
             ], False, None
 
-        pool = candidate_list[: max(top_k, candidate_pool_size)]
+        reranker_device = (self.reranker_device or "").strip().lower()
+        reranker_on_cpu = reranker_device.startswith("cpu")
+        requested_pool_size = max(top_k, candidate_pool_size)
+        effective_pool_size = requested_pool_size
+        if reranker_on_cpu:
+            effective_pool_size = min(
+                requested_pool_size,
+                max(top_k, self.reranker_cpu_max_candidates),
+            )
+        pool = candidate_list[:effective_pool_size]
+        snippet_limit = (
+            self.reranker_cpu_snippet_chars if reranker_on_cpu else self.reranker_snippet_chars
+        )
         pairs: list[list[str]] = []
         for chunk in pool:
             # Cross-encoder inference cost grows quickly with input length.
             # Keep a sizable excerpt to preserve legal precision while staying efficient.
             snippet = chunk.text.strip()
-            if len(snippet) > 2400:
-                snippet = snippet[:2400]
+            if len(snippet) > snippet_limit:
+                snippet = snippet[:snippet_limit]
             pairs.append([query, snippet])
 
         try:

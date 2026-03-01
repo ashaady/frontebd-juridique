@@ -54,6 +54,13 @@ class Settings:
     rag_query_rewrite_model: str | None
     rag_query_rewrite_max_tokens: int
     rag_query_rewrite_temperature: float
+    rag_query_rewrite_timeout_sec: float
+    rag_query_rewrite_skip_tokens: int
+    rag_reranker_cpu_max_candidates: int
+    rag_reranker_snippet_chars: int
+    rag_reranker_cpu_snippet_chars: int
+    rag_preload_on_startup: bool
+    rag_preload_blocking: bool
     speech_enabled: bool
     whisper_model_size: str
     whisper_device: str
@@ -338,6 +345,39 @@ def get_settings() -> Settings:
         default=0.0,
         minimum=0.0,
     )
+    rag_query_rewrite_timeout_sec = _parse_float(
+        os.getenv("RAG_QUERY_REWRITE_TIMEOUT_SEC", "4.0"),
+        default=4.0,
+        minimum=0.5,
+    )
+    rag_query_rewrite_skip_tokens = _parse_int(
+        os.getenv("RAG_QUERY_REWRITE_SKIP_TOKENS", "8"),
+        default=8,
+        minimum=0,
+    )
+    rag_reranker_cpu_max_candidates = _parse_int(
+        os.getenv("RAG_RERANKER_CPU_MAX_CANDIDATES", "20"),
+        default=20,
+        minimum=1,
+    )
+    rag_reranker_snippet_chars = _parse_int(
+        os.getenv("RAG_RERANKER_SNIPPET_CHARS", "1600"),
+        default=1600,
+        minimum=200,
+    )
+    rag_reranker_cpu_snippet_chars = _parse_int(
+        os.getenv("RAG_RERANKER_CPU_SNIPPET_CHARS", "900"),
+        default=900,
+        minimum=200,
+    )
+    rag_preload_on_startup = _parse_bool(
+        os.getenv("RAG_PRELOAD_ON_STARTUP", "true"),
+        default=True,
+    )
+    rag_preload_blocking = _parse_bool(
+        os.getenv("RAG_PRELOAD_BLOCKING", "false"),
+        default=False,
+    )
     speech_enabled = _parse_bool(
         os.getenv("SPEECH_ENABLED", "true"),
         default=True,
@@ -397,6 +437,13 @@ def get_settings() -> Settings:
         rag_query_rewrite_model=rag_query_rewrite_model,
         rag_query_rewrite_max_tokens=rag_query_rewrite_max_tokens,
         rag_query_rewrite_temperature=rag_query_rewrite_temperature,
+        rag_query_rewrite_timeout_sec=rag_query_rewrite_timeout_sec,
+        rag_query_rewrite_skip_tokens=rag_query_rewrite_skip_tokens,
+        rag_reranker_cpu_max_candidates=rag_reranker_cpu_max_candidates,
+        rag_reranker_snippet_chars=rag_reranker_snippet_chars,
+        rag_reranker_cpu_snippet_chars=rag_reranker_cpu_snippet_chars,
+        rag_preload_on_startup=rag_preload_on_startup,
+        rag_preload_blocking=rag_preload_blocking,
         speech_enabled=speech_enabled,
         whisper_model_size=whisper_model_size,
         whisper_device=whisper_device,

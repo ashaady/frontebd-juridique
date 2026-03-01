@@ -359,7 +359,12 @@ class WorkspaceRagIndex:
             matrix = self._embeddings
             chunks = list(self._chunks)
 
-        query_vec = self._encode([query_text])[0]
+        encoded_query = self._encode([query_text])
+        if encoded_query.ndim != 2 or encoded_query.shape[0] < 1:
+            return []
+        query_vec = encoded_query[0]
+        if query_vec.ndim != 1 or query_vec.size == 0:
+            return []
         scores = np.dot(matrix, query_vec)
         if scores.ndim != 1 or scores.size == 0:
             return []

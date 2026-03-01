@@ -2,6 +2,7 @@
 
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { SignInButton, SignedIn, SignedOut, UserButton, useAuth } from "@clerk/nextjs";
 import { jsPDF } from "jspdf";
 import {
   buildLibraryViewUrl,
@@ -10,16 +11,19 @@ import {
   listLibraryDocumentsApi,
   readWorkspaceFilesApi,
   readWorkspaceNotesApi,
+  resolveLibraryChunksApi,
   transcribeSpeechApi,
   upsertConsultationApi,
   uploadWorkspaceFilesApi,
   writeWorkspaceFilesApi,
   writeWorkspaceNotesApi,
+  type LibraryChunkRecord,
   type LibraryDocumentRecord,
 } from "../_lib/workspace-api";
 import {
   type WorkspaceFileRecord
 } from "../_lib/workspace-store";
+import { clerkUserButtonAppearance } from "../_lib/clerk-theme";
 
 type RagSource = {
   rank?: number;
@@ -40,6 +44,7 @@ type Turn = {
   question: string;
   displayQuestion?: string;
   answer: string;
+  reasoning: string;
   status: TurnStatus;
   ragSources: RagSource[];
   ragNote: string;
@@ -52,6 +57,10 @@ type StreamMetaEvent = {
 };
 
 type StreamTokenEvent = {
+  text?: string;
+};
+
+type StreamReasoningEvent = {
   text?: string;
 };
 
@@ -77,9 +86,17 @@ type CitationCard = {
   badge: string;
   excerpt: string;
   meta: string;
+  chunkId?: string;
+  articleHint?: string;
   sourcePath?: string;
   pageStart?: number | null;
   pageEnd?: number | null;
+};
+
+type SourceBreakdownItem = {
+  label: string;
+  count: number;
+  percent: number;
 };
 
 type ChatWorkspaceProps = {
@@ -679,11 +696,103 @@ function buildCitationCards(sources: RagSource[]): CitationCard[] {
       badge,
       excerpt,
       meta,
+      chunkId: source.chunk_id ?? undefined,
+      articleHint: source.article_hint ?? undefined,
       sourcePath: source.relative_path ?? source.source_path ?? undefined,
       pageStart: source.page_start ?? null,
       pageEnd: source.page_end ?? null,
     };
   });
+}
+
+function inferSourceFamily(source: RagSource): string {
+  const raw = `${source.relative_path ?? ""} ${source.source_path ?? ""} ${source.citation ?? ""}`.toLowerCase();
+  if (raw.includes("jurisprudence") || raw.includes("cour supreme") || raw.includes("bulletin")) {
+    return "Jurisprudence";
+  }
+  if (raw.includes("doctrine") || raw.includes("revue") || raw.includes("commentaire")) {
+    return "Doctrine";
+  }
+  if (
+    raw.includes("code") ||
+    raw.includes("loi") ||
+    raw.includes("decret") ||
+    raw.includes("constitution") ||
+    raw.includes("ordonnance") ||
+    raw.includes("arrete")
+  ) {
+    return "Code penal / Lois";
+  }
+  return "Autres sources";
+}
+
+function buildSourceBreakdown(sources: RagSource[]): SourceBreakdownItem[] {
+  if (sources.length === 0) {
+    return [];
+  }
+  const counts = new Map<string, number>();
+  for (const source of sources) {
+    const family = inferSourceFamily(source);
+    counts.set(family, (counts.get(family) ?? 0) + 1);
+  }
+  const total = sources.length;
+  return Array.from(counts.entries())
+    .map(([label, count]) => ({
+      label,
+      count,
+      percent: Math.round((count / total) * 100),
+    }))
+    .sort((a, b) => b.percent - a.percent || b.count - a.count);
+}
+
+function explainRagNote(ragNote: string): string[] {
+  const trimmed = ragNote.trim();
+  if (!trimmed) {
+    return [];
+  }
+  const tokens = trimmed
+    .split("|")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  const lines: string[] = [];
+  for (const token of tokens) {
+    const lower = token.toLowerCase();
+    if (lower.startsWith("confidence=")) {
+      lines.push(`Niveau de confiance estime: ${token.split("=", 2)[1] ?? "n/a"}.`);
+      continue;
+    }
+    if (lower.startsWith("selected_chunks=")) {
+      lines.push(`Chunks retenus pour la reponse: ${token.split("=", 2)[1] ?? "n/a"}.`);
+      continue;
+    }
+    if (lower.startsWith("domains=")) {
+      lines.push(`Domaines detectes: ${token.split("=", 2)[1] ?? "n/a"}.`);
+      continue;
+    }
+    if (lower.startsWith("citation_target=")) {
+      lines.push(`Objectif minimal de citations: ${token.split("=", 2)[1] ?? "n/a"}.`);
+      continue;
+    }
+    if (lower.startsWith("threshold_final=")) {
+      lines.push(`Seuil final de filtrage: ${token.split("=", 2)[1] ?? "n/a"}.`);
+      continue;
+    }
+    if (lower === "cross-encoder-rerank") {
+      lines.push("Reclassement semantique applique sur les passages recuperes.");
+      continue;
+    }
+    if (lower === "article-aware-rerank") {
+      lines.push("Priorisation des passages relies aux articles detectes.");
+      continue;
+    }
+    if (lower === "domain-filter") {
+      lines.push("Filtre de domaine juridique applique.");
+      continue;
+    }
+    lines.push(token);
+  }
+  return lines.slice(0, 12);
 }
 
 function normalizeSourceValue(value: string): string {
@@ -778,6 +887,40 @@ function parsePageFromCitationText(value: string): number | null {
     return null;
   }
   return page;
+}
+
+function normalizeHighlightNeedle(value: string): string {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (cleaned.length < 6) {
+    return "";
+  }
+  if (cleaned.toLowerCase() === "reference juridique") {
+    return "";
+  }
+  return cleaned.slice(0, 180);
+}
+
+function renderHighlightedChunk(text: string, hint: string): ReactNode {
+  const needle = normalizeHighlightNeedle(hint);
+  if (!needle) {
+    return text;
+  }
+  const lowerText = text.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  const index = lowerText.indexOf(lowerNeedle);
+  if (index < 0) {
+    return text;
+  }
+  const before = text.slice(0, index);
+  const hit = text.slice(index, index + needle.length);
+  const after = text.slice(index + needle.length);
+  return (
+    <>
+      {before}
+      <mark className="rounded bg-yellow-300/70 px-1 text-black">{hit}</mark>
+      {after}
+    </>
+  );
 }
 
 function nowTimeLabel(): string {
@@ -939,11 +1082,15 @@ function renderAnswerContent(answer: string): ReactNode {
 }
 
 export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = false }: ChatWorkspaceProps) {
+  const { isLoaded: isAuthLoaded, isSignedIn } = useAuth();
   const [turns, setTurns] = useState<Turn[]>(EMPTY_TURNS);
   const [input, setInput] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileRecord[]>([]);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("workspace");
+  const [showReasoningMode, setShowReasoningMode] = useState<boolean>(false);
+  const [chunkDetailsById, setChunkDetailsById] = useState<Record<string, LibraryChunkRecord>>({});
+  const [expandedChunkIds, setExpandedChunkIds] = useState<Record<string, boolean>>({});
   const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState<boolean>(false);
   const [isMobileRightPanelOpen, setIsMobileRightPanelOpen] = useState<boolean>(false);
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState<boolean>(false);
@@ -982,11 +1129,27 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   const composerFileInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceFileInputRef = useRef<HTMLInputElement | null>(null);
   const libraryDocumentsCacheRef = useRef<LibraryDocumentRecord[]>([]);
+  const signInModalTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const backendBaseUrl = useMemo(() => {
     const raw = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
     return raw.replace(/\/+$/, "");
   }, []);
+
+  const requireSignedIn = useCallback(
+    (errorMessage?: string) => {
+      if (!isAuthLoaded) {
+        return false;
+      }
+      if (isSignedIn) {
+        return true;
+      }
+      setGlobalError(errorMessage ?? "Connexion requise pour utiliser cette fonctionnalite.");
+      signInModalTriggerRef.current?.click();
+      return false;
+    },
+    [isAuthLoaded, isSignedIn]
+  );
 
   const activeTurn = turns.length > 0 ? turns[turns.length - 1] : null;
   const hasConversationStarted = turns.length > 0;
@@ -1024,6 +1187,15 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     [actMissingItems]
   );
   const citationCards = useMemo(() => buildCitationCards(activeTurn?.ragSources ?? []), [activeTurn]);
+  const sourceBreakdown = useMemo(
+    () => buildSourceBreakdown(activeTurn?.ragSources ?? []),
+    [activeTurn?.ragSources]
+  );
+  const reasoningSummary = useMemo(
+    () => explainRagNote(activeTurn?.ragNote ?? ""),
+    [activeTurn?.ragNote]
+  );
+  const activeReasoningText = (activeTurn?.reasoning ?? "").trim();
   const confidenceLevel = parseConfidenceFromRagNote(activeTurn?.ragNote ?? "");
   const confidencePercent = confidenceToPercent(confidenceLevel);
   const displayedSourceCount = citationCards.length;
@@ -1065,6 +1237,14 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     );
   };
 
+  const appendToTurnReasoning = (turnId: string, text: string) => {
+    setTurns((previous) =>
+      previous.map((turn) =>
+        turn.id === turnId ? { ...turn, reasoning: `${turn.reasoning}${text}` } : turn
+      )
+    );
+  };
+
   const patchTurn = (turnId: string, patch: Partial<Turn>) => {
     setTurns((previous) =>
       previous.map((turn) => (turn.id === turnId ? { ...turn, ...patch } : turn))
@@ -1084,6 +1264,14 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   }, [turns]);
 
   useEffect(() => {
+    if (!isAuthLoaded) {
+      return;
+    }
+    if (!isSignedIn) {
+      setNotes("");
+      setWorkspaceFiles([]);
+      return;
+    }
     let active = true;
     const loadWorkspace = async () => {
       const [remoteNotes, remoteFiles] = await Promise.all([
@@ -1100,21 +1288,62 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     return () => {
       active = false;
     };
-  }, []);
+  }, [isAuthLoaded, isSignedIn]);
 
   useEffect(() => {
+    if (!isSignedIn) {
+      return;
+    }
     const timeoutId = window.setTimeout(() => {
       void writeWorkspaceNotesApi(notes);
     }, 250);
     return () => window.clearTimeout(timeoutId);
-  }, [notes]);
+  }, [isSignedIn, notes]);
 
   useEffect(() => {
+    if (!isSignedIn) {
+      return;
+    }
     const timeoutId = window.setTimeout(() => {
       void writeWorkspaceFilesApi(workspaceFiles);
     }, 250);
     return () => window.clearTimeout(timeoutId);
-  }, [workspaceFiles]);
+  }, [isSignedIn, workspaceFiles]);
+
+  useEffect(() => {
+    const chunkIds = (activeTurn?.ragSources ?? [])
+      .map((source) => (typeof source.chunk_id === "string" ? source.chunk_id.trim() : ""))
+      .filter((chunkId) => chunkId.length > 0);
+    if (chunkIds.length === 0) {
+      return;
+    }
+    const missingChunkIds = chunkIds.filter((chunkId) => !chunkDetailsById[chunkId]);
+    if (missingChunkIds.length === 0) {
+      return;
+    }
+
+    let active = true;
+    const loadChunks = async () => {
+      const rows = await resolveLibraryChunksApi(missingChunkIds);
+      if (!active || rows.length === 0) {
+        return;
+      }
+      setChunkDetailsById((previous) => {
+        const next = { ...previous };
+        for (const row of rows) {
+          if (!row?.chunk_id) {
+            continue;
+          }
+          next[row.chunk_id] = row;
+        }
+        return next;
+      });
+    };
+    void loadChunks();
+    return () => {
+      active = false;
+    };
+  }, [activeTurn?.id, activeTurn?.ragSources, chunkDetailsById]);
 
   useEffect(() => {
     const onResize = () => {
@@ -1128,6 +1357,9 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   }, []);
 
   useEffect(() => {
+    if (!isSignedIn) {
+      return;
+    }
     const pending: Promise<unknown>[] = [];
     for (const turn of turns) {
       const status = turn.status === "error" ? "error" : turn.status === "done" ? "done" : null;
@@ -1164,9 +1396,12 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     if (pending.length > 0) {
       void Promise.allSettled(pending);
     }
-  }, [turns]);
+  }, [isSignedIn, turns]);
 
   const sendQuestion = useCallback(async (question: string, options?: SendQuestionOptions) => {
+    if (!requireSignedIn("Connexion requise pour poser une question a l'IA.")) {
+      return;
+    }
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion || isSending) {
       return;
@@ -1180,6 +1415,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       question: trimmedQuestion,
       displayQuestion,
       answer: "",
+      reasoning: "",
       status: "streaming",
       ragSources: [],
       ragNote: "",
@@ -1288,6 +1524,14 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
             continue;
           }
 
+          if (eventName === "reasoning") {
+            const reasoningPayload = payload as StreamReasoningEvent;
+            if (typeof reasoningPayload.text === "string" && reasoningPayload.text.length > 0) {
+              appendToTurnReasoning(turnId, reasoningPayload.text);
+            }
+            continue;
+          }
+
           if (eventName === "done") {
             const donePayload = payload as StreamDoneEvent;
             patchTurn(turnId, {
@@ -1349,7 +1593,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       abortRef.current = null;
       setIsSending(false);
     }
-  }, [backendBaseUrl, isSending]);
+  }, [backendBaseUrl, isSending, requireSignedIn]);
 
   const pendingDashboardQuestion = initialQuestion.trim();
 
@@ -1376,8 +1620,11 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     autoSubmittedRef.current = pendingDashboardQuestion;
     setInput(pendingDashboardQuestion);
     clearQuestionParamFromUrl();
+    if (!requireSignedIn("Connexion requise pour lancer cette consultation.")) {
+      return;
+    }
     void sendQuestion(pendingDashboardQuestion);
-  }, [clearQuestionParamFromUrl, pendingDashboardQuestion, sendQuestion]);
+  }, [clearQuestionParamFromUrl, pendingDashboardQuestion, requireSignedIn, sendQuestion]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1720,6 +1967,9 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   }, [pushUiMessage]);
 
   const openActGenerator = useCallback(() => {
+    if (!requireSignedIn("Connexion requise pour generer un acte.")) {
+      return;
+    }
     setActType(DEFAULT_ACT_TYPE);
     setActValues(buildInitialActFormValues(DEFAULT_ACT_TYPE));
     setActUserIntent("");
@@ -1740,7 +1990,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       },
     ]);
     setIsActGeneratorOpen(true);
-  }, []);
+  }, [requireSignedIn]);
 
   useEffect(() => {
     if (autoOpenActGenerator && !autoActOpenedRef.current) {
@@ -1750,11 +2000,14 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   }, [autoOpenActGenerator, openActGenerator]);
 
   const openContractCheck = useCallback(async () => {
+    if (!requireSignedIn("Connexion requise pour verifier un contrat.")) {
+      return;
+    }
     const preset = "Verifier un contrat au regard du droit senegalais.";
     setInput(preset);
     await sendQuestion(preset);
     setIsMobileLeftPanelOpen(false);
-  }, [sendQuestion]);
+  }, [requireSignedIn, sendQuestion]);
 
   const handleLandingSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -1769,9 +2022,12 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   );
 
   const handleOpenWorkspacePanel = useCallback(() => {
+    if (!requireSignedIn("Connexion requise pour ouvrir le workspace.")) {
+      return;
+    }
     setIsWorkspacePanelOpen(true);
     setRightPanelTab("workspace");
-  }, []);
+  }, [requireSignedIn]);
 
   const handleCloseWorkspacePanel = useCallback(() => {
     setIsWorkspacePanelOpen(false);
@@ -1836,6 +2092,9 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
 
   const runActAssistant = useCallback(
     async (userMessage: string, mode: "chat" | "validate") => {
+      if (!requireSignedIn("Connexion requise pour utiliser le mini chat de redaction.")) {
+        return;
+      }
       const trimmedUserMessage = userMessage.trim();
       if (!trimmedUserMessage) {
         return;
@@ -2019,6 +2278,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       isPopupChatSending,
       popupChatMessages,
       pushUiMessage,
+      requireSignedIn,
     ]
   );
 
@@ -2075,6 +2335,9 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   }, []);
 
   const persistWorkspaceSnapshot = useCallback(async () => {
+    if (!requireSignedIn("Connexion requise pour synchroniser le workspace.")) {
+      return;
+    }
     try {
       await Promise.all([
         writeWorkspaceNotesApi(notes),
@@ -2084,10 +2347,13 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     } catch {
       setGlobalError("Synchronisation impossible pour le moment.");
     }
-  }, [notes, pushUiMessage, workspaceFiles]);
+  }, [notes, pushUiMessage, requireSignedIn, workspaceFiles]);
 
   const handleCitationOpen = useCallback(
     async (card: CitationCard) => {
+      if (!requireSignedIn("Connexion requise pour ouvrir une source de la bibliotheque.")) {
+        return;
+      }
       const rawReference = (card.sourcePath ?? card.meta).trim();
       if (!rawReference) {
         return;
@@ -2124,10 +2390,20 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
         setGlobalError("Impossible de copier la reference.");
       }
     },
-    [pushUiMessage]
+    [pushUiMessage, requireSignedIn]
   );
 
+  const toggleChunkPreview = useCallback((chunkId: string) => {
+    setExpandedChunkIds((previous) => ({
+      ...previous,
+      [chunkId]: !previous[chunkId],
+    }));
+  }, []);
+
   const addWorkspaceFiles = useCallback(async (fileList: FileList | null) => {
+    if (!requireSignedIn("Connexion requise pour ajouter des fichiers au workspace.")) {
+      return;
+    }
     if (!fileList || fileList.length === 0) {
       return;
     }
@@ -2155,16 +2431,24 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     } else {
       pushUiMessage(`${files.length} fichier(s) ajoute(s) au workspace.`);
     }
-  }, [pushUiMessage]);
+  }, [pushUiMessage, requireSignedIn]);
 
   const handleClearWorkspaceFiles = useCallback(async () => {
+    if (!requireSignedIn("Connexion requise pour gerer le workspace.")) {
+      return;
+    }
     const cleared = await clearWorkspaceFilesApi();
     setWorkspaceFiles(cleared);
     pushUiMessage("Fichiers locaux nettoyes.");
-  }, [pushUiMessage]);
+  }, [pushUiMessage, requireSignedIn]);
 
   return (
     <div className="bg-[#112117] dark:bg-[#112117] font-display text-slate-100 flex flex-col min-h-screen lg:h-screen overflow-x-hidden lg:overflow-hidden">
+      <SignedOut>
+        <SignInButton mode="modal">
+          <button ref={signInModalTriggerRef} type="button" className="hidden" aria-hidden="true" />
+        </SignInButton>
+      </SignedOut>
       <header className="flex items-center gap-4 px-3 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
         <button
           className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
@@ -2207,6 +2491,25 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
               </span>
             </div>
           </div>
+        </div>
+        <div className="hidden md:flex items-center gap-2 shrink-0">
+          <SignedOut>
+            <Link
+              className="inline-flex items-center justify-center rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-semibold text-slate-200 hover:border-[#49DE80]/60 hover:text-[#49DE80] transition-colors"
+              href="/sign-in"
+            >
+              Se connecter
+            </Link>
+            <Link
+              className="inline-flex items-center justify-center rounded-lg bg-[#49DE80] px-3 py-1.5 text-sm font-bold text-[#112117] hover:bg-[#3fd273] transition-colors"
+              href="/sign-up"
+            >
+              Creer un compte
+            </Link>
+          </SignedOut>
+          <SignedIn>
+            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance} />
+          </SignedIn>
         </div>
         <div className="lg:hidden flex items-center gap-2 ml-auto">
           <button
@@ -2291,6 +2594,17 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                 className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
                   isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
                 }`}
+                href="/dashboard"
+                onClick={() => setIsMobileLeftPanelOpen(false)}
+                title="Dashboard"
+              >
+                <span className="material-symbols-outlined">space_dashboard</span>
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Dashboard</span> : null}
+              </Link>
+              <Link
+                className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
+                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
+                }`}
                 href="/bibliotheque"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
                 title="Codes & Lois"
@@ -2340,56 +2654,60 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
             </nav>
           </div>
           {!isSidebarCollapsed ? (
-            <div className="flex-1 overflow-y-auto px-6">
-              <div className="mb-4 px-2 flex items-center justify-between gap-2">
-                <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">
-                  Historique recent
-                </p>
-                <button
-                  aria-label="Supprimer l'historique"
-                  className="inline-flex items-center justify-center rounded-md p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  disabled={turns.length === 0}
-                  onClick={() => {
-                    void handleClearHistory();
-                  }}
-                  title="Supprimer l'historique"
-                  type="button"
-                >
-                  <span className="material-symbols-outlined text-base">delete</span>
-                </button>
-              </div>
-              <div className="space-y-2">
-                {turns.length === 0 ? (
-                  <div className="p-3 rounded-lg border border-slate-800">
-                    <p className="text-xs text-slate-500">Aucune consultation enregistree pour le moment.</p>
+            <>
+              <SignedIn>
+                <div className="flex-1 overflow-y-auto px-6">
+                  <div className="mb-4 px-2 flex items-center justify-between gap-2">
+                    <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">
+                      Historique recent
+                    </p>
+                    <button
+                      aria-label="Supprimer l'historique"
+                      className="inline-flex items-center justify-center rounded-md p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      disabled={turns.length === 0}
+                      onClick={() => {
+                        void handleClearHistory();
+                      }}
+                      title="Supprimer l'historique"
+                      type="button"
+                    >
+                      <span className="material-symbols-outlined text-base">delete</span>
+                    </button>
                   </div>
-                ) : (
-                  turns
-                    .slice(-6)
-                    .reverse()
-                    .map((turn) => (
-                      <div
-                        className="group p-3 rounded-lg hover:bg-white/5 transition-colors border border-transparent hover:border-slate-800"
-                        key={turn.id}
-                      >
-                        <div className="flex items-start gap-2">
-                          <button
-                            className="flex-1 min-w-0 text-left cursor-pointer"
-                            onClick={() => {
-                              setInput(turn.question);
-                              setIsMobileLeftPanelOpen(false);
-                            }}
-                            type="button"
-                          >
-                            <p className="text-sm font-medium text-slate-200 truncate">{turn.question}</p>
-                            <p className="text-xs text-slate-500 mt-1">{nowTimeLabel()}</p>
-                          </button>
-                        </div>
+                  <div className="space-y-2">
+                    {turns.length === 0 ? (
+                      <div className="p-3 rounded-lg border border-slate-800">
+                        <p className="text-xs text-slate-500">Aucune consultation enregistree pour le moment.</p>
                       </div>
-                    ))
-                )}
-              </div>
-            </div>
+                    ) : (
+                      turns
+                        .slice(-6)
+                        .reverse()
+                        .map((turn) => (
+                          <div
+                            className="group p-3 rounded-lg hover:bg-white/5 transition-colors border border-transparent hover:border-slate-800"
+                            key={turn.id}
+                          >
+                            <div className="flex items-start gap-2">
+                              <button
+                                className="flex-1 min-w-0 text-left cursor-pointer"
+                                onClick={() => {
+                                  setInput(turn.question);
+                                  setIsMobileLeftPanelOpen(false);
+                                }}
+                                type="button"
+                              >
+                                <p className="text-sm font-medium text-slate-200 truncate">{turn.question}</p>
+                                <p className="text-xs text-slate-500 mt-1">{nowTimeLabel()}</p>
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                    )}
+                  </div>
+                </div>
+              </SignedIn>
+            </>
           ) : null}
         </aside>
 
@@ -2726,27 +3044,134 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                         <p className="text-xs text-slate-500">Aucune citation disponible pour cette reponse.</p>
                       </div>
                     ) : (
-                      citationCards.map((card) => (
-                        <div
-                          className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800 group hover:border-primary/30 transition-all"
-                          key={`${card.badge}-${card.meta}`}
-                        >
-                          <div className="flex justify-between items-start mb-2">
-                            <span className="text-[10px] font-bold text-primary px-2 py-0.5 bg-primary/10 rounded">
-                              {card.badge}
-                            </span>
-                            <button className="text-slate-500 hover:text-white" onClick={() => void handleCitationOpen(card)} type="button">
-                              <span className="material-symbols-outlined text-sm">open_in_new</span>
-                            </button>
+                      citationCards.map((card) => {
+                        const chunkId = card.chunkId ?? "";
+                        const chunkRecord = chunkId ? chunkDetailsById[chunkId] : undefined;
+                        const isExpanded = chunkId ? expandedChunkIds[chunkId] === true : false;
+                        return (
+                          <div
+                            className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800 group hover:border-primary/30 transition-all"
+                            key={`${card.badge}-${card.meta}`}
+                          >
+                            <div className="flex justify-between items-start mb-2">
+                              <span className="text-[10px] font-bold text-primary px-2 py-0.5 bg-primary/10 rounded">
+                                {card.badge}
+                              </span>
+                              <button className="text-slate-500 hover:text-white" onClick={() => void handleCitationOpen(card)} type="button">
+                                <span className="material-symbols-outlined text-sm">open_in_new</span>
+                              </button>
+                            </div>
+                            <p className="text-xs text-slate-600 dark:text-slate-300 italic leading-relaxed">
+                              "{card.excerpt}"
+                            </p>
+                            <p className="text-[10px] text-slate-500 mt-2">{card.meta}</p>
+                            {chunkId ? (
+                              <div className="mt-3">
+                                <button
+                                  className="text-[11px] font-semibold text-primary hover:text-primary/80 inline-flex items-center gap-1"
+                                  onClick={() => toggleChunkPreview(chunkId)}
+                                  type="button"
+                                >
+                                  <span className="material-symbols-outlined text-sm">
+                                    {isExpanded ? "expand_less" : "expand_more"}
+                                  </span>
+                                  Voir le chunk exact utilise
+                                </button>
+                                {isExpanded ? (
+                                  <div className="mt-2 rounded-lg border border-primary/20 bg-[#0f1c15] p-3">
+                                    {chunkRecord ? (
+                                      <>
+                                        <p className="text-[10px] text-slate-400 mb-2">
+                                          Chunk: {chunkRecord.chunk_id}
+                                        </p>
+                                        <p className="text-[11px] text-slate-200 whitespace-pre-wrap leading-relaxed max-h-52 overflow-y-auto">
+                                          {renderHighlightedChunk(
+                                            chunkRecord.text,
+                                            card.articleHint ?? card.excerpt
+                                          )}
+                                        </p>
+                                      </>
+                                    ) : (
+                                      <p className="text-[11px] text-slate-400">Chargement du passage exact...</p>
+                                    )}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
                           </div>
-                          <p className="text-xs text-slate-600 dark:text-slate-300 italic leading-relaxed">
-                            "{card.excerpt}"
-                          </p>
-                          <p className="text-[10px] text-slate-500 mt-2">{card.meta}</p>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <p className="text-[10px] text-slate-400 uppercase font-bold">
+                      Explication du raisonnement
+                    </p>
+                    <button
+                      className={`text-[10px] font-bold px-2 py-1 rounded ${
+                        showReasoningMode
+                          ? "bg-primary/20 text-primary"
+                          : "bg-slate-200/70 text-slate-700 dark:bg-slate-700 dark:text-slate-300"
+                      }`}
+                      onClick={() => setShowReasoningMode((previous) => !previous)}
+                      type="button"
+                    >
+                      {showReasoningMode
+                        ? "Masquer comment la reponse a ete construite"
+                        : "Afficher comment la reponse a ete construite"}
+                    </button>
+                  </div>
+                  {showReasoningMode ? (
+                    <div className="space-y-2">
+                      {reasoningSummary.length > 0 ? (
+                        <ul className="list-disc pl-4 space-y-1">
+                          {reasoningSummary.map((line, index) => (
+                            <li className="text-[11px] text-slate-300 leading-relaxed" key={`${line}-${index}`}>
+                              {line}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-[11px] text-slate-400">Aucune meta de raisonnement disponible.</p>
+                      )}
+                      {activeReasoningText ? (
+                        <div className="rounded-lg border border-primary/20 bg-[#0f1c15] p-3">
+                          <p className="text-[10px] text-slate-400 mb-1">Trace de construction (stream):</p>
+                          <p className="text-[11px] text-slate-200 whitespace-pre-wrap max-h-36 overflow-y-auto leading-relaxed">
+                            {activeReasoningText}
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-500">Activez le mode pour voir la construction de la reponse.</p>
+                  )}
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                  <p className="text-[10px] text-slate-400 uppercase font-bold mb-2">Visualisation des sources</p>
+                  {sourceBreakdown.length === 0 ? (
+                    <p className="text-[11px] text-slate-500">Aucune source a repartir pour cette reponse.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {sourceBreakdown.map((item) => (
+                        <div key={item.label}>
+                          <div className="flex items-center justify-between text-[11px] mb-1">
+                            <span className="text-slate-200">{item.label}</span>
+                            <span className="text-primary font-bold">
+                              {item.percent}% ({item.count})
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                            <div className="h-full bg-primary" style={{ width: `${item.percent}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -2763,7 +3188,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                     <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Sources</p>
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold">{displayedSourceCount}</span>
-                      <span className="text-[10px] text-slate-500">textes de loi</span>
+                      <span className="text-[10px] text-slate-500">sources citees</span>
                     </div>
                   </div>
                 </div>

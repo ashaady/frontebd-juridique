@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -340,11 +341,28 @@ RAG_QUERY_REWRITE_SYSTEM_INSTRUCTIONS = (
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _DEFINITION_PREFIX_RE = re.compile(
-    r"^\s*(?:c[' ]?est\s+quoi|c\s+quoi|que\s+signifie|definition(?:\s+de)?|definir|explique(?:\s+moi)?|exemple|example)\b[\s:,-]*",
+    r"^\s*(?:c[' ]?est\s+quoi|c\s+quoi|que\s+signifie|qu[' ]?est(?:-|\s)?ce\s+qu(?:e|['’])?|definition(?:\s+de)?|definir|explique(?:\s+moi)?|exemple|example)\b[\s:,-]*",
     re.IGNORECASE,
 )
 _ARTICLE_LIKE_QUERY_RE = re.compile(r"\b(?:article|art\.?)\s*\d+", re.IGNORECASE)
 _LEADING_DETERMINER_RE = re.compile(r"^(?:l'|le|la|les|du|de la|de l')\s+", re.IGNORECASE)
+_LEGAL_INTENT_HINT_RE = re.compile(
+    r"\b(?:droit|code|loi|article|infraction|crime|delit|contravention|contrat|licenciement|travail|bail|succession|ohada|juridique|penal|civil|fiscal)\b",
+    re.IGNORECASE,
+)
+_SMALL_TALK_EXACT = {
+    "bonjour",
+    "bonsoir",
+    "salut",
+    "coucou",
+    "hello",
+    "hi",
+    "hey",
+    "merci",
+    "merci beaucoup",
+    "ca va",
+    "comment ca va",
+}
 
 
 def _strip_accents(value: str) -> str:
@@ -381,6 +399,44 @@ def _definition_rewrite_candidate(original_query: str) -> str | None:
 
 def _is_definition_question(query: str) -> bool:
     return _definition_rewrite_candidate(query) is not None
+
+
+def _is_small_talk_query(query: str) -> bool:
+    normalized = _normalize_spaces(_strip_accents(query).lower())
+    if not normalized:
+        return False
+    simplified = re.sub(r"[^\w\s']", " ", normalized)
+    simplified = _normalize_spaces(simplified)
+    if not simplified:
+        return False
+    if _LEGAL_INTENT_HINT_RE.search(simplified):
+        return False
+    if simplified in _SMALL_TALK_EXACT:
+        return True
+    tokens = [token for token in simplified.split(" ") if token]
+    if len(tokens) <= 4 and any(
+        simplified.startswith(prefix)
+        for prefix in ("bonjour", "bonsoir", "salut", "hello", "merci")
+    ):
+        return True
+    return False
+
+
+def _should_skip_query_rewrite(query: str) -> bool:
+    # Skip extra LLM rewrite call when the question is already explicit enough.
+    # This removes avoidable provider round-trips on long factual prompts.
+    threshold = settings.rag_query_rewrite_skip_tokens
+    if threshold <= 0:
+        return False
+    normalized = _normalize_spaces(query)
+    if not normalized:
+        return False
+    if _definition_rewrite_candidate(normalized):
+        return False
+    if _ARTICLE_LIKE_QUERY_RE.search(normalized):
+        return False
+    token_count = len([token for token in normalized.split(" ") if token])
+    return token_count >= threshold
 
 
 def _is_act_generation_question(query: str) -> bool:
@@ -450,6 +506,8 @@ async def _rewrite_query_for_rag(
     definition_candidate = _definition_rewrite_candidate(original_query)
     if definition_candidate:
         return definition_candidate, "query-rewrite-definition-intent"
+    if _should_skip_query_rewrite(original_query):
+        return original_query, "query-rewrite-skip-explicit-query"
 
     rewrite_model = settings.rag_query_rewrite_model or settings.llm_model
     rewrite_messages = [
@@ -466,11 +524,16 @@ async def _rewrite_query_for_rag(
         kwargs["extra_body"] = {"chat_template_kwargs": {"thinking": False}}
 
     try:
-        completion = await client.chat.completions.create(
-            model=rewrite_model,
-            messages=rewrite_messages,
-            **kwargs,
+        completion = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=rewrite_model,
+                messages=rewrite_messages,
+                **kwargs,
+            ),
+            timeout=settings.rag_query_rewrite_timeout_sec,
         )
+    except asyncio.TimeoutError:
+        return original_query, "query-rewrite-timeout"
     except Exception as exc:  # noqa: BLE001
         return original_query, f"query-rewrite-fallback={type(exc).__name__}"
 
@@ -564,6 +627,11 @@ async def _prepare_messages_with_rag(
     original_query, query_source = _extract_query_for_rag(messages)
     if not original_query:
         return messages, [], "RAG skipped: no usable message found.", None
+    if _is_small_talk_query(original_query):
+        rag_notes: list[str] = ["rag-skip-smalltalk"]
+        if query_source and query_source != "user":
+            rag_notes.append(f"RAG query source={query_source}")
+        return messages, [], None, " | ".join(rag_notes)
     retrieval_query, query_rewrite_status = await _rewrite_query_for_rag(
         original_query,
         rewrite_enabled_override,
@@ -714,6 +782,7 @@ async def _prepare_messages_with_rag(
             if len(selected_chunks) > settings.rag_target_max_chunks:
                 selected_chunks = selected_chunks[: settings.rag_target_max_chunks]
     except Exception as exc:  # noqa: BLE001
+        logger.exception("RAG retrieval pipeline failed: %s: %s", type(exc).__name__, exc)
         return messages, [], f"RAG retrieval failed: {exc}", None
 
     if adaptive_threshold_enabled:
@@ -907,6 +976,38 @@ if settings.gzip_enabled:
     )
 
 
+def _warmup_retrieval_components() -> None:
+    if not settings.rag_enabled:
+        return
+    try:
+        retriever = get_retriever()
+        retriever.warmup(
+            load_reranker=settings.rag_reranker_enabled,
+            prepare_bm25=True,
+        )
+        logger.info(
+            "[RAG-WARMUP] completed | reranker=%s | embedding_model=%s",
+            settings.rag_reranker_enabled,
+            settings.rag_embedding_model,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[RAG-WARMUP] failed: %s: %s", type(exc).__name__, exc)
+
+
+@app.on_event("startup")
+async def startup_warmup() -> None:
+    if not settings.rag_preload_on_startup:
+        return
+    if settings.rag_preload_blocking:
+        _warmup_retrieval_components()
+        return
+    threading.Thread(
+        target=_warmup_retrieval_components,
+        name="rag-warmup",
+        daemon=True,
+    ).start()
+
+
 @app.middleware("http")
 async def enforce_request_size_and_security_headers(request: Request, call_next):
     if settings.rate_limit_enabled and request.method != "OPTIONS":
@@ -990,6 +1091,13 @@ async def health():
             "query_rewrite_model": settings.rag_query_rewrite_model or settings.llm_model,
             "query_rewrite_max_tokens": settings.rag_query_rewrite_max_tokens,
             "query_rewrite_temperature": settings.rag_query_rewrite_temperature,
+            "query_rewrite_timeout_sec": settings.rag_query_rewrite_timeout_sec,
+            "query_rewrite_skip_tokens": settings.rag_query_rewrite_skip_tokens,
+            "reranker_cpu_max_candidates": settings.rag_reranker_cpu_max_candidates,
+            "reranker_snippet_chars": settings.rag_reranker_snippet_chars,
+            "reranker_cpu_snippet_chars": settings.rag_reranker_cpu_snippet_chars,
+            "preload_on_startup": settings.rag_preload_on_startup,
+            "preload_blocking": settings.rag_preload_blocking,
         },
         "workspace": {
             "enabled": True,
@@ -1069,12 +1177,14 @@ app.include_router(speech_router)
 
 @app.post("/chat")
 async def chat(payload: ChatRequest):
+    request_started = monotonic()
     input_messages = [message.model_dump() for message in payload.messages]
     llm_messages, rag_sources, rag_error, rag_note = await _prepare_messages_with_rag(
         input_messages,
         rewrite_enabled_override=payload.rag_query_rewrite,
     )
     llm_messages = _normalize_messages_for_provider(llm_messages)
+    rag_ready_at = monotonic()
 
     try:
         completion = await client.chat.completions.create(
@@ -1136,20 +1246,53 @@ async def chat(payload: ChatRequest):
         response_payload["rag_error"] = rag_error
     if rag_note:
         response_payload["rag_note"] = rag_note
+    completed_at = monotonic()
+    logger.info(
+        "[CHAT-LATENCY] prep_ms=%.1f llm_ms=%.1f total_ms=%.1f sources=%d provider=%s model=%s note=%s",
+        (rag_ready_at - request_started) * 1000.0,
+        (completed_at - rag_ready_at) * 1000.0,
+        (completed_at - request_started) * 1000.0,
+        len(rag_sources),
+        settings.llm_provider,
+        settings.llm_model,
+        _clip_for_log(rag_note or ""),
+    )
     return response_payload
 
 
 @app.post("/chat/stream")
 async def chat_stream(payload: ChatRequest):
+    request_started = monotonic()
     input_messages = [message.model_dump() for message in payload.messages]
     llm_messages, rag_sources, rag_error, rag_note = await _prepare_messages_with_rag(
         input_messages,
         rewrite_enabled_override=payload.rag_query_rewrite,
     )
     llm_messages = _normalize_messages_for_provider(llm_messages)
+    rag_ready_at = monotonic()
 
     async def event_generator() -> AsyncGenerator[str, None]:
         stream_rag_note = rag_note
+        first_token_at: float | None = None
+
+        def _log_stream_latency(final_note: str | None) -> None:
+            completed_at = monotonic()
+            first_token_ms = (
+                f"{((first_token_at - request_started) * 1000.0):.1f}"
+                if first_token_at is not None
+                else "none"
+            )
+            logger.info(
+                "[CHAT-STREAM-LATENCY] prep_ms=%.1f first_token_ms=%s total_ms=%.1f sources=%d provider=%s model=%s note=%s",
+                (rag_ready_at - request_started) * 1000.0,
+                first_token_ms,
+                (completed_at - request_started) * 1000.0,
+                len(rag_sources),
+                settings.llm_provider,
+                settings.llm_model,
+                _clip_for_log(final_note or ""),
+            )
+
         meta_payload: dict[str, Any] = {
             "status": "started",
             "model": settings.llm_model,
@@ -1187,6 +1330,8 @@ async def chat_stream(payload: ChatRequest):
 
                 content = getattr(delta, "content", None)
                 if isinstance(content, str) and content:
+                    if first_token_at is None:
+                        first_token_at = monotonic()
                     answer_parts.append(content)
                     yield _sse("token", {"text": content})
                     current_answer = "".join(answer_parts)
@@ -1207,6 +1352,7 @@ async def chat_stream(payload: ChatRequest):
                             done_payload["rag_note"] = final_rag_note
                         if citation_underuse:
                             done_payload["citation_underuse"] = True
+                        _log_stream_latency(final_rag_note)
                         yield _sse("done", done_payload)
                         return
 
@@ -1226,6 +1372,7 @@ async def chat_stream(payload: ChatRequest):
                         done_payload["rag_note"] = final_rag_note
                     if citation_underuse:
                         done_payload["citation_underuse"] = True
+                    _log_stream_latency(final_rag_note)
                     yield _sse("done", done_payload)
                     return
 
@@ -1244,8 +1391,10 @@ async def chat_stream(payload: ChatRequest):
                 done_payload["rag_note"] = final_rag_note
             if citation_underuse:
                 done_payload["citation_underuse"] = True
+            _log_stream_latency(final_rag_note)
             yield _sse("done", done_payload)
         except Exception as exc:  # noqa: BLE001
+            _log_stream_latency(stream_rag_note)
             yield _sse("error", {"detail": str(exc)})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

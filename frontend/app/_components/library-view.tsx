@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SignInButton, SignedIn, SignedOut, UserButton, useAuth } from "@clerk/nextjs";
 import {
   buildLibraryViewUrl,
   deleteConsultationApi,
@@ -11,6 +12,7 @@ import {
   type LibraryDocumentRecord,
 } from "../_lib/workspace-api";
 import { type ConsultationRecord } from "../_lib/workspace-store";
+import { clerkUserButtonAppearance } from "../_lib/clerk-theme";
 
 type LibraryViewProps = {
   title?: string;
@@ -402,13 +404,21 @@ function enrichDocuments(rows: LibraryDocumentRecord[]): DecoratedDocument[] {
 }
 
 export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewProps) {
+  const { isLoaded: isAuthLoaded, isSignedIn } = useAuth();
   const router = useRouter();
+  const signInModalTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [consultations, setConsultations] = useState<ConsultationRecord[]>([]);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; question: string } | null>(null);
   const [documents, setDocuments] = useState<DecoratedDocument[]>([]);
+  const [allLibraryDocuments, setAllLibraryDocuments] = useState<LibraryDocumentRecord[]>([]);
   const [loadingDocuments, setLoadingDocuments] = useState(true);
   const [documentError, setDocumentError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [articleSearch, setArticleSearch] = useState("");
+  const [keywordSearch, setKeywordSearch] = useState("");
+  const [infractionSearch, setInfractionSearch] = useState("");
+  const [jurisdictionSearch, setJurisdictionSearch] = useState("");
+  const [selectedDocumentId, setSelectedDocumentId] = useState("all");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedDocType, setSelectedDocType] = useState<DocTypeFilter>("Tous");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
@@ -423,6 +433,17 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState(false);
 
   const isDocumentsPage = title.toLowerCase().includes("documents");
+
+  const requireSignedIn = useCallback(() => {
+    if (!isAuthLoaded) {
+      return false;
+    }
+    if (isSignedIn) {
+      return true;
+    }
+    signInModalTriggerRef.current?.click();
+    return false;
+  }, [isAuthLoaded, isSignedIn]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -463,6 +484,13 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   }, [recentModelIds]);
 
   useEffect(() => {
+    if (!isAuthLoaded) {
+      return;
+    }
+    if (!isSignedIn) {
+      setConsultations([]);
+      return;
+    }
     let active = true;
     const loadConsultations = async () => {
       const rows = await readConsultationsApi();
@@ -474,9 +502,12 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     return () => {
       active = false;
     };
-  }, []);
+  }, [isAuthLoaded, isSignedIn]);
 
   useEffect(() => {
+    if (!isAuthLoaded || !isSignedIn) {
+      return;
+    }
     let active = true;
     const sync = async () => {
       const rows = await readConsultationsApi();
@@ -493,7 +524,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("storage", onStorage);
     };
-  }, []);
+  }, [isAuthLoaded, isSignedIn]);
 
   useEffect(() => {
     if (isDocumentsPage) {
@@ -502,10 +533,17 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       return;
     }
     let active = true;
-    const loadDocuments = async () => {
+    const timeoutId = window.setTimeout(async () => {
       setLoadingDocuments(true);
       setDocumentError("");
-      const rows = await listLibraryDocumentsApi();
+      const rows = await listLibraryDocumentsApi({
+        q: searchTerm,
+        article: articleSearch,
+        keyword: keywordSearch,
+        infractionType: infractionSearch,
+        jurisdiction: jurisdictionSearch,
+        documentId: selectedDocumentId === "all" ? "" : selectedDocumentId,
+      });
       if (!active) {
         return;
       }
@@ -513,14 +551,50 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       setDocuments(enriched);
       setLoadingDocuments(false);
       if (enriched.length === 0) {
-        setDocumentError("Aucun PDF detecte dans le dossier 'droit donnees'.");
+        setDocumentError("Aucun resultat pour cette recherche dans les chunks juridiques.");
       }
+    }, 260);
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
     };
-    void loadDocuments();
+  }, [
+    articleSearch,
+    infractionSearch,
+    isDocumentsPage,
+    jurisdictionSearch,
+    keywordSearch,
+    searchTerm,
+    selectedDocumentId,
+  ]);
+
+  useEffect(() => {
+    if (isDocumentsPage) {
+      return;
+    }
+    let active = true;
+    const loadCatalog = async () => {
+      const rows = await listLibraryDocumentsApi();
+      if (!active) {
+        return;
+      }
+      setAllLibraryDocuments(rows);
+    };
+    void loadCatalog();
     return () => {
       active = false;
     };
   }, [isDocumentsPage]);
+
+  useEffect(() => {
+    if (selectedDocumentId === "all") {
+      return;
+    }
+    if (allLibraryDocuments.some((doc) => doc.id === selectedDocumentId)) {
+      return;
+    }
+    setSelectedDocumentId("all");
+  }, [allLibraryDocuments, selectedDocumentId]);
 
   const recentSidebar = useMemo(() => consultations.slice(0, 8), [consultations]);
 
@@ -565,7 +639,6 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   }, [documents, categories]);
 
   const filteredDocuments = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLowerCase();
     return documents.filter((doc) => {
       if (selectedCategories.length === 0) {
         return false;
@@ -576,13 +649,9 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       if (selectedDocType !== "Tous" && doc.docType !== selectedDocType) {
         return false;
       }
-      if (normalizedSearch.length === 0) {
-        return true;
-      }
-      const haystack = `${doc.title} ${doc.description} ${doc.category} ${doc.docType} ${doc.folder}`.toLowerCase();
-      return haystack.includes(normalizedSearch);
+      return true;
     });
-  }, [documents, searchTerm, selectedCategories, selectedDocType]);
+  }, [documents, selectedCategories, selectedDocType]);
 
   const pageSize = viewMode === "list" ? 8 : 9;
   const totalPages = Math.max(1, Math.ceil(filteredDocuments.length / pageSize));
@@ -630,11 +699,17 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   }, [recentModelIds]);
 
   const openChatWithQuestion = (question: string) => {
+    if (!requireSignedIn()) {
+      return;
+    }
     setIsMobileLeftPanelOpen(false);
     router.push(`/chat?q=${encodeURIComponent(question)}`);
   };
 
   const openActGeneratorFromDashboard = () => {
+    if (!requireSignedIn()) {
+      return;
+    }
     setIsMobileLeftPanelOpen(false);
     router.push("/chat?act=1");
   };
@@ -648,6 +723,9 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   };
 
   const confirmDeleteConsultation = async () => {
+    if (!requireSignedIn()) {
+      return;
+    }
     if (!pendingDelete) {
       return;
     }
@@ -673,6 +751,11 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     setSearchTerm("");
     setSelectedCategories(categories);
     setSelectedDocType("Tous");
+    setArticleSearch("");
+    setKeywordSearch("");
+    setInfractionSearch("");
+    setJurisdictionSearch("");
+    setSelectedDocumentId("all");
     setCurrentPage(1);
   };
 
@@ -681,12 +764,35 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     setSelectedCategories([]);
   };
 
+  const clearAdvancedSearch = () => {
+    setCurrentPage(1);
+    setArticleSearch("");
+    setKeywordSearch("");
+    setInfractionSearch("");
+    setJurisdictionSearch("");
+    setSelectedDocumentId("all");
+  };
+
+  const advancedSearchCount = [
+    articleSearch,
+    keywordSearch,
+    infractionSearch,
+    jurisdictionSearch,
+    selectedDocumentId !== "all" ? "document-filter" : "",
+  ].filter((value) => value.trim().length > 0).length;
+
   const handleAskAi = (doc: DecoratedDocument) => {
+    if (!requireSignedIn()) {
+      return;
+    }
     const prompt = `Analyse ce document: ${doc.title}.`;
     openChatWithQuestion(prompt);
   };
 
   const handleDownload = (doc: DecoratedDocument) => {
+    if (!requireSignedIn()) {
+      return;
+    }
     const url = buildLibraryViewUrl(doc.id);
     window.open(url, "_blank", "noopener,noreferrer");
   };
@@ -705,6 +811,9 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   };
 
   const openTemplateInChat = (template: DocumentTemplate) => {
+    if (!requireSignedIn()) {
+      return;
+    }
     markRecentTemplate(template.id);
     const prompt = `Je veux utiliser le modele "${template.name}". Pose les questions manquantes puis genere un document structure conforme au droit applicable.`;
     openChatWithQuestion(prompt);
@@ -712,6 +821,11 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
 
   return (
     <div className="min-h-screen lg:h-screen flex flex-col overflow-x-hidden lg:overflow-hidden bg-[#112117] text-slate-100">
+      <SignedOut>
+        <SignInButton mode="modal">
+          <button ref={signInModalTriggerRef} type="button" className="hidden" aria-hidden="true" />
+        </SignInButton>
+      </SignedOut>
       <header className="flex items-center gap-4 px-3 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
         <div className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0`}>
           <div className="size-8 bg-primary rounded flex items-center justify-center">
@@ -736,6 +850,25 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
               </span>
             </div>
           </div>
+        </div>
+        <div className="hidden md:flex items-center gap-2 shrink-0">
+          <SignedOut>
+            <Link
+              className="inline-flex items-center justify-center rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-semibold text-slate-200 hover:border-[#49DE80]/60 hover:text-[#49DE80] transition-colors"
+              href="/sign-in"
+            >
+              Se connecter
+            </Link>
+            <Link
+              className="inline-flex items-center justify-center rounded-lg bg-[#49DE80] px-3 py-1.5 text-sm font-bold text-[#112117] hover:bg-[#3fd273] transition-colors"
+              href="/sign-up"
+            >
+              Creer un compte
+            </Link>
+          </SignedOut>
+          <SignedIn>
+            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance} />
+          </SignedIn>
         </div>
         <div className="lg:hidden flex items-center gap-2">
           <button
@@ -820,6 +953,17 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                 className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
                   isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
                 }`}
+                href="/dashboard"
+                onClick={() => setIsMobileLeftPanelOpen(false)}
+                title="Dashboard"
+              >
+                <span className="material-symbols-outlined">space_dashboard</span>
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Dashboard</span> : null}
+              </Link>
+              <Link
+                className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
+                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
+                }`}
                 href="/bibliotheque"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
                 title="Codes & Lois"
@@ -863,48 +1007,50 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
             </nav>
           </div>
           {!isSidebarCollapsed ? (
-            <div className="flex-1 overflow-y-auto px-6">
-              <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-4 px-2">
-                Historique recent
-              </p>
-              <div className="space-y-2">
-                {recentSidebar.length === 0 ? (
-                  <div className="p-3 rounded-lg border border-slate-800">
-                    <p className="text-xs text-slate-500">Aucune consultation enregistree pour le moment.</p>
-                  </div>
-                ) : (
-                  recentSidebar.map((item) => (
-                    <div
-                      className="group p-3 rounded-lg hover:bg-white/5 transition-colors border border-transparent hover:border-slate-800"
-                      key={item.id}
-                    >
-                      <div className="flex items-start gap-2">
-                        <button
-                          className="flex-1 min-w-0 text-left cursor-pointer"
-                          onClick={() => openChatWithQuestion(item.question)}
-                          type="button"
-                        >
-                          <p className="text-sm font-medium text-slate-200 truncate">{item.question}</p>
-                          <p className="text-xs text-slate-500 mt-1">{formatShortDate(item.updatedAt)}</p>
-                        </button>
-                        <button
-                          aria-label="Supprimer la conversation"
-                          className="shrink-0 p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-colors"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            requestDeleteConsultation(item.id, item.question);
-                            setIsMobileLeftPanelOpen(false);
-                          }}
-                          type="button"
-                        >
-                          <span className="material-symbols-outlined text-base">delete</span>
-                        </button>
-                      </div>
+            <SignedIn>
+              <div className="flex-1 overflow-y-auto px-6">
+                <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-4 px-2">
+                  Historique recent
+                </p>
+                <div className="space-y-2">
+                  {recentSidebar.length === 0 ? (
+                    <div className="p-3 rounded-lg border border-slate-800">
+                      <p className="text-xs text-slate-500">Aucune consultation enregistree pour le moment.</p>
                     </div>
-                  ))
-                )}
+                  ) : (
+                    recentSidebar.map((item) => (
+                      <div
+                        className="group p-3 rounded-lg hover:bg-white/5 transition-colors border border-transparent hover:border-slate-800"
+                        key={item.id}
+                      >
+                        <div className="flex items-start gap-2">
+                          <button
+                            className="flex-1 min-w-0 text-left cursor-pointer"
+                            onClick={() => openChatWithQuestion(item.question)}
+                            type="button"
+                          >
+                            <p className="text-sm font-medium text-slate-200 truncate">{item.question}</p>
+                            <p className="text-xs text-slate-500 mt-1">{formatShortDate(item.updatedAt)}</p>
+                          </button>
+                          <button
+                            aria-label="Supprimer la conversation"
+                            className="shrink-0 p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-colors"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              requestDeleteConsultation(item.id, item.question);
+                              setIsMobileLeftPanelOpen(false);
+                            }}
+                            type="button"
+                          >
+                            <span className="material-symbols-outlined text-base">delete</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
-            </div>
+            </SignedIn>
           ) : null}
         </aside>
 
@@ -949,6 +1095,112 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
               </div>
             </div>
           </div>
+
+          {!isDocumentsPage ? (
+            <section className="rounded-2xl border border-slate-800 bg-[#1a2e22] p-4 sm:p-6 space-y-4">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-100">Moteur de recherche juridique avance</h3>
+                  <p className="text-sm text-slate-400">
+                    Recherche multi-niveaux: article de loi, mot-cle, type d&apos;infraction et juridiction.
+                  </p>
+                </div>
+                <span className="inline-flex items-center gap-2 self-start rounded-full border border-[#49DE80]/40 bg-[#49DE80]/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-[#49DE80]">
+                  <span className="material-symbols-outlined text-sm">manage_search</span>
+                  Recherche multi-niveaux
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+                <label className="space-y-1.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Document juridique</span>
+                  <select
+                    className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setSelectedDocumentId(event.target.value);
+                    }}
+                    value={selectedDocumentId}
+                  >
+                    <option value="all">Tous les documents</option>
+                    {allLibraryDocuments.map((doc) => (
+                      <option key={doc.id} value={doc.id}>
+                        {doc.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Article de loi</span>
+                  <input
+                    className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setArticleSearch(event.target.value);
+                    }}
+                    placeholder="Ex: article 5"
+                    type="text"
+                    value={articleSearch}
+                  />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Mot-cle</span>
+                  <input
+                    className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setKeywordSearch(event.target.value);
+                    }}
+                    placeholder="Ex: succession"
+                    type="text"
+                    value={keywordSearch}
+                  />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Type d&apos;infraction</span>
+                  <input
+                    className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setInfractionSearch(event.target.value);
+                    }}
+                    placeholder="Ex: vol, abus de confiance"
+                    type="text"
+                    value={infractionSearch}
+                  />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Juridiction</span>
+                  <input
+                    className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setJurisdictionSearch(event.target.value);
+                    }}
+                    placeholder="Ex: Cour supreme"
+                    type="text"
+                    value={jurisdictionSearch}
+                  />
+                </label>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-slate-400">
+                  {advancedSearchCount === 0
+                    ? "Aucun filtre avance actif."
+                    : `${advancedSearchCount} filtre(s) avance(s) actif(s).`}
+                </p>
+                <button
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 transition-colors"
+                  onClick={clearAdvancedSearch}
+                  type="button"
+                >
+                  <span className="material-symbols-outlined text-base">filter_alt_off</span>
+                  Effacer la recherche avancee
+                </button>
+              </div>
+            </section>
+          ) : null}
 
           {isDocumentsPage ? (
             <div className="grid grid-cols-1 xl:grid-cols-[340px_1fr] gap-8">
@@ -1269,6 +1521,22 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                               <div>
                                 <h4 className="font-bold text-slate-100 group-hover:text-[#49DE80] transition-colors">{row.title}</h4>
                                 <p className="text-xs text-slate-400 mt-1 line-clamp-1">{row.description}</p>
+                                {row.blockLabel || row.subCategory ? (
+                                  <p className="text-[11px] text-slate-500 mt-1 line-clamp-1">
+                                    {[row.blockLabel, row.subCategory].filter(Boolean).join(" • ")}
+                                  </p>
+                                ) : null}
+                                {row.curationNote ? (
+                                  <p className="text-[11px] text-amber-300/90 mt-1 line-clamp-1">{row.curationNote}</p>
+                                ) : null}
+                                {typeof row.matchedChunkCount === "number" && row.matchedChunkCount > 0 ? (
+                                  <p className="text-[11px] text-[#49DE80] mt-1">
+                                    {row.matchedChunkCount} chunk(s) pertinent(s)
+                                    {Array.isArray(row.matchedPages) && row.matchedPages.length > 0
+                                      ? ` | pages ${row.matchedPages.slice(0, 4).join(", ")}`
+                                      : ""}
+                                  </p>
+                                ) : null}
                               </div>
                             </div>
                           </td>
@@ -1321,7 +1589,23 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                           <h4 className="font-bold leading-snug text-slate-100">{row.title}</h4>
                         </div>
                       </div>
-                      <p className="text-sm text-slate-300 mb-4 line-clamp-2">{row.description}</p>
+                      <p className="text-sm text-slate-300 mb-2 line-clamp-2">{row.description}</p>
+                      {row.blockLabel || row.subCategory ? (
+                        <p className="text-[11px] text-slate-500 mb-2 line-clamp-1">
+                          {[row.blockLabel, row.subCategory].filter(Boolean).join(" • ")}
+                        </p>
+                      ) : null}
+                      {row.curationNote ? (
+                        <p className="text-[11px] text-amber-300/90 mb-2 line-clamp-2">{row.curationNote}</p>
+                      ) : null}
+                      {typeof row.matchedChunkCount === "number" && row.matchedChunkCount > 0 ? (
+                        <p className="text-[11px] text-[#49DE80] mb-3">
+                          {row.matchedChunkCount} chunk(s) pertinent(s)
+                          {Array.isArray(row.matchedPages) && row.matchedPages.length > 0
+                            ? ` | pages ${row.matchedPages.slice(0, 3).join(", ")}`
+                            : ""}
+                        </p>
+                      ) : null}
                       <div className="flex items-center justify-between">
                         <span className={`px-2.5 py-1 text-[10px] font-bold uppercase rounded-full border ${row.categoryClass}`}>{row.category}</span>
                         <div className="flex items-center gap-2">
