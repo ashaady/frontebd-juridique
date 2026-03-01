@@ -48,17 +48,47 @@ export type LibraryDocumentRecord = {
   description: string;
   category: string;
   docType: string;
+  sectionNumber?: number;
+  sectionLabel?: string;
+  sectionTitle?: string;
+  blockCode?: string;
+  blockTitle?: string;
+  blockLabel?: string;
+  subCategory?: string;
+  curationNote?: string;
+  isDuplicate?: boolean;
   folder: string;
   fileName: string;
   relativePath: string;
   size: number;
   updatedAt: string;
   downloadUrl: string;
+  searchScore?: number;
+  matchedChunkCount?: number;
+  matchedPages?: number[];
+  matchedSnippet?: string;
 };
 
 type LibraryDocumentListResponse = {
   items: LibraryDocumentRecord[];
   total: number;
+};
+
+export type LibraryChunkRecord = {
+  chunk_id: string;
+  text: string;
+  snippet?: string;
+  relative_path?: string | null;
+  source_path?: string | null;
+  page_start?: number | null;
+  page_end?: number | null;
+  article_hint?: string | null;
+};
+
+type LibraryChunkResolveResponse = {
+  items: LibraryChunkRecord[];
+  requested: number;
+  resolved: number;
 };
 
 type SpeechTranscriptionResponse = {
@@ -255,6 +285,11 @@ export async function uploadWorkspaceFilesApi(files: File[]): Promise<{
 export async function listLibraryDocumentsApi(params?: {
   q?: string;
   category?: string;
+  article?: string;
+  keyword?: string;
+  infractionType?: string;
+  jurisdiction?: string;
+  documentId?: string;
 }): Promise<LibraryDocumentRecord[]> {
   const query = new URLSearchParams();
   if (params?.q && params.q.trim().length > 0) {
@@ -263,8 +298,51 @@ export async function listLibraryDocumentsApi(params?: {
   if (params?.category && params.category.trim().length > 0) {
     query.set("category", params.category.trim());
   }
+  if (params?.article && params.article.trim().length > 0) {
+    query.set("article", params.article.trim());
+  }
+  if (params?.keyword && params.keyword.trim().length > 0) {
+    query.set("keyword", params.keyword.trim());
+  }
+  if (params?.infractionType && params.infractionType.trim().length > 0) {
+    query.set("infraction_type", params.infractionType.trim());
+  }
+  if (params?.jurisdiction && params.jurisdiction.trim().length > 0) {
+    query.set("jurisdiction", params.jurisdiction.trim());
+  }
+  if (params?.documentId && params.documentId.trim().length > 0) {
+    query.set("document_id", params.documentId.trim());
+  }
   const suffix = query.toString() ? `?${query.toString()}` : "";
   const remote = await requestJson<LibraryDocumentListResponse>(`/library/documents${suffix}`);
+  if (remote && Array.isArray(remote.items)) {
+    return remote.items;
+  }
+  return [];
+}
+
+export async function resolveLibraryChunksApi(chunkIds: string[]): Promise<LibraryChunkRecord[]> {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const rawChunkId of chunkIds) {
+    const chunkId = String(rawChunkId ?? "").trim();
+    if (!chunkId || seen.has(chunkId)) {
+      continue;
+    }
+    seen.add(chunkId);
+    unique.push(chunkId);
+    if (unique.length >= 64) {
+      break;
+    }
+  }
+  if (unique.length === 0) {
+    return [];
+  }
+
+  const remote = await requestJson<LibraryChunkResolveResponse>("/library/chunks/resolve", {
+    method: "POST",
+    body: JSON.stringify({ chunk_ids: unique }),
+  });
   if (remote && Array.isArray(remote.items)) {
     return remote.items;
   }
