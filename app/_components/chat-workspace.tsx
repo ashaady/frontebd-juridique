@@ -2,16 +2,20 @@
 
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { SignInButton, SignedIn, SignedOut, UserButton, useAuth } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
+import { SignInButton, SignedIn, SignedOut, UserButton, useAuth, useUser } from "@clerk/nextjs";
 import { jsPDF } from "jspdf";
 import {
   buildLibraryViewUrl,
   clearConsultationsApi,
   clearWorkspaceFilesApi,
   listLibraryDocumentsApi,
+  readConsultationsApi,
+  readWorkspaceTemplatesApi,
   readWorkspaceFilesApi,
   readWorkspaceNotesApi,
   resolveLibraryChunksApi,
+  setWorkspaceUserContext,
   transcribeSpeechApi,
   upsertConsultationApi,
   uploadWorkspaceFilesApi,
@@ -21,6 +25,8 @@ import {
   type LibraryDocumentRecord,
 } from "../_lib/workspace-api";
 import {
+  type ConsultationRecord,
+  type CustomDocumentTemplateRecord,
   type WorkspaceFileRecord
 } from "../_lib/workspace-store";
 import { clerkUserButtonAppearance } from "../_lib/clerk-theme";
@@ -102,20 +108,12 @@ type SourceBreakdownItem = {
 type ChatWorkspaceProps = {
   initialQuestion?: string;
   autoOpenActGenerator?: boolean;
+  initialActTemplateId?: string;
 };
 
 type RightPanelTab = "workspace" | "notes" | "files";
 type ActFieldType = "text" | "textarea" | "date" | "number" | "select";
-type ActType =
-  | "contrat_bail"
-  | "contrat_travail"
-  | "mise_en_demeure"
-  | "plainte_penale"
-  | "requete"
-  | "assignation"
-  | "procuration"
-  | "statuts_societe_ohada"
-  | "reconnaissance_dette";
+type ActType = string;
 
 type ActFieldDefinition = {
   key: string;
@@ -130,14 +128,18 @@ type ActFieldDefinition = {
 type ActTemplateDefinition = {
   type: ActType;
   label: string;
+  category: string;
   description: string;
   branch: string;
   fields: ActFieldDefinition[];
+  isCustom?: boolean;
 };
 
 type SendQuestionOptions = {
   disableRagRewrite?: boolean;
   displayQuestion?: string;
+  workspaceOnly?: boolean;
+  workspaceFileIds?: string[];
 };
 
 type PdfBlockKind = "h1" | "h2" | "h3" | "p" | "li";
@@ -166,11 +168,15 @@ const QUICK_QUESTIONS: string[] = [
   "Impact de la loi 2021 sur les contrats electroniques ?",
   "Delais de prescription pour une creance commerciale ?"
 ];
+const WORKSPACE_ONLY_AUTO_PROMPT =
+  "Analyse le document joint et fournis une synthese juridique exploitable (resume, risques, points sensibles, recommandations).";
+const HISTORY_TITLE_MAX_CHARS = 96;
 
 const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   contrat_bail: {
     type: "contrat_bail",
     label: "Contrat de bail",
+    category: "Contrats civils",
     description: "Bail d'habitation ou commercial conforme au droit senegalais.",
     branch: "Droit des obligations / baux",
     fields: [
@@ -198,6 +204,7 @@ const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   contrat_travail: {
     type: "contrat_travail",
     label: "Contrat de travail",
+    category: "Contrats de travail",
     description: "Contrat adapte au Code du travail senegalais.",
     branch: "Droit du travail",
     fields: [
@@ -228,6 +235,7 @@ const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   mise_en_demeure: {
     type: "mise_en_demeure",
     label: "Mise en demeure",
+    category: "Contentieux et precontentieux",
     description: "Lettre de sommation formelle avant action judiciaire.",
     branch: "Procedure civile / obligations",
     fields: [
@@ -245,6 +253,7 @@ const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   plainte_penale: {
     type: "plainte_penale",
     label: "Plainte penale",
+    category: "Procedure penale",
     description: "Plainte fondee sur le Code penal et le Code de procedure penale senegalais.",
     branch: "Droit penal / procedure penale",
     fields: [
@@ -262,6 +271,7 @@ const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   requete: {
     type: "requete",
     label: "Requete",
+    category: "Procedure civile",
     description: "Requete adressee a une juridiction ou une autorite competente.",
     branch: "Procedure",
     fields: [
@@ -278,6 +288,7 @@ const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   assignation: {
     type: "assignation",
     label: "Assignation",
+    category: "Procedure civile",
     description: "Assignation introductive d'instance en matiere civile ou commerciale.",
     branch: "Procedure civile / commerciale",
     fields: [
@@ -294,6 +305,7 @@ const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   procuration: {
     type: "procuration",
     label: "Procuration",
+    category: "Mandats et representations",
     description: "Mandat donne a une personne pour agir au nom d'une autre.",
     branch: "Droit civil / representation",
     fields: [
@@ -309,6 +321,7 @@ const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   statuts_societe_ohada: {
     type: "statuts_societe_ohada",
     label: "Statuts de societe (OHADA)",
+    category: "Societes et OHADA",
     description: "Projet de statuts conforme au droit des societes OHADA.",
     branch: "Droit OHADA / societes",
     fields: [
@@ -337,6 +350,7 @@ const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   reconnaissance_dette: {
     type: "reconnaissance_dette",
     label: "Reconnaissance de dette",
+    category: "Contrats civils",
     description: "Acte constatant une dette et ses modalites de remboursement.",
     branch: "Droit des obligations",
     fields: [
@@ -357,9 +371,114 @@ const DEFAULT_ACT_TYPE: ActType = "contrat_bail";
 
 const EMPTY_TURNS: Turn[] = [];
 
-function buildInitialActFormValues(type: ActType): Record<string, string> {
+function normalizeActFieldType(value: unknown): ActFieldType {
+  const lowered = String(value ?? "").trim().toLowerCase();
+  if (lowered === "textarea") {
+    return "textarea";
+  }
+  if (lowered === "date") {
+    return "date";
+  }
+  if (lowered === "number") {
+    return "number";
+  }
+  if (lowered === "select") {
+    return "select";
+  }
+  return "text";
+}
+
+function sanitizeActFieldKey(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || `champ_${Date.now()}`;
+}
+
+function buildActTemplateFromCustom(
+  template: CustomDocumentTemplateRecord
+): ActTemplateDefinition | null {
+  const type = String(template.id ?? "").trim();
+  const label = String(template.name ?? "").trim();
+  if (!type || !label) {
+    return null;
+  }
+  let fields: ActFieldDefinition[] = Array.isArray(template.fields)
+    ? template.fields
+        .map((field, index): ActFieldDefinition | null => {
+          const fieldLabel = String(field.label ?? "").trim();
+          if (!fieldLabel) {
+            return null;
+          }
+          const fieldKey = String(field.key ?? "").trim() || sanitizeActFieldKey(`${fieldLabel}_${index + 1}`);
+          const typeValue = normalizeActFieldType(field.type);
+          const options = Array.isArray(field.options)
+            ? field.options
+                .map((option) => {
+                  const value = String(option.value ?? "").trim();
+                  const label = String(option.label ?? "").trim() || value;
+                  if (!value) {
+                    return null;
+                  }
+                  return { value, label };
+                })
+                .filter((option): option is { value: string; label: string } => Boolean(option))
+            : [];
+          const parsedField: ActFieldDefinition = {
+            key: fieldKey,
+            label: fieldLabel,
+            required: Boolean(field.required),
+            placeholder: String(field.placeholder ?? "").trim() || undefined,
+            type: typeValue,
+            options: typeValue === "select" && options.length > 0 ? options : undefined,
+            hint: String(field.hint ?? "").trim() || undefined,
+          };
+          return parsedField;
+        })
+        .filter((field) => field !== null) as ActFieldDefinition[]
+    : [];
+
+  if (fields.length === 0) {
+    fields = (template.requiredFields ?? [])
+      .map((label, index): ActFieldDefinition | null => {
+        const fieldLabel = String(label ?? "").trim();
+        if (!fieldLabel) {
+          return null;
+        }
+        const fallbackField: ActFieldDefinition = {
+          key: sanitizeActFieldKey(`${fieldLabel}_${index + 1}`),
+          label: fieldLabel,
+          required: true,
+          type: "text" as const,
+        };
+        return fallbackField;
+      })
+      .filter((field) => field !== null) as ActFieldDefinition[];
+  }
+  if (fields.length === 0) {
+    return null;
+  }
+
+  return {
+    type,
+    label,
+    category: String(template.category ?? "").trim() || "Modeles personnalises",
+    description: String(template.description ?? "").trim() || "Modele personnalise genere par IA.",
+    branch: String(template.branch ?? "").trim() || String(template.domain ?? "").trim() || "Document juridique",
+    fields,
+    isCustom: true,
+  };
+}
+
+function buildInitialActFormValues(template: ActTemplateDefinition | null): Record<string, string> {
   const values: Record<string, string> = {};
-  for (const field of ACT_TEMPLATES[type].fields) {
+  if (!template) {
+    return values;
+  }
+  for (const field of template.fields) {
     values[field.key] = "";
   }
   return values;
@@ -480,13 +599,15 @@ function buildActValidationPrompt(
   template: ActTemplateDefinition,
   values: Record<string, string>,
   userIntent: string,
+  currentDocument: string = "",
   popupConversation: PopupChatMessage[] = [],
   userMessage: string = "Analyse les informations actuelles et produis la prochaine meilleure sortie."
 ): string {
   const filledLines = template.fields.map((field) => {
     const rawValue = (values[field.key] ?? "").trim();
     const value = rawValue.length > 0 ? rawValue : "[MANQUANT]";
-    return `- ${field.label}: ${value}`;
+    const requirementTag = field.required ? "OBLIGATOIRE" : "OPTIONNEL";
+    return `- ${field.label} [${requirementTag}]: ${value}`;
   });
 
   const contextBlock =
@@ -502,11 +623,16 @@ function buildActValidationPrompt(
           )
           .join("\n")
       : "Aucun echange precedent dans le mini chat.";
+  const currentDocumentBlock =
+    currentDocument.trim().length > 0
+      ? `Document actuel a reviser (version en cours):\n${currentDocument.trim()}\n`
+      : "Document actuel a reviser (version en cours):\nAucun document genere pour le moment.\n";
 
   return [
     `Tu dois verifier et rediger un ${template.label} (${template.branch}).`,
     "Tu es dans un mini chat de generation d'acte. Reponds uniquement en francais.",
     contextBlock,
+    currentDocumentBlock,
     "Informations collectees:",
     ...filledLines,
     "",
@@ -519,14 +645,19 @@ function buildActValidationPrompt(
     "1) Retourne uniquement un JSON valide et rien d'autre.",
     "2) Schema JSON obligatoire:",
     '{"status":"missing|complete","missing_items":["..."],"assistant_reply":"...","document":"..."}',
-    "3) Si des informations essentielles manquent: status=missing, missing_items non vide, assistant_reply contient des questions precises, document vide.",
-    "4) Si les informations sont suffisantes: status=complete, missing_items vide, assistant_reply court, document complet.",
-    "5) Le document final doit etre structure: titre, parties, base legale, clauses/articles, date/lieu, signatures.",
-    "6) Adapter au droit applicable Senegal/OHADA selon la matiere.",
-    "7) Ne produis jamais de code informatique.",
-    "8) Terminer le document par cette mention exacte:",
+    "3) Seules les informations marquees OBLIGATOIRE peuvent bloquer la generation.",
+    "4) Les champs OPTIONNEL ne doivent jamais etre demandes comme condition bloquante.",
+    "5) Si des informations obligatoires manquent: status=missing, missing_items non vide, assistant_reply contient des questions precises, document vide.",
+    "6) Si toutes les informations obligatoires sont presentes: status=complete, missing_items vide, assistant_reply court, document complet.",
+    "7) Si un document actuel existe et que l'utilisateur demande une modification, appliquer la modification directement sur ce document.",
+    "8) N'appliquer une modification que si elle reste conforme au droit senegalais/OHADA.",
+    "9) Si la demande de modification est non conforme ou illicite, refuser explicitement dans assistant_reply, conserver un document conforme dans document (version precedente ou corrigee conforme).",
+    "10) Le document final doit etre structure: titre, parties, base legale, clauses/articles, date/lieu, signatures.",
+    "11) Adapter au droit applicable Senegal/OHADA selon la matiere.",
+    "12) Ne produis jamais de code informatique.",
+    "13) Terminer le document par cette mention exacte:",
     '"Ce document est un modele genere automatiquement et doit etre verifie par un professionnel du droit avant utilisation."',
-    "9) Ne retourne aucun texte hors JSON."
+    "14) Ne retourne aucun texte hors JSON."
   ].join("\n");
 }
 
@@ -673,6 +804,224 @@ function buildMessageHistory(turns: Turn[]): ChatMessagePayload[] {
   return history;
 }
 
+type PersistedSessionPayload = {
+  version: 1;
+  title: string;
+  turns: Turn[];
+};
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateHistoryTitle(value: string): string {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) {
+    return "Discussion";
+  }
+  if (normalized.length <= HISTORY_TITLE_MAX_CHARS) {
+    return normalized;
+  }
+  return `${normalized.slice(0, HISTORY_TITLE_MAX_CHARS - 3).trimEnd()}...`;
+}
+
+function extractFirstAttachmentName(displayQuestion: string): string {
+  const lines = displayQuestion
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const attachmentLine = lines.find((line) => line.startsWith("📎"));
+  if (!attachmentLine) {
+    return "";
+  }
+  const normalized = attachmentLine.replace(/^📎\s*/, "").trim();
+  if (!normalized) {
+    return "";
+  }
+  const first = normalized.split(",")[0]?.split("+")[0]?.trim() ?? "";
+  return first;
+}
+
+function deriveSessionTitle(turns: Turn[]): string {
+  if (turns.length === 0) {
+    return "Discussion";
+  }
+  const firstTurn = turns[0];
+  const question = normalizeWhitespace(firstTurn.question ?? "");
+  const displayQuestion = String(firstTurn.displayQuestion ?? "").trim();
+  if (question && question.toLowerCase() !== WORKSPACE_ONLY_AUTO_PROMPT.toLowerCase()) {
+    return truncateHistoryTitle(question);
+  }
+  if (question.toLowerCase() === WORKSPACE_ONLY_AUTO_PROMPT.toLowerCase()) {
+    const attachmentName = extractFirstAttachmentName(displayQuestion);
+    if (attachmentName) {
+      return truncateHistoryTitle(attachmentName);
+    }
+    return "Document joint";
+  }
+  const displayFirstLine = displayQuestion.split("\n")[0]?.trim() ?? "";
+  if (displayFirstLine) {
+    return truncateHistoryTitle(displayFirstLine);
+  }
+  return "Discussion";
+}
+
+function normalizePersistedStatus(value: unknown): TurnStatus {
+  if (value === "error") {
+    return "error";
+  }
+  if (value === "streaming") {
+    return "streaming";
+  }
+  return "done";
+}
+
+function normalizePersistedRagSources(value: unknown): RagSource[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const normalized: RagSource[] = [];
+  for (const row of value) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+    const source = row as Record<string, unknown>;
+    normalized.push({
+      rank: typeof source.rank === "number" ? source.rank : undefined,
+      score: typeof source.score === "number" ? source.score : undefined,
+      chunk_id: typeof source.chunk_id === "string" ? source.chunk_id : undefined,
+      citation: typeof source.citation === "string" ? source.citation : undefined,
+      relative_path: typeof source.relative_path === "string" ? source.relative_path : null,
+      source_path: typeof source.source_path === "string" ? source.source_path : null,
+      page_start: typeof source.page_start === "number" ? source.page_start : null,
+      page_end: typeof source.page_end === "number" ? source.page_end : null,
+      article_hint: typeof source.article_hint === "string" ? source.article_hint : null,
+    });
+  }
+  return normalized;
+}
+
+function buildSessionPayload(title: string, turns: Turn[]): string {
+  const payload: PersistedSessionPayload = {
+    version: 1,
+    title: truncateHistoryTitle(title),
+    turns: turns.map((turn) => ({
+      id: String(turn.id || ""),
+      question: String(turn.question || ""),
+      displayQuestion: turn.displayQuestion ? String(turn.displayQuestion) : undefined,
+      answer: String(turn.answer || ""),
+      reasoning: String(turn.reasoning || ""),
+      status: normalizePersistedStatus(turn.status),
+      ragSources: normalizePersistedRagSources(turn.ragSources),
+      ragNote: String(turn.ragNote || ""),
+      finishReason: String(turn.finishReason || ""),
+    })),
+  };
+  return JSON.stringify(payload);
+}
+
+function parseSessionPayload(answer: string): PersistedSessionPayload | null {
+  const trimmed = String(answer ?? "").trim();
+  if (!trimmed.startsWith("{")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.turns)) {
+      return null;
+    }
+    const rows: Turn[] = [];
+    parsed.turns.forEach((row, index) => {
+      if (!row || typeof row !== "object") {
+        return;
+      }
+      const turn = row as Record<string, unknown>;
+      const question = String(turn.question ?? "").trim();
+      const answerText = String(turn.answer ?? "").trim();
+      if (!question && !answerText) {
+        return;
+      }
+      rows.push({
+        id: String(turn.id ?? "").trim() || `turn-restored-${index + 1}`,
+        question,
+        displayQuestion: String(turn.displayQuestion ?? "").trim() || undefined,
+        answer: String(turn.answer ?? ""),
+        reasoning: String(turn.reasoning ?? ""),
+        status: normalizePersistedStatus(turn.status),
+        ragSources: normalizePersistedRagSources(turn.ragSources),
+        ragNote: String(turn.ragNote ?? ""),
+        finishReason: String(turn.finishReason ?? ""),
+      });
+    });
+    if (rows.length === 0) {
+      return null;
+    }
+    return {
+      version: 1,
+      title: truncateHistoryTitle(String(parsed.title ?? "").trim()),
+      turns: rows,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function consultationTitle(record: ConsultationRecord): string {
+  const direct = String(record.question ?? "").trim();
+  if (direct && !/^session du/i.test(direct)) {
+    return truncateHistoryTitle(direct);
+  }
+  const parsed = parseSessionPayload(record.answer);
+  if (parsed?.title) {
+    return truncateHistoryTitle(parsed.title);
+  }
+  if (direct) {
+    return truncateHistoryTitle(direct.replace(/^session du/i, "Discussion"));
+  }
+  return "Discussion";
+}
+
+function composerFileKey(file: File): string {
+  return `${file.name}|${file.size}|${file.lastModified}`;
+}
+
+function dedupeComposerFiles(files: File[]): File[] {
+  const byKey = new Map<string, File>();
+  for (const file of files) {
+    byKey.set(composerFileKey(file), file);
+  }
+  return Array.from(byKey.values());
+}
+
+function summarizeAttachedFileNames(fileNames: string[]): string {
+  const clean = fileNames
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  if (clean.length === 0) {
+    return "";
+  }
+  const preview = clean.slice(0, 3).join(", ");
+  if (clean.length <= 3) {
+    return preview;
+  }
+  return `${preview} +${clean.length - 3}`;
+}
+
+function buildQuestionDisplayLabel(
+  question: string,
+  attachedFileNames: string[],
+  workspaceOnly: boolean
+): string {
+  const attachmentPreview = summarizeAttachedFileNames(attachedFileNames);
+  const base = workspaceOnly
+    ? "Analyse du document joint"
+    : (question.trim().length > 0 ? question.trim() : "Question");
+  if (!attachmentPreview) {
+    return base;
+  }
+  return `${base}\n📎 ${attachmentPreview}`;
+}
+
 function extractArticleBadge(source: RagSource, index: number): string {
   const hint = (source.article_hint ?? "").trim();
   if (hint.length > 0) {
@@ -702,6 +1051,59 @@ function buildCitationCards(sources: RagSource[]): CitationCard[] {
       pageStart: source.page_start ?? null,
       pageEnd: source.page_end ?? null,
     };
+  });
+}
+
+function extractCitedSourceRanks(answer: string): Set<number> {
+  const cited = new Set<number>();
+  if (!answer.trim()) {
+    return cited;
+  }
+  const regex = /\[source\s+(\d+)\]/gi;
+  let match: RegExpExecArray | null = regex.exec(answer);
+  while (match) {
+    const raw = match[1];
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      cited.add(parsed);
+    }
+    match = regex.exec(answer);
+  }
+  return cited;
+}
+
+function sourceUsageKey(source: RagSource, index: number): string {
+  if (source.chunk_id && source.chunk_id.trim().length > 0) {
+    return `chunk:${source.chunk_id.trim()}`;
+  }
+  const path = (source.relative_path ?? source.source_path ?? "").trim();
+  const citation = (source.citation ?? "").trim();
+  const pageStart = source.page_start ?? "na";
+  const pageEnd = source.page_end ?? "na";
+  const rank = typeof source.rank === "number" ? source.rank : index + 1;
+  return `doc:${path}|citation:${citation}|pages:${pageStart}-${pageEnd}|rank:${rank}`;
+}
+
+function selectSourcesUsedForResponse(answer: string, sources: RagSource[]): RagSource[] {
+  if (sources.length === 0) {
+    return [];
+  }
+  const citedRanks = extractCitedSourceRanks(answer);
+  if (citedRanks.size === 0) {
+    return [];
+  }
+  const dedup = new Map<string, RagSource>();
+  for (const [index, source] of sources.entries()) {
+    const rank = typeof source.rank === "number" && source.rank > 0 ? source.rank : index + 1;
+    if (!citedRanks.has(rank)) {
+      continue;
+    }
+    dedup.set(sourceUsageKey(source, index), source);
+  }
+  return Array.from(dedup.values()).sort((a, b) => {
+    const rankA = typeof a.rank === "number" && a.rank > 0 ? a.rank : Number.MAX_SAFE_INTEGER;
+    const rankB = typeof b.rank === "number" && b.rank > 0 ? b.rank : Number.MAX_SAFE_INTEGER;
+    return rankA - rankB;
   });
 }
 
@@ -743,56 +1145,6 @@ function buildSourceBreakdown(sources: RagSource[]): SourceBreakdownItem[] {
       percent: Math.round((count / total) * 100),
     }))
     .sort((a, b) => b.percent - a.percent || b.count - a.count);
-}
-
-function explainRagNote(ragNote: string): string[] {
-  const trimmed = ragNote.trim();
-  if (!trimmed) {
-    return [];
-  }
-  const tokens = trimmed
-    .split("|")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-
-  const lines: string[] = [];
-  for (const token of tokens) {
-    const lower = token.toLowerCase();
-    if (lower.startsWith("confidence=")) {
-      lines.push(`Niveau de confiance estime: ${token.split("=", 2)[1] ?? "n/a"}.`);
-      continue;
-    }
-    if (lower.startsWith("selected_chunks=")) {
-      lines.push(`Chunks retenus pour la reponse: ${token.split("=", 2)[1] ?? "n/a"}.`);
-      continue;
-    }
-    if (lower.startsWith("domains=")) {
-      lines.push(`Domaines detectes: ${token.split("=", 2)[1] ?? "n/a"}.`);
-      continue;
-    }
-    if (lower.startsWith("citation_target=")) {
-      lines.push(`Objectif minimal de citations: ${token.split("=", 2)[1] ?? "n/a"}.`);
-      continue;
-    }
-    if (lower.startsWith("threshold_final=")) {
-      lines.push(`Seuil final de filtrage: ${token.split("=", 2)[1] ?? "n/a"}.`);
-      continue;
-    }
-    if (lower === "cross-encoder-rerank") {
-      lines.push("Reclassement semantique applique sur les passages recuperes.");
-      continue;
-    }
-    if (lower === "article-aware-rerank") {
-      lines.push("Priorisation des passages relies aux articles detectes.");
-      continue;
-    }
-    if (lower === "domain-filter") {
-      lines.push("Filtre de domaine juridique applique.");
-      continue;
-    }
-    lines.push(token);
-  }
-  return lines.slice(0, 12);
 }
 
 function normalizeSourceValue(value: string): string {
@@ -1081,14 +1433,25 @@ function renderAnswerContent(answer: string): ReactNode {
   );
 }
 
-export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = false }: ChatWorkspaceProps) {
-  const { isLoaded: isAuthLoaded, isSignedIn } = useAuth();
+export function ChatWorkspace({
+  initialQuestion = "",
+  autoOpenActGenerator = false,
+  initialActTemplateId = "",
+}: ChatWorkspaceProps) {
+  const router = useRouter();
+  const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
+  const { user } = useUser();
   const [turns, setTurns] = useState<Turn[]>(EMPTY_TURNS);
+  const [sessionHistory, setSessionHistory] = useState<ConsultationRecord[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => `session-${Date.now()}`);
+  const [activeSessionCreatedAt, setActiveSessionCreatedAt] = useState<string>(() => new Date().toISOString());
   const [input, setInput] = useState<string>("");
+  const [pendingComposerFiles, setPendingComposerFiles] = useState<File[]>([]);
+  const [pendingComposerFileIdsByKey, setPendingComposerFileIdsByKey] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState<string>("");
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileRecord[]>([]);
+  const [workspaceSelectedTurnId, setWorkspaceSelectedTurnId] = useState<string | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("workspace");
-  const [showReasoningMode, setShowReasoningMode] = useState<boolean>(false);
   const [chunkDetailsById, setChunkDetailsById] = useState<Record<string, LibraryChunkRecord>>({});
   const [expandedChunkIds, setExpandedChunkIds] = useState<Record<string, boolean>>({});
   const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState<boolean>(false);
@@ -1097,6 +1460,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   const [hasAutoOpenedWorkspacePanel, setHasAutoOpenedWorkspacePanel] = useState<boolean>(false);
   const [hasDismissedWorkspacePanel, setHasDismissedWorkspacePanel] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
+  const [isUploadingComposerFiles, setIsUploadingComposerFiles] = useState<boolean>(false);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
@@ -1104,7 +1468,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   const [isActGeneratorOpen, setIsActGeneratorOpen] = useState<boolean>(false);
   const [actType, setActType] = useState<ActType>(DEFAULT_ACT_TYPE);
   const [actValues, setActValues] = useState<Record<string, string>>(
-    () => buildInitialActFormValues(DEFAULT_ACT_TYPE)
+    () => buildInitialActFormValues(ACT_TEMPLATES[DEFAULT_ACT_TYPE] ?? null)
   );
   const [actUserIntent, setActUserIntent] = useState<string>("");
   const [actStep, setActStep] = useState<ActWizardStep>(1);
@@ -1113,27 +1477,157 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   const [actGeneratedDocument, setActGeneratedDocument] = useState<string>("");
   const [actValidationError, setActValidationError] = useState<string>("");
   const [isActValidating, setIsActValidating] = useState<boolean>(false);
+  const [actGenerationProgressPercent, setActGenerationProgressPercent] = useState<number>(0);
   const [popupChatMessages, setPopupChatMessages] = useState<PopupChatMessage[]>([]);
   const [popupChatInput, setPopupChatInput] = useState<string>("");
   const [isPopupChatSending, setIsPopupChatSending] = useState<boolean>(false);
+  const [customActTemplates, setCustomActTemplates] = useState<ActTemplateDefinition[]>([]);
   const [globalError, setGlobalError] = useState<string>("");
   const [uiMessage, setUiMessage] = useState<string>("");
   const abortRef = useRef<AbortController | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
   const recorderChunksRef = useRef<BlobPart[]>([]);
+  const isUploadingComposerFilesRef = useRef<boolean>(false);
   const turnsRef = useRef<Turn[]>(EMPTY_TURNS);
-  const persistedTurnFingerprintRef = useRef<Map<string, string>>(new Map());
+  const persistedSessionFingerprintRef = useRef<Map<string, string>>(new Map());
   const autoActOpenedRef = useRef(false);
   const autoSubmittedRef = useRef<string>("");
+  const landingFileInputRef = useRef<HTMLInputElement | null>(null);
   const composerFileInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceFileInputRef = useRef<HTMLInputElement | null>(null);
   const libraryDocumentsCacheRef = useRef<LibraryDocumentRecord[]>([]);
   const signInModalTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const actGenerationProgressResetTimerRef = useRef<number | null>(null);
 
   const backendBaseUrl = useMemo(() => {
     const raw = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
     return raw.replace(/\/+$/, "");
+  }, []);
+  const builtinActTemplates = useMemo(() => Object.values(ACT_TEMPLATES), []);
+  const allActTemplates = useMemo(() => {
+    const byType = new Map<string, ActTemplateDefinition>();
+    for (const template of [...builtinActTemplates, ...customActTemplates]) {
+      byType.set(template.type, template);
+    }
+    return Array.from(byType.values());
+  }, [builtinActTemplates, customActTemplates]);
+  const actTemplateMap = useMemo(
+    () => new Map(allActTemplates.map((template) => [template.type, template])),
+    [allActTemplates]
+  );
+  const expertiseDomains = useMemo(
+    () => [
+      {
+        icon: "family_restroom",
+        title: "Droit de la Famille",
+        shortTitle: "Famille",
+        desc: "Mariage, divorce, autorite parentale et successions au Senegal.",
+        tone: "blue",
+        href: "/bibliotheque?q=code%20de%20la%20famille",
+      },
+      {
+        icon: "work",
+        title: "Droit du Travail",
+        shortTitle: "Travail",
+        desc: "Contrats, licenciements, preavis et droits des salaries.",
+        tone: "orange",
+        href: "/bibliotheque?q=code%20du%20travail",
+      },
+      {
+        icon: "home_work",
+        title: "Immobilier",
+        shortTitle: "Immobilier",
+        desc: "Baux d'habitation, foncier et contentieux locatifs.",
+        tone: "teal",
+        href: "/bibliotheque?q=code%20urbanisme%20construction%20bail%20foncier",
+      },
+      {
+        icon: "corporate_fare",
+        title: "Droit des Affaires",
+        shortTitle: "Affaires",
+        desc: "OHADA, creation d'entreprise et fiscalite des societes.",
+        tone: "primary",
+        href: "/bibliotheque?q=ohada%20societes%20commerciales%20droit%20des%20affaires",
+      },
+    ] as const,
+    []
+  );
+  const actTemplatesByCategory = useMemo(() => {
+    const groups = new Map<string, ActTemplateDefinition[]>();
+    for (const template of allActTemplates) {
+      const key = template.category || "Autres";
+      const rows = groups.get(key) ?? [];
+      rows.push(template);
+      groups.set(key, rows);
+    }
+    return Array.from(groups.entries())
+      .sort(([left], [right]) => left.localeCompare(right, "fr"))
+      .map(([category, templates]) => ({
+        category,
+        templates: templates.sort((left, right) => left.label.localeCompare(right.label, "fr")),
+      }));
+  }, [allActTemplates]);
+
+  useEffect(() => {
+    if (!isAuthLoaded) {
+      return;
+    }
+    setWorkspaceUserContext(
+      isSignedIn
+        ? {
+            userId: userId ?? null,
+            email: user?.primaryEmailAddress?.emailAddress ?? null,
+            displayName: user?.fullName ?? user?.firstName ?? null,
+            username: user?.username ?? null,
+          }
+        : null
+    );
+  }, [isAuthLoaded, isSignedIn, userId, user]);
+
+  useEffect(() => {
+    if (!isAuthLoaded) {
+      return;
+    }
+    let active = true;
+    const loadTemplates = async () => {
+      const rows = await readWorkspaceTemplatesApi();
+      const parsed = rows
+        .map((template) => buildActTemplateFromCustom(template))
+        .filter((template): template is ActTemplateDefinition => Boolean(template));
+      if (active) {
+        setCustomActTemplates(parsed);
+      }
+    };
+    void loadTemplates();
+    return () => {
+      active = false;
+    };
+  }, [isAuthLoaded, isSignedIn, userId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const refreshCustomActTemplates = async () => {
+      const rows = await readWorkspaceTemplatesApi();
+      const parsed = rows
+        .map((template) => buildActTemplateFromCustom(template))
+        .filter((template): template is ActTemplateDefinition => Boolean(template));
+      setCustomActTemplates(parsed);
+    };
+    const onFocus = () => {
+      void refreshCustomActTemplates();
+    };
+    const onStorage = () => {
+      void refreshCustomActTemplates();
+    };
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   const requireSignedIn = useCallback(
@@ -1151,13 +1645,69 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     [isAuthLoaded, isSignedIn]
   );
 
-  const activeTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+  const workspaceQuestionTurns = useMemo(
+    () => turns.filter((turn) => turn.question.trim().length > 0),
+    [turns]
+  );
+  const workspaceActiveTurn = useMemo(() => {
+    if (workspaceSelectedTurnId) {
+      const matched = workspaceQuestionTurns.find((turn) => turn.id === workspaceSelectedTurnId);
+      if (matched) {
+        return matched;
+      }
+    }
+    return workspaceQuestionTurns.length > 0
+      ? workspaceQuestionTurns[workspaceQuestionTurns.length - 1]
+      : null;
+  }, [workspaceQuestionTurns, workspaceSelectedTurnId]);
   const hasConversationStarted = turns.length > 0;
   const hasGeneratedResponse = useMemo(
     () => turns.some((turn) => turn.answer.trim().length > 0 || turn.status === "done" || turn.status === "error"),
     [turns]
   );
-  const activeActTemplate = ACT_TEMPLATES[actType];
+  const activeActTemplate =
+    actTemplateMap.get(actType) ??
+    actTemplateMap.get(DEFAULT_ACT_TYPE) ??
+    allActTemplates[0] ??
+    {
+      type: DEFAULT_ACT_TYPE,
+      label: "Acte juridique",
+      category: "General",
+      description: "Modele d'acte juridique",
+      branch: "Droit",
+      fields: [],
+    };
+  const resolveActTemplate = useCallback(
+    (preferredType?: string): ActTemplateDefinition => {
+      const normalizedPreferred = String(preferredType ?? "").trim();
+      if (normalizedPreferred && actTemplateMap.has(normalizedPreferred)) {
+        return actTemplateMap.get(normalizedPreferred)!;
+      }
+      if (actTemplateMap.has(DEFAULT_ACT_TYPE)) {
+        return actTemplateMap.get(DEFAULT_ACT_TYPE)!;
+      }
+      return (
+        allActTemplates[0] ?? {
+          type: DEFAULT_ACT_TYPE,
+          label: "Acte juridique",
+          category: "General",
+          description: "Modele d'acte juridique",
+          branch: "Droit",
+          fields: [],
+        }
+      );
+    },
+    [actTemplateMap, allActTemplates]
+  );
+
+  useEffect(() => {
+    if (actTemplateMap.has(actType)) {
+      return;
+    }
+    const nextTemplate = resolveActTemplate(initialActTemplateId);
+    setActType(nextTemplate.type);
+    setActValues(buildInitialActFormValues(nextTemplate));
+  }, [actTemplateMap, actType, initialActTemplateId, resolveActTemplate]);
   const requiredActFields = useMemo(
     () => activeActTemplate.fields.filter((field) => Boolean(field.required)),
     [activeActTemplate.fields]
@@ -1182,23 +1732,63 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     }
     return 100;
   }, [actProgressPercent, actStep]);
+  const actMenuProgressPercent = useMemo(() => {
+    if (isActValidating || actGenerationProgressPercent > 0) {
+      return Math.max(2, Math.min(100, Math.round(actGenerationProgressPercent)));
+    }
+    return Math.max(2, Math.min(100, Math.round(actWizardProgressPercent)));
+  }, [actGenerationProgressPercent, actWizardProgressPercent, isActValidating]);
+
+  useEffect(() => {
+    if (!isActValidating) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setActGenerationProgressPercent((previous) => {
+        if (previous >= 94) {
+          return previous;
+        }
+        if (previous < 30) {
+          return previous + 6;
+        }
+        if (previous < 70) {
+          return previous + 3;
+        }
+        return previous + 1;
+      });
+    }, 280);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isActValidating]);
+
+  useEffect(() => {
+    return () => {
+      if (actGenerationProgressResetTimerRef.current !== null) {
+        window.clearTimeout(actGenerationProgressResetTimerRef.current);
+      }
+    };
+  }, []);
   const missingFieldLabelSet = useMemo(
     () => new Set(actMissingItems.map((item) => normalizeForMatch(item))),
     [actMissingItems]
   );
-  const citationCards = useMemo(() => buildCitationCards(activeTurn?.ragSources ?? []), [activeTurn]);
+  const sourcesUsedInAnswer = useMemo(
+    () =>
+      selectSourcesUsedForResponse(
+        workspaceActiveTurn?.answer ?? "",
+        workspaceActiveTurn?.ragSources ?? []
+      ),
+    [workspaceActiveTurn?.answer, workspaceActiveTurn?.ragSources]
+  );
+  const citationCards = useMemo(() => buildCitationCards(sourcesUsedInAnswer), [sourcesUsedInAnswer]);
   const sourceBreakdown = useMemo(
-    () => buildSourceBreakdown(activeTurn?.ragSources ?? []),
-    [activeTurn?.ragSources]
+    () => buildSourceBreakdown(sourcesUsedInAnswer),
+    [sourcesUsedInAnswer]
   );
-  const reasoningSummary = useMemo(
-    () => explainRagNote(activeTurn?.ragNote ?? ""),
-    [activeTurn?.ragNote]
-  );
-  const activeReasoningText = (activeTurn?.reasoning ?? "").trim();
-  const confidenceLevel = parseConfidenceFromRagNote(activeTurn?.ragNote ?? "");
+  const confidenceLevel = parseConfidenceFromRagNote(workspaceActiveTurn?.ragNote ?? "");
   const confidencePercent = confidenceToPercent(confidenceLevel);
-  const displayedSourceCount = citationCards.length;
+  const displayedSourceCount = sourcesUsedInAnswer.length;
   const filesFromSources = useMemo(() => {
     const rows = citationCards
       .map((card, index) => {
@@ -1264,25 +1854,44 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   }, [turns]);
 
   useEffect(() => {
+    if (workspaceQuestionTurns.length === 0) {
+      if (workspaceSelectedTurnId !== null) {
+        setWorkspaceSelectedTurnId(null);
+      }
+      return;
+    }
+    const selectionStillExists =
+      workspaceSelectedTurnId !== null &&
+      workspaceQuestionTurns.some((turn) => turn.id === workspaceSelectedTurnId);
+    if (selectionStillExists) {
+      return;
+    }
+    setWorkspaceSelectedTurnId(workspaceQuestionTurns[workspaceQuestionTurns.length - 1].id);
+  }, [workspaceQuestionTurns, workspaceSelectedTurnId]);
+
+  useEffect(() => {
     if (!isAuthLoaded) {
       return;
     }
     if (!isSignedIn) {
       setNotes("");
       setWorkspaceFiles([]);
+      setSessionHistory([]);
       return;
     }
     let active = true;
     const loadWorkspace = async () => {
-      const [remoteNotes, remoteFiles] = await Promise.all([
+      const [remoteNotes, remoteFiles, remoteConsultations] = await Promise.all([
         readWorkspaceNotesApi(),
         readWorkspaceFilesApi(),
+        readConsultationsApi(),
       ]);
       if (!active) {
         return;
       }
       setNotes(remoteNotes);
       setWorkspaceFiles(remoteFiles);
+      setSessionHistory(remoteConsultations);
     };
     void loadWorkspace();
     return () => {
@@ -1311,7 +1920,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   }, [isSignedIn, workspaceFiles]);
 
   useEffect(() => {
-    const chunkIds = (activeTurn?.ragSources ?? [])
+    const chunkIds = (workspaceActiveTurn?.ragSources ?? [])
       .map((source) => (typeof source.chunk_id === "string" ? source.chunk_id.trim() : ""))
       .filter((chunkId) => chunkId.length > 0);
     if (chunkIds.length === 0) {
@@ -1343,7 +1952,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     return () => {
       active = false;
     };
-  }, [activeTurn?.id, activeTurn?.ragSources, chunkDetailsById]);
+  }, [workspaceActiveTurn?.id, workspaceActiveTurn?.ragSources, chunkDetailsById]);
 
   useEffect(() => {
     const onResize = () => {
@@ -1360,48 +1969,56 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     if (!isSignedIn) {
       return;
     }
-    const pending: Promise<unknown>[] = [];
-    for (const turn of turns) {
-      const status = turn.status === "error" ? "error" : turn.status === "done" ? "done" : null;
-      if (!status) {
-        continue;
+    const finalizedTurns = turns.filter((turn) => {
+      if (turn.status !== "done" && turn.status !== "error") {
+        return false;
       }
       if (!turn.question.trim() || !turn.answer.trim()) {
-        continue;
+        return false;
       }
-      const fingerprint = [
-        turn.answer,
-        status,
-        turn.finishReason,
-        turn.ragNote,
-        String(turn.ragSources.length),
-      ].join("|");
-      const previousFingerprint = persistedTurnFingerprintRef.current.get(turn.id);
-      if (previousFingerprint === fingerprint) {
-        continue;
-      }
-      persistedTurnFingerprintRef.current.set(turn.id, fingerprint);
-      pending.push(upsertConsultationApi({
-        id: turn.id,
-        question: turn.question,
-        answer: turn.answer,
-        status,
-        finishReason: turn.finishReason,
-        ragNote: turn.ragNote,
-        sourceCount: turn.ragSources.length,
-        createdAt: new Date(Number(turn.id.replace("turn-", "")) || Date.now()).toISOString(),
-        updatedAt: new Date().toISOString()
-      }));
-    }
-    if (pending.length > 0) {
-      void Promise.allSettled(pending);
-    }
-  }, [isSignedIn, turns]);
-
-  const sendQuestion = useCallback(async (question: string, options?: SendQuestionOptions) => {
-    if (!requireSignedIn("Connexion requise pour poser une question a l'IA.")) {
+      return true;
+    });
+    if (finalizedTurns.length === 0) {
       return;
     }
+
+    const latestTurn = finalizedTurns[finalizedTurns.length - 1];
+    const sessionTitle = deriveSessionTitle(finalizedTurns);
+    const sessionPayload = buildSessionPayload(sessionTitle, finalizedTurns);
+    const sourceCount = finalizedTurns.reduce((sum, turn) => sum + turn.ragSources.length, 0);
+    const status = latestTurn.status === "error" ? "error" : "done";
+    const fingerprint = [
+      sessionTitle,
+      sessionPayload,
+      status,
+      latestTurn.finishReason,
+      latestTurn.ragNote,
+      String(sourceCount),
+      String(finalizedTurns.length),
+    ].join("|");
+    const previousFingerprint = persistedSessionFingerprintRef.current.get(activeSessionId);
+    if (previousFingerprint === fingerprint) {
+      return;
+    }
+    persistedSessionFingerprintRef.current.set(activeSessionId, fingerprint);
+    void upsertConsultationApi({
+      id: activeSessionId,
+      question: sessionTitle,
+      answer: sessionPayload,
+      status,
+      finishReason: latestTurn.finishReason,
+      ragNote: latestTurn.ragNote,
+      sourceCount,
+      createdAt: activeSessionCreatedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }).then((rows) => {
+      setSessionHistory(rows);
+    }).catch(() => {
+      // Ignore sidebar sync failures to avoid blocking chat.
+    });
+  }, [activeSessionCreatedAt, activeSessionId, isSignedIn, turns]);
+
+  const sendQuestion = useCallback(async (question: string, options?: SendQuestionOptions) => {
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion || isSending) {
       return;
@@ -1440,9 +2057,13 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
           messages: [...historyBeforeQuestion, { role: "user", content: trimmedQuestion }],
           temperature: 0.0,
           top_p: 0.9,
-          max_tokens: 650,
           thinking: false,
-          rag_query_rewrite: options?.disableRagRewrite === true ? false : undefined
+          rag_query_rewrite: options?.disableRagRewrite === true ? false : undefined,
+          workspace_only: options?.workspaceOnly === true ? true : undefined,
+          workspace_file_ids:
+            Array.isArray(options?.workspaceFileIds) && options?.workspaceFileIds.length > 0
+              ? options?.workspaceFileIds
+              : undefined
         }),
         signal: controller.signal
       });
@@ -1593,7 +2214,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       abortRef.current = null;
       setIsSending(false);
     }
-  }, [backendBaseUrl, isSending, requireSignedIn]);
+  }, [backendBaseUrl, isSending]);
 
   const pendingDashboardQuestion = initialQuestion.trim();
 
@@ -1620,15 +2241,12 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     autoSubmittedRef.current = pendingDashboardQuestion;
     setInput(pendingDashboardQuestion);
     clearQuestionParamFromUrl();
-    if (!requireSignedIn("Connexion requise pour lancer cette consultation.")) {
-      return;
-    }
     void sendQuestion(pendingDashboardQuestion);
-  }, [clearQuestionParamFromUrl, pendingDashboardQuestion, requireSignedIn, sendQuestion]);
+  }, [clearQuestionParamFromUrl, pendingDashboardQuestion, sendQuestion]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    await sendQuestion(input);
+    await submitComposerQuestion();
   };
 
   const handleCancel = () => {
@@ -1925,8 +2543,14 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     setIsTranscribing(false);
     autoSubmittedRef.current = "";
     setIsSending(false);
+    isUploadingComposerFilesRef.current = false;
+    setIsUploadingComposerFiles(false);
     setTurns([]);
+    setActiveSessionId(`session-${Date.now()}`);
+    setActiveSessionCreatedAt(new Date().toISOString());
     setInput("");
+    setPendingComposerFiles([]);
+    setPendingComposerFileIdsByKey({});
     setGlobalError("");
     setIsMobileLeftPanelOpen(false);
     setIsMobileRightPanelOpen(false);
@@ -1938,8 +2562,56 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     pushUiMessage("Nouvelle session demarree.");
   }, [clearQuestionParamFromUrl, pushUiMessage, stopVoiceCapture]);
 
+  const handleOpenHistorySession = useCallback((session: ConsultationRecord) => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    stopVoiceCapture();
+    setIsTranscribing(false);
+    setIsSending(false);
+    isUploadingComposerFilesRef.current = false;
+    setIsUploadingComposerFiles(false);
+
+    const parsed = parseSessionPayload(session.answer);
+    let restoredTurns: Turn[] = [];
+    if (parsed?.turns?.length) {
+      restoredTurns = parsed.turns;
+    } else {
+      const fallbackQuestion = String(session.question ?? "").trim();
+      const fallbackAnswer = String(session.answer ?? "").trim();
+      if (fallbackQuestion || fallbackAnswer) {
+        restoredTurns = [
+          {
+            id: `turn-restored-${Date.now()}`,
+            question: fallbackQuestion || "Question",
+            displayQuestion: fallbackQuestion || "Question",
+            answer: fallbackAnswer,
+            reasoning: "",
+            status: session.status === "error" ? "error" : "done",
+            ragSources: [],
+            ragNote: String(session.ragNote ?? ""),
+            finishReason: String(session.finishReason ?? ""),
+          },
+        ];
+      }
+    }
+
+    setActiveSessionId(session.id);
+    setActiveSessionCreatedAt(session.createdAt);
+    setTurns(restoredTurns);
+    setInput("");
+    setPendingComposerFiles([]);
+    setPendingComposerFileIdsByKey({});
+    setGlobalError("");
+    setIsMobileLeftPanelOpen(false);
+    setIsMobileRightPanelOpen(false);
+    setWorkspaceSelectedTurnId(restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1].id : null);
+    pushUiMessage("Session chargee.");
+  }, [pushUiMessage, stopVoiceCapture]);
+
   const handleClearHistory = useCallback(async () => {
-    if (turnsRef.current.length === 0) {
+    if (sessionHistory.length === 0) {
       return;
     }
     if (typeof window !== "undefined") {
@@ -1953,25 +2625,31 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       abortRef.current = null;
     }
     setIsSending(false);
+    isUploadingComposerFilesRef.current = false;
+    setIsUploadingComposerFiles(false);
     setTurns([]);
     setInput("");
+    setPendingComposerFiles([]);
+    setPendingComposerFileIdsByKey({});
     setGlobalError("");
-    persistedTurnFingerprintRef.current.clear();
+    persistedSessionFingerprintRef.current.clear();
     autoSubmittedRef.current = "";
     try {
       await clearConsultationsApi();
+      setSessionHistory([]);
       pushUiMessage("Historique supprime.");
     } catch {
       pushUiMessage("Historique local supprime.");
     }
-  }, [pushUiMessage]);
+  }, [pushUiMessage, sessionHistory.length]);
 
-  const openActGenerator = useCallback(() => {
+  const openActGenerator = useCallback((preferredTemplateType?: string) => {
     if (!requireSignedIn("Connexion requise pour generer un acte.")) {
       return;
     }
-    setActType(DEFAULT_ACT_TYPE);
-    setActValues(buildInitialActFormValues(DEFAULT_ACT_TYPE));
+    const targetTemplate = resolveActTemplate(preferredTemplateType || initialActTemplateId);
+    setActType(targetTemplate.type);
+    setActValues(buildInitialActFormValues(targetTemplate));
     setActUserIntent("");
     setActStep(1);
     setActFieldError("");
@@ -1990,35 +2668,169 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       },
     ]);
     setIsActGeneratorOpen(true);
-  }, [requireSignedIn]);
+  }, [initialActTemplateId, requireSignedIn, resolveActTemplate]);
 
   useEffect(() => {
     if (autoOpenActGenerator && !autoActOpenedRef.current) {
       autoActOpenedRef.current = true;
-      openActGenerator();
+      openActGenerator(initialActTemplateId);
     }
-  }, [autoOpenActGenerator, openActGenerator]);
+  }, [autoOpenActGenerator, initialActTemplateId, openActGenerator]);
 
-  const openContractCheck = useCallback(async () => {
-    if (!requireSignedIn("Connexion requise pour verifier un contrat.")) {
-      return;
+  const uploadPendingComposerFiles = useCallback(async (filesToUpload?: File[]): Promise<{ ok: boolean; uploadedFileIds: string[] }> => {
+    const targetFiles = (filesToUpload ?? pendingComposerFiles).filter(
+      (file) => file instanceof File
+    );
+    if (targetFiles.length === 0) {
+      return { ok: true, uploadedFileIds: [] };
     }
-    const preset = "Verifier un contrat au regard du droit senegalais.";
-    setInput(preset);
-    await sendQuestion(preset);
-    setIsMobileLeftPanelOpen(false);
-  }, [requireSignedIn, sendQuestion]);
+    if (isUploadingComposerFilesRef.current) {
+      return { ok: false, uploadedFileIds: [] };
+    }
+    isUploadingComposerFilesRef.current = true;
+    setIsUploadingComposerFiles(true);
+    try {
+      const response = await uploadWorkspaceFilesApi(targetFiles);
+      setWorkspaceFiles(response.items);
+
+      const uploadedCount = response.uploaded?.length ?? 0;
+      const uploadedChunkCount = (response.uploaded ?? []).reduce(
+        (sum, row) => sum + Number(row.chunk_count || 0),
+        0
+      );
+      const errors = response.errors ?? [];
+      const failedFileNames = new Set(
+        errors
+          .map((row) => (row.filename ?? "").trim().toLowerCase())
+          .filter((name) => name.length > 0)
+      );
+
+      const nextFileIdsByKey: Record<string, string> = {
+        ...pendingComposerFileIdsByKey,
+      };
+      let uploadedCursor = 0;
+      for (const file of targetFiles) {
+        const fileKey = composerFileKey(file);
+        const normalizedName = file.name.trim().toLowerCase();
+        if (failedFileNames.has(normalizedName)) {
+          delete nextFileIdsByKey[fileKey];
+          continue;
+        }
+        const uploadedRow = response.uploaded?.[uploadedCursor];
+        if (uploadedRow && String(uploadedRow.id ?? "").trim().length > 0) {
+          nextFileIdsByKey[fileKey] = String(uploadedRow.id).trim();
+          uploadedCursor += 1;
+        }
+      }
+      setPendingComposerFileIdsByKey(nextFileIdsByKey);
+      const uploadedFileIds = targetFiles
+        .map((file) => nextFileIdsByKey[composerFileKey(file)] ?? "")
+        .map((row) => row.trim())
+        .filter((row) => row.length > 0);
+
+      if (uploadedCount === 0 && errors.length > 0) {
+        setGlobalError(
+          errors
+            .map((row) => `${row.filename}: ${row.detail}`)
+            .slice(0, 3)
+            .join(" | ")
+        );
+        return { ok: false, uploadedFileIds: [] };
+      }
+
+      if (uploadedCount > 0) {
+        pushUiMessage(
+          `${uploadedCount} fichier(s) ajoute(s) au workspace (${uploadedChunkCount} chunk(s)).`
+        );
+      }
+
+      if (errors.length > 0) {
+        setGlobalError(
+          errors
+            .map((row) => `${row.filename}: ${row.detail}`)
+            .slice(0, 2)
+            .join(" | ")
+        );
+      }
+      if (uploadedFileIds.length === 0) {
+        setGlobalError("Aucun chunk genere pour les fichiers joints.");
+        return { ok: false, uploadedFileIds: [] };
+      }
+      return { ok: true, uploadedFileIds };
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : "Import des fichiers impossible pour le moment.";
+      setGlobalError(detail);
+      return { ok: false, uploadedFileIds: [] };
+    } finally {
+      isUploadingComposerFilesRef.current = false;
+      setIsUploadingComposerFiles(false);
+    }
+  }, [pendingComposerFileIdsByKey, pendingComposerFiles, pushUiMessage]);
 
   const handleLandingSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      if (isSending || isUploadingComposerFiles) {
+        return;
+      }
       const trimmed = landingQuery.trim();
-      if (!trimmed) return;
-      setInput(trimmed);
-      setLandingQuery(trimmed);
-      await sendQuestion(trimmed);
+      const attachedFileNames = pendingComposerFiles.map((file) => file.name);
+      const canSubmit = trimmed.length > 0 || attachedFileNames.length > 0;
+      if (!canSubmit) {
+        return;
+      }
+      const preUploadedFileIds = pendingComposerFiles
+        .map((file) => pendingComposerFileIdsByKey[composerFileKey(file)] ?? "")
+        .map((row) => row.trim())
+        .filter((row) => row.length > 0);
+      const missingFiles = pendingComposerFiles.filter(
+        (file) => !pendingComposerFileIdsByKey[composerFileKey(file)]
+      );
+      let missingUploadIds: string[] = [];
+      if (missingFiles.length > 0) {
+        const uploadResult = await uploadPendingComposerFiles(missingFiles);
+        if (!uploadResult.ok) {
+          return;
+        }
+        missingUploadIds = uploadResult.uploadedFileIds;
+      }
+      const scopedWorkspaceFileIds = Array.from(
+        new Set([...preUploadedFileIds, ...missingUploadIds].filter((row) => row.length > 0))
+      );
+      if (pendingComposerFiles.length > 0 && scopedWorkspaceFileIds.length === 0) {
+        setGlobalError("Aucun fichier n'a pu etre traite.");
+        return;
+      }
+      const workspaceOnly = trimmed.length === 0 && scopedWorkspaceFileIds.length > 0;
+      const questionToSend = workspaceOnly
+        ? WORKSPACE_ONLY_AUTO_PROMPT
+        : trimmed;
+      const displayQuestion = buildQuestionDisplayLabel(
+        questionToSend,
+        attachedFileNames,
+        workspaceOnly
+      );
+      setInput(questionToSend);
+      setLandingQuery("");
+      await sendQuestion(questionToSend, {
+        displayQuestion,
+        disableRagRewrite: workspaceOnly,
+        workspaceOnly,
+        workspaceFileIds: scopedWorkspaceFileIds,
+      });
+      setPendingComposerFiles([]);
+      setPendingComposerFileIdsByKey({});
     },
-    [landingQuery, sendQuestion]
+    [
+      isSending,
+      isUploadingComposerFiles,
+      landingQuery,
+      pendingComposerFileIdsByKey,
+      pendingComposerFiles,
+      sendQuestion,
+      uploadPendingComposerFiles,
+    ]
   );
 
   const handleOpenWorkspacePanel = useCallback(() => {
@@ -2047,6 +2859,10 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
   }, [hasAutoOpenedWorkspacePanel, hasDismissedWorkspacePanel, hasGeneratedResponse]);
 
   const closeActGenerator = useCallback(() => {
+    if (actGenerationProgressResetTimerRef.current !== null) {
+      window.clearTimeout(actGenerationProgressResetTimerRef.current);
+      actGenerationProgressResetTimerRef.current = null;
+    }
     setIsActGeneratorOpen(false);
     setActStep(1);
     setActFieldError("");
@@ -2054,25 +2870,32 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     setActGeneratedDocument("");
     setActValidationError("");
     setIsActValidating(false);
+    setActGenerationProgressPercent(0);
     setIsPopupChatSending(false);
     setPopupChatInput("");
     setPopupChatMessages([]);
   }, []);
 
   const handleActTypeChange = useCallback((nextType: ActType) => {
+    const nextTemplate = actTemplateMap.get(nextType);
+    if (!nextTemplate) {
+      return;
+    }
     setActType(nextType);
-    setActValues(buildInitialActFormValues(nextType));
+    setActValues(buildInitialActFormValues(nextTemplate));
     setActFieldError("");
     setActMissingItems([]);
     setActGeneratedDocument("");
     setActValidationError("");
-  }, []);
+    setActGenerationProgressPercent(0);
+  }, [actTemplateMap]);
 
   const handleActFieldChange = useCallback((fieldKey: string, nextValue: string) => {
     setActFieldError("");
     setActValidationError("");
     setActMissingItems([]);
     setActGeneratedDocument("");
+    setActGenerationProgressPercent(0);
     setActValues((previous) => ({ ...previous, [fieldKey]: nextValue }));
   }, []);
 
@@ -2127,6 +2950,11 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       if (mode === "chat") {
         setIsPopupChatSending(true);
       } else {
+        if (actGenerationProgressResetTimerRef.current !== null) {
+          window.clearTimeout(actGenerationProgressResetTimerRef.current);
+          actGenerationProgressResetTimerRef.current = null;
+        }
+        setActGenerationProgressPercent(8);
         setIsActValidating(true);
       }
 
@@ -2134,6 +2962,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
         activeActTemplate,
         actValues,
         actUserIntent,
+        actGeneratedDocument,
         conversationForPrompt,
         trimmedUserMessage
       );
@@ -2147,8 +2976,9 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
             messages: [{ role: "user", content: prompt }],
             temperature: 0.1,
             top_p: 0.95,
-            max_tokens: 1900,
+            max_tokens: 1800,
             thinking: false,
+            use_rag: mode === "validate",
             rag_query_rewrite: false,
           }),
         });
@@ -2211,11 +3041,36 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
         }
 
         const parsed = parseActValidationResponse(answer);
-        const assistantReply =
-          parsed.assistantReply.trim() ||
-          (parsed.status === "missing"
-            ? "Il manque des informations pour finaliser l'acte."
-            : "Document final pret.");
+        const requiredFields = activeActTemplate.fields.filter((field) => field.required);
+        const requiredFieldLabels = requiredFields.map((field) => field.label);
+        const requiredLabelsNormalized = requiredFieldLabels.map((label) => normalizeForMatch(label));
+        const fallbackMissing = requiredFields
+          .filter((field) => (actValues[field.key] ?? "").trim().length === 0)
+          .map((field) => field.label);
+        const missingRequiredFromModel = parsed.missingItems.filter((item) => {
+          const normalizedItem = normalizeForMatch(item);
+          if (!normalizedItem) {
+            return false;
+          }
+          return requiredLabelsNormalized.some(
+            (requiredLabel) =>
+              normalizedItem === requiredLabel ||
+              normalizedItem.includes(requiredLabel) ||
+              requiredLabel.includes(normalizedItem)
+          );
+        });
+        const blockingMissing =
+          missingRequiredFromModel.length > 0 ? missingRequiredFromModel : fallbackMissing;
+        const shouldBlockForMissing = blockingMissing.length > 0;
+        const assistantReply = shouldBlockForMissing
+          ? (
+              parsed.assistantReply.trim() ||
+              "Il manque des informations obligatoires pour finaliser l'acte."
+            )
+          : (
+              parsed.assistantReply.trim() ||
+              "Toutes les informations obligatoires sont presentes. Document final pret."
+            );
 
         setPopupChatMessages((previous) => [
           ...previous,
@@ -2226,22 +3081,20 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
           },
         ]);
 
-        if (parsed.status === "missing") {
-          const fallbackMissing = activeActTemplate.fields
-            .filter((field) => field.required)
-            .filter((field) => (actValues[field.key] ?? "").trim().length === 0)
-            .map((field) => field.label);
-          const missing =
-            parsed.missingItems.length > 0 ? parsed.missingItems : fallbackMissing;
-          setActMissingItems(missing);
+        if (shouldBlockForMissing) {
+          setActMissingItems(blockingMissing);
           setActGeneratedDocument("");
           return;
         }
 
         setActMissingItems([]);
-        if (parsed.documentText.trim().length > 0) {
-          setActGeneratedDocument(parsed.documentText.trim());
+        const nextDocumentText = parsed.documentText.trim();
+        if (nextDocumentText.length > 0) {
+          setActGeneratedDocument(nextDocumentText);
           pushUiMessage("Acte genere dans la previsualisation.");
+        } else if (actGeneratedDocument.trim().length > 0) {
+          // Keep the current compliant draft when the model refuses a requested change.
+          setActGeneratedDocument(actGeneratedDocument.trim());
         } else {
           setActValidationError(
             "Le modele n'a pas fourni de document final. Precisez davantage les informations."
@@ -2265,7 +3118,12 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
         if (mode === "chat") {
           setIsPopupChatSending(false);
         } else {
+          setActGenerationProgressPercent(100);
           setIsActValidating(false);
+          actGenerationProgressResetTimerRef.current = window.setTimeout(() => {
+            setActGenerationProgressPercent((previous) => (previous >= 100 ? 0 : previous));
+            actGenerationProgressResetTimerRef.current = null;
+          }, 900);
         }
       }
     },
@@ -2273,6 +3131,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
       actUserIntent,
       actValues,
       activeActTemplate,
+      actGeneratedDocument,
       backendBaseUrl,
       isActValidating,
       isPopupChatSending,
@@ -2306,18 +3165,109 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     await runActAssistant(message, "chat");
   }, [isPopupChatSending, popupChatInput, runActAssistant]);
 
+  const handleComposerFilesSelected = useCallback(
+    (fileList: FileList | null) => {
+      if (!fileList || fileList.length === 0) {
+        return;
+      }
+      if (isUploadingComposerFilesRef.current) {
+        setGlobalError("Patientez: un upload de document est deja en cours.");
+        return;
+      }
+      const files = Array.from(fileList);
+      const existingKeys = new Set(pendingComposerFiles.map((file) => composerFileKey(file)));
+      const freshFiles = files.filter((file) => !existingKeys.has(composerFileKey(file)));
+      if (freshFiles.length === 0) {
+        return;
+      }
+      setPendingComposerFiles((previous) => dedupeComposerFiles([...previous, ...freshFiles]));
+      pushUiMessage(`${freshFiles.length} fichier(s) joint(s) a la question.`);
+      void uploadPendingComposerFiles(freshFiles);
+    },
+    [pendingComposerFiles, pushUiMessage, uploadPendingComposerFiles]
+  );
+
+  const removePendingComposerFile = useCallback((fileKey: string) => {
+    setPendingComposerFiles((previous) =>
+      previous.filter((file) => composerFileKey(file) !== fileKey)
+    );
+    setPendingComposerFileIdsByKey((previous) => {
+      const next = { ...previous };
+      delete next[fileKey];
+      return next;
+    });
+  }, []);
+
+  const submitComposerQuestion = useCallback(async () => {
+    const trimmed = input.trim();
+    const attachedFileNames = pendingComposerFiles.map((file) => file.name);
+    const canSubmit = trimmed.length > 0 || attachedFileNames.length > 0;
+    if (!canSubmit || isSending || isUploadingComposerFiles) {
+      return;
+    }
+
+    const preUploadedFileIds = pendingComposerFiles
+      .map((file) => pendingComposerFileIdsByKey[composerFileKey(file)] ?? "")
+      .map((row) => row.trim())
+      .filter((row) => row.length > 0);
+    const missingFiles = pendingComposerFiles.filter(
+      (file) => !pendingComposerFileIdsByKey[composerFileKey(file)]
+    );
+    let missingUploadIds: string[] = [];
+    if (missingFiles.length > 0) {
+      const uploadResult = await uploadPendingComposerFiles(missingFiles);
+      if (!uploadResult.ok) {
+        return;
+      }
+      missingUploadIds = uploadResult.uploadedFileIds;
+    }
+    const scopedWorkspaceFileIds = Array.from(
+      new Set([...preUploadedFileIds, ...missingUploadIds].filter((row) => row.length > 0))
+    );
+    if (pendingComposerFiles.length > 0 && scopedWorkspaceFileIds.length === 0) {
+      setGlobalError("Aucun fichier n'a pu etre traite.");
+      return;
+    }
+
+    const workspaceOnly = trimmed.length === 0 && scopedWorkspaceFileIds.length > 0;
+    const questionToSend = workspaceOnly
+      ? WORKSPACE_ONLY_AUTO_PROMPT
+      : trimmed;
+    const displayQuestion = buildQuestionDisplayLabel(
+      questionToSend,
+      attachedFileNames,
+      workspaceOnly
+    );
+    await sendQuestion(questionToSend, {
+      displayQuestion,
+      disableRagRewrite: workspaceOnly,
+      workspaceOnly,
+      workspaceFileIds: scopedWorkspaceFileIds,
+    });
+    setPendingComposerFiles([]);
+    setPendingComposerFileIdsByKey({});
+  }, [
+    input,
+    isSending,
+    isUploadingComposerFiles,
+    pendingComposerFileIdsByKey,
+    pendingComposerFiles,
+    sendQuestion,
+    uploadPendingComposerFiles,
+  ]);
+
   const handleComposerKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
       if (event.key !== "Enter" || event.shiftKey) {
         return;
       }
       event.preventDefault();
-      if (isSending || input.trim().length === 0) {
+      if (isSending || isUploadingComposerFiles || (input.trim().length === 0 && pendingComposerFiles.length === 0)) {
         return;
       }
-      void sendQuestion(input);
+      void submitComposerQuestion();
     },
-    [input, isSending, sendQuestion]
+    [input, isSending, isUploadingComposerFiles, pendingComposerFiles.length, submitComposerQuestion]
   );
 
   const handleShare = useCallback(async () => {
@@ -2407,29 +3357,35 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
     if (!fileList || fileList.length === 0) {
       return;
     }
-    const files = Array.from(fileList);
-    const response = await uploadWorkspaceFilesApi(files);
-    setWorkspaceFiles(response.items);
+    try {
+      const files = Array.from(fileList);
+      const response = await uploadWorkspaceFilesApi(files);
+      setWorkspaceFiles(response.items);
 
-    const uploadedCount = response.uploaded?.length ?? 0;
-    const uploadedChunkCount = (response.uploaded ?? []).reduce(
-      (sum, row) => sum + Number(row.chunk_count || 0),
-      0
-    );
-    const errorCount = response.errors?.length ?? 0;
-    if (uploadedCount > 0) {
-      pushUiMessage(
-        `${uploadedCount} fichier(s) indexe(s) (${uploadedChunkCount} chunk(s)).`
+      const uploadedCount = response.uploaded?.length ?? 0;
+      const uploadedChunkCount = (response.uploaded ?? []).reduce(
+        (sum, row) => sum + Number(row.chunk_count || 0),
+        0
       );
-    } else if (errorCount > 0) {
-      setGlobalError(
-        response.errors
-          ?.map((row) => `${row.filename}: ${row.detail}`)
-          .slice(0, 3)
-          .join(" | ") ?? "Import impossible."
-      );
-    } else {
-      pushUiMessage(`${files.length} fichier(s) ajoute(s) au workspace.`);
+      const errorCount = response.errors?.length ?? 0;
+      if (uploadedCount > 0) {
+        pushUiMessage(
+          `${uploadedCount} fichier(s) indexe(s) (${uploadedChunkCount} chunk(s)).`
+        );
+      } else if (errorCount > 0) {
+        setGlobalError(
+          response.errors
+            ?.map((row) => `${row.filename}: ${row.detail}`)
+            .slice(0, 3)
+            .join(" | ") ?? "Import impossible."
+        );
+      } else {
+        setGlobalError("Aucun chunk genere pour ce fichier.");
+      }
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : "Import impossible pour le moment.";
+      setGlobalError(detail);
     }
   }, [pushUiMessage, requireSignedIn]);
 
@@ -2508,7 +3464,15 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
             </Link>
           </SignedOut>
           <SignedIn>
-            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance} />
+            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance}>
+              <UserButton.MenuItems>
+                <UserButton.Link
+                  href="/dashboard"
+                  label="Dashboard utilisateur"
+                  labelIcon={<span className="material-symbols-outlined text-[16px]">space_dashboard</span>}
+                />
+              </UserButton.MenuItems>
+            </UserButton>
           </SignedIn>
         </div>
         <div className="lg:hidden flex items-center gap-2 ml-auto">
@@ -2556,7 +3520,11 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                 >
                   <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
                 </div>
-                {!isSidebarCollapsed ? <span className="text-lg font-bold tracking-tight">JuridiqueSN</span> : null}
+                {!isSidebarCollapsed ? (
+                  <span className="text-lg font-bold tracking-tight">
+                    Juridique <span className="text-[#7ef1a9]">SN</span>
+                  </span>
+                ) : null}
               </div>
               <button
                 aria-label={isSidebarCollapsed ? "Etendre le menu" : "Reduire le menu"}
@@ -2573,7 +3541,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
             </div>
             {!isSidebarCollapsed ? (
               <button
-                className="w-full flex items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
+                className="hidden lg:flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
                 onClick={() => {
                   handleStartNewChat();
                   setIsMobileLeftPanelOpen(false);
@@ -2594,23 +3562,12 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                 className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
                   isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
                 }`}
-                href="/dashboard"
-                onClick={() => setIsMobileLeftPanelOpen(false)}
-                title="Dashboard"
-              >
-                <span className="material-symbols-outlined">space_dashboard</span>
-                {!isSidebarCollapsed ? <span className="text-sm font-medium">Dashboard</span> : null}
-              </Link>
-              <Link
-                className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
-                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
-                }`}
                 href="/bibliotheque"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
-                title="Codes & Lois"
+                title="Bibliotheque juridique"
               >
                 <span className="material-symbols-outlined">library_books</span>
-                {!isSidebarCollapsed ? <span className="text-sm font-medium">Codes &amp; Lois</span> : null}
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Bibliotheque juridique</span> : null}
               </Link>
               <Link
                 className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
@@ -2623,20 +3580,6 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                 <span className="material-symbols-outlined">description</span>
                 {!isSidebarCollapsed ? <span className="text-sm font-medium">Modeles de documents</span> : null}
               </Link>
-              <button
-                className={`w-full flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
-                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
-                }`}
-                onClick={() => {
-                  void openContractCheck();
-                  setIsMobileLeftPanelOpen(false);
-                }}
-                title="Verifier un contrat"
-                type="button"
-              >
-                <span className="material-symbols-outlined">rule</span>
-                {!isSidebarCollapsed ? <span className="text-sm font-medium">Verifier un contrat</span> : null}
-              </button>
               <button
                 className={`w-full flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
                   isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
@@ -2664,7 +3607,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                     <button
                       aria-label="Supprimer l'historique"
                       className="inline-flex items-center justify-center rounded-md p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      disabled={turns.length === 0}
+                      disabled={sessionHistory.length === 0}
                       onClick={() => {
                         void handleClearHistory();
                       }}
@@ -2675,30 +3618,30 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                     </button>
                   </div>
                   <div className="space-y-2">
-                    {turns.length === 0 ? (
+                    {sessionHistory.length === 0 ? (
                       <div className="p-3 rounded-lg border border-slate-800">
                         <p className="text-xs text-slate-500">Aucune consultation enregistree pour le moment.</p>
                       </div>
                     ) : (
-                      turns
-                        .slice(-6)
-                        .reverse()
-                        .map((turn) => (
+                      sessionHistory
+                        .slice(0, 20)
+                        .map((session) => (
                           <div
                             className="group p-3 rounded-lg hover:bg-white/5 transition-colors border border-transparent hover:border-slate-800"
-                            key={turn.id}
+                            key={session.id}
                           >
                             <div className="flex items-start gap-2">
                               <button
                                 className="flex-1 min-w-0 text-left cursor-pointer"
                                 onClick={() => {
-                                  setInput(turn.question);
-                                  setIsMobileLeftPanelOpen(false);
+                                  handleOpenHistorySession(session);
                                 }}
                                 type="button"
                               >
-                                <p className="text-sm font-medium text-slate-200 truncate">{turn.question}</p>
-                                <p className="text-xs text-slate-500 mt-1">{nowTimeLabel()}</p>
+                                <p className="text-sm font-medium text-slate-200 truncate">
+                                  {consultationTitle(session)}
+                                </p>
+                                <p className="text-xs text-slate-500 mt-1">{formatDateLabel(session.updatedAt)}</p>
                               </button>
                             </div>
                           </div>
@@ -2723,13 +3666,70 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                     Accedez instantanement au droit senegalais. Posez vos questions sur le COCC, le Code du Travail ou les procedures administratives.
                   </p>
                   <form className="relative group hidden sm:block" onSubmit={handleLandingSubmit}>
-                    <div className="absolute inset-y-0 left-5 flex items-center pointer-events-none">
-                      <span className="material-symbols-outlined text-slate-400 group-focus-within:text-primary transition-colors">
+                    {pendingComposerFiles.length > 0 ? (
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        {pendingComposerFiles.map((file) => {
+                          const key = composerFileKey(file);
+                          return (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-[11px] text-slate-200"
+                              key={key}
+                            >
+                              <span className="material-symbols-outlined text-[13px] text-primary">description</span>
+                              <span className="max-w-[220px] truncate">{file.name}</span>
+                              <button
+                                className={`inline-flex items-center justify-center rounded-full ${
+                                  isUploadingComposerFiles
+                                    ? "text-slate-600 cursor-not-allowed"
+                                    : "text-slate-400 hover:text-red-400"
+                                }`}
+                                disabled={isUploadingComposerFiles}
+                                onClick={() => removePendingComposerFile(key)}
+                                type="button"
+                              >
+                                <span className="material-symbols-outlined text-[14px]">close</span>
+                              </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {isUploadingComposerFiles ? (
+                      <div className="mb-3 flex items-center gap-2 text-xs text-slate-300">
+                        <span className="material-symbols-outlined animate-spin text-[15px] text-primary">autorenew</span>
+                        Chargement du document en cours...
+                      </div>
+                    ) : null}
+                    <div className="absolute inset-y-0 left-5 flex items-center gap-2">
+                      <span className="material-symbols-outlined text-slate-400 group-focus-within:text-primary transition-colors pointer-events-none">
                         search
                       </span>
+                      <button
+                        className={`inline-flex items-center justify-center rounded-lg p-1 transition-colors ${
+                          isUploadingComposerFiles
+                            ? "text-slate-600 cursor-not-allowed"
+                            : "text-slate-400 hover:text-primary"
+                        }`}
+                        disabled={isUploadingComposerFiles}
+                        onClick={() => landingFileInputRef.current?.click()}
+                        type="button"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">attach_file</span>
+                      </button>
                     </div>
                     <input
-                      className="w-full bg-[#1a2e22] border-slate-800 focus:border-primary focus:ring-1 focus:ring-primary rounded-2xl py-4 sm:py-5 pl-12 sm:pl-14 pr-4 sm:pr-24 text-base sm:text-lg text-white placeholder:text-slate-400 shadow-2xl transition-all"
+                      accept=".pdf,.doc,.docx,.txt,.md"
+                      className="hidden"
+                      multiple
+                      onChange={(event) => {
+                        handleComposerFilesSelected(event.target.files);
+                        event.currentTarget.value = "";
+                      }}
+                      ref={landingFileInputRef}
+                      type="file"
+                    />
+                    <input
+                      className="w-full bg-[#1a2e22] border-slate-800 focus:border-primary focus:ring-1 focus:ring-primary rounded-2xl py-4 sm:py-5 pl-20 sm:pl-24 pr-4 sm:pr-24 text-base sm:text-lg text-white placeholder:text-slate-400 shadow-2xl transition-all"
                       onChange={(event) => setLandingQuery(event.target.value)}
                       placeholder="Decrivez votre situation juridique..."
                       type="text"
@@ -2737,10 +3737,13 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                     />
                     <div className="mt-3 sm:mt-0 sm:absolute sm:inset-y-2 sm:right-2 flex items-center justify-end">
                       <button
-                        className="w-full sm:w-auto bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-bold px-4 h-11 sm:h-full rounded-xl transition-colors inline-flex items-center justify-center"
+                        className="w-full sm:w-auto bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-bold px-4 h-11 sm:h-full rounded-xl transition-colors inline-flex items-center justify-center disabled:opacity-60 disabled:cursor-not-allowed"
+                        disabled={isSending || isUploadingComposerFiles || (landingQuery.trim().length === 0 && pendingComposerFiles.length === 0)}
                         type="submit"
                       >
-                        <span className="material-symbols-outlined filled text-[18px]">north</span>
+                        <span className={`material-symbols-outlined filled text-[18px] ${isUploadingComposerFiles ? "animate-spin" : ""}`}>
+                          {isUploadingComposerFiles ? "autorenew" : "north"}
+                        </span>
                       </button>
                     </div>
                   </form>
@@ -2752,69 +3755,82 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                           Parcourez les principales branches du droit senegalais
                         </p>
                       </div>
-                      <button className="hidden sm:inline text-[#49DE80] text-sm font-semibold hover:underline" type="button">
+                      <button
+                        className="hidden sm:inline text-[#49DE80] text-sm font-semibold hover:underline"
+                        onClick={() => router.push("/bibliotheque")}
+                        type="button"
+                      >
                         Voir tout
                       </button>
                     </div>
                     <div className="sm:hidden space-y-2">
                       <div className="grid grid-cols-3 gap-2">
-                        {[
-                          ["family_restroom", "Famille", "blue"],
-                          ["work", "Travail", "orange"],
-                          ["home_work", "Immobilier", "teal"]
-                        ].map(([icon, title, tone]) => (
-                          <div className="bg-[#1a2e22] px-2 py-2 rounded-lg border border-slate-800 text-center" key={title}>
+                        {expertiseDomains.slice(0, 3).map((domain) => (
+                          <button
+                            className="bg-[#1a2e22] px-2 py-2 rounded-lg border border-slate-800 text-center hover:border-primary/40 transition-colors"
+                            key={domain.title}
+                            onClick={() => router.push(domain.href)}
+                            type="button"
+                          >
                             <div
                               className={`size-5 rounded-md flex items-center justify-center mb-1 mx-auto border ${
-                                tone === "blue"
+                                domain.tone === "blue"
                                   ? "bg-gradient-to-br from-blue-500/25 to-blue-500/5 text-blue-300 border-blue-400/25"
-                                  : tone === "orange"
+                                  : domain.tone === "orange"
                                     ? "bg-gradient-to-br from-orange-500/25 to-orange-500/5 text-orange-300 border-orange-400/25"
                                     : "bg-gradient-to-br from-cyan-500/25 to-cyan-500/5 text-cyan-300 border-cyan-400/25"
                               }`}
                             >
-                              <span className="material-symbols-outlined filled text-[11px]">{icon}</span>
+                              <span className="material-symbols-outlined filled text-[11px]">{domain.icon}</span>
                             </div>
-                            <h4 className="font-semibold text-[10px] leading-tight">{title}</h4>
-                          </div>
+                            <h4 className="font-semibold text-[10px] leading-tight">{domain.shortTitle}</h4>
+                          </button>
                         ))}
                       </div>
                       <div className="flex justify-center">
-                        <div className="w-[32%] min-w-[104px] max-w-[132px] bg-[#1a2e22] px-2 py-2 rounded-lg border border-slate-800 text-center">
+                        <button
+                          className="w-[32%] min-w-[104px] max-w-[132px] bg-[#1a2e22] px-2 py-2 rounded-lg border border-slate-800 text-center hover:border-primary/40 transition-colors"
+                          onClick={() => router.push(expertiseDomains[3].href)}
+                          type="button"
+                        >
                           <div className="size-5 rounded-md flex items-center justify-center mb-1 mx-auto border bg-gradient-to-br from-[#49DE80]/25 to-[#49DE80]/5 text-[#7ef1a9] border-[#49DE80]/30">
                             <span className="material-symbols-outlined filled text-[11px]">corporate_fare</span>
                           </div>
                           <h4 className="font-semibold text-[10px] leading-tight">Affaires</h4>
-                        </div>
+                        </button>
                       </div>
-                      <button className="text-[#49DE80] text-xs font-semibold hover:underline" type="button">
+                      <button
+                        className="text-[#49DE80] text-xs font-semibold hover:underline"
+                        onClick={() => router.push("/bibliotheque")}
+                        type="button"
+                      >
                         Voir tout
                       </button>
                     </div>
                     <div className="hidden sm:grid grid-cols-2 lg:grid-cols-4 gap-3">
-                      {[
-                        ["family_restroom", "Droit de la Famille", "Mariage, divorce, autorite parentale et successions au Senegal.", "blue"],
-                        ["work", "Droit du Travail", "Contrats, licenciements, preavis et droits des salaries.", "orange"],
-                        ["home_work", "Immobilier", "Baux d'habitation, foncier et contentieux locatifs.", "teal"],
-                        ["corporate_fare", "Droit des Affaires", "OHADA, creation d'entreprise et fiscalite des societes.", "primary"]
-                      ].map(([icon, title, desc, tone]) => (
-                        <div className="bg-[#1a2e22] p-3 rounded-lg border border-slate-800 hover:border-primary/40 transition-all group cursor-pointer shadow-sm" key={title}>
+                      {expertiseDomains.map((domain) => (
+                        <button
+                          className="bg-[#1a2e22] p-3 rounded-lg border border-slate-800 hover:border-primary/40 transition-all group cursor-pointer shadow-sm text-left"
+                          key={domain.title}
+                          onClick={() => router.push(domain.href)}
+                          type="button"
+                        >
                           <div
                             className={`size-7 rounded-md flex items-center justify-center mb-2 border transition-transform group-hover:scale-105 ${
-                              tone === "blue"
+                              domain.tone === "blue"
                                 ? "bg-gradient-to-br from-blue-500/25 to-blue-500/5 text-blue-300 border-blue-400/25"
-                                : tone === "orange"
+                                : domain.tone === "orange"
                                   ? "bg-gradient-to-br from-orange-500/25 to-orange-500/5 text-orange-300 border-orange-400/25"
-                                  : tone === "teal"
+                                  : domain.tone === "teal"
                                     ? "bg-gradient-to-br from-cyan-500/25 to-cyan-500/5 text-cyan-300 border-cyan-400/25"
                                     : "bg-gradient-to-br from-[#49DE80]/25 to-[#49DE80]/5 text-[#7ef1a9] border-[#49DE80]/30"
                             }`}
                           >
-                            <span className="material-symbols-outlined filled text-[14px]">{icon}</span>
+                            <span className="material-symbols-outlined filled text-[14px]">{domain.icon}</span>
                           </div>
-                          <h4 className="font-semibold text-xs mb-1">{title}</h4>
-                          <p className="text-[11px] text-slate-400 leading-snug">{desc}</p>
-                        </div>
+                          <h4 className="font-semibold text-xs mb-1">{domain.title}</h4>
+                          <p className="text-[11px] text-slate-400 leading-snug">{domain.desc}</p>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -2884,9 +3900,50 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                 className="bg-white dark:bg-[#122118] rounded-2xl p-2 shadow-xl border border-slate-200 dark:border-slate-700 focus-within:ring-2 focus-within:ring-primary/30 transition-all"
                 onSubmit={handleSubmit}
               >
+                {pendingComposerFiles.length > 0 ? (
+                  <div className="px-2 pb-2 mb-2 border-b border-slate-200 dark:border-slate-800 flex flex-wrap gap-2">
+                    {pendingComposerFiles.map((file) => {
+                      const key = composerFileKey(file);
+                      return (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-[11px] text-slate-200"
+                          key={key}
+                        >
+                          <span className="material-symbols-outlined text-[13px] text-primary">description</span>
+                          <span className="max-w-[180px] truncate">{file.name}</span>
+                          <button
+                            className={`inline-flex items-center justify-center rounded-full ${
+                              isUploadingComposerFiles
+                                ? "text-slate-600 cursor-not-allowed"
+                                : "text-slate-400 hover:text-red-400"
+                            }`}
+                            disabled={isUploadingComposerFiles}
+                            onClick={() => removePendingComposerFile(key)}
+                            type="button"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">close</span>
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {isUploadingComposerFiles ? (
+                  <div className="px-2 pb-2 mb-2 border-b border-slate-200 dark:border-slate-800">
+                    <div className="flex items-center gap-2 text-xs text-slate-300">
+                      <span className="material-symbols-outlined animate-spin text-[15px] text-primary">autorenew</span>
+                      Chargement du document en cours...
+                    </div>
+                  </div>
+                ) : null}
                 <div className="flex items-end gap-2">
                   <button
-                    className="p-2.5 text-slate-400 hover:text-primary transition-colors rounded-xl hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+                    className={`p-2.5 transition-colors rounded-xl ${
+                      isUploadingComposerFiles
+                        ? "text-slate-600 cursor-not-allowed"
+                        : "text-slate-400 hover:text-primary hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+                    }`}
+                    disabled={isUploadingComposerFiles}
                     onClick={() => composerFileInputRef.current?.click()}
                     type="button"
                   >
@@ -2897,7 +3954,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                     className="hidden"
                     multiple
                     onChange={(event) => {
-                      void addWorkspaceFiles(event.target.files);
+                      handleComposerFilesSelected(event.target.files);
                       event.currentTarget.value = "";
                     }}
                     ref={composerFileInputRef}
@@ -2935,10 +3992,18 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                       >
                         <span className="material-symbols-outlined filled">stop</span>
                       </button>
+                    ) : isUploadingComposerFiles ? (
+                      <button
+                        className="p-2.5 bg-[#142A1C] text-[#21C853] rounded-xl transition-all flex items-center justify-center opacity-70 cursor-not-allowed"
+                        disabled
+                        type="button"
+                      >
+                        <span className="material-symbols-outlined filled text-[#21C853] animate-spin">autorenew</span>
+                      </button>
                     ) : (
                       <button
                         className="p-2.5 bg-[#142A1C] hover:bg-[#1f3d2b] text-[#21C853] rounded-xl transition-all flex items-center justify-center shadow-lg shadow-primary/20 disabled:opacity-50"
-                        disabled={input.trim().length === 0}
+                        disabled={isUploadingComposerFiles || (input.trim().length === 0 && pendingComposerFiles.length === 0)}
                         type="submit"
                       >
                         <span className="material-symbols-outlined filled text-[#21C853]">send</span>
@@ -3034,14 +4099,61 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                 />
 
                 <div>
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <span className="material-symbols-outlined text-sm text-primary">history</span>
+                    Questions de la discussion
+                  </h3>
+                  {workspaceQuestionTurns.length === 0 ? (
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                      <p className="text-[11px] text-slate-500">Aucune question pour le moment.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {workspaceQuestionTurns.map((turn, index) => {
+                        const isSelected = workspaceActiveTurn?.id === turn.id;
+                        const label = (turn.displayQuestion ?? turn.question).trim() || `Question ${index + 1}`;
+                        return (
+                          <button
+                            className={`w-full text-left rounded-xl border px-3 py-2 transition-colors ${
+                              isSelected
+                                ? "border-primary/50 bg-primary/10"
+                                : "border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-[#1e2e24] hover:border-primary/30"
+                            }`}
+                            key={turn.id}
+                            onClick={() => setWorkspaceSelectedTurnId(turn.id)}
+                            type="button"
+                          >
+                            <p className="text-[11px] font-semibold text-slate-200 line-clamp-2">{label}</p>
+                            <p className="text-[10px] text-slate-500 mt-1">
+                              {turn.status === "error"
+                                ? "Erreur"
+                                : turn.status === "streaming"
+                                  ? "Generation en cours"
+                                  : "Reponse generee"}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div>
                   <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
                     <span className="material-symbols-outlined text-sm text-primary">menu_book</span>
-                    Citations Mentionnees
+                    Sources synthetisees dans la reponse
                   </h3>
+                  {workspaceActiveTurn ? (
+                    <p className="text-[11px] text-slate-400 mb-3 line-clamp-2">
+                      Question active: {(workspaceActiveTurn.displayQuestion ?? workspaceActiveTurn.question).trim()}
+                    </p>
+                  ) : null}
                   <div className="space-y-3">
                     {citationCards.length === 0 ? (
                       <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
-                        <p className="text-xs text-slate-500">Aucune citation disponible pour cette reponse.</p>
+                        <p className="text-xs text-slate-500">
+                          Aucune source explicitement synthetisee dans cette reponse.
+                        </p>
                       </div>
                     ) : (
                       citationCards.map((card) => {
@@ -3065,6 +4177,9 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                               "{card.excerpt}"
                             </p>
                             <p className="text-[10px] text-slate-500 mt-2">{card.meta}</p>
+                            <p className="text-[10px] mt-1 text-slate-400">
+                              Source synthetisee et citee dans la reponse.
+                            </p>
                             {chunkId ? (
                               <div className="mt-3">
                                 <button
@@ -3106,52 +4221,6 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                 </div>
 
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <p className="text-[10px] text-slate-400 uppercase font-bold">
-                      Explication du raisonnement
-                    </p>
-                    <button
-                      className={`text-[10px] font-bold px-2 py-1 rounded ${
-                        showReasoningMode
-                          ? "bg-primary/20 text-primary"
-                          : "bg-slate-200/70 text-slate-700 dark:bg-slate-700 dark:text-slate-300"
-                      }`}
-                      onClick={() => setShowReasoningMode((previous) => !previous)}
-                      type="button"
-                    >
-                      {showReasoningMode
-                        ? "Masquer comment la reponse a ete construite"
-                        : "Afficher comment la reponse a ete construite"}
-                    </button>
-                  </div>
-                  {showReasoningMode ? (
-                    <div className="space-y-2">
-                      {reasoningSummary.length > 0 ? (
-                        <ul className="list-disc pl-4 space-y-1">
-                          {reasoningSummary.map((line, index) => (
-                            <li className="text-[11px] text-slate-300 leading-relaxed" key={`${line}-${index}`}>
-                              {line}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-[11px] text-slate-400">Aucune meta de raisonnement disponible.</p>
-                      )}
-                      {activeReasoningText ? (
-                        <div className="rounded-lg border border-primary/20 bg-[#0f1c15] p-3">
-                          <p className="text-[10px] text-slate-400 mb-1">Trace de construction (stream):</p>
-                          <p className="text-[11px] text-slate-200 whitespace-pre-wrap max-h-36 overflow-y-auto leading-relaxed">
-                            {activeReasoningText}
-                          </p>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <p className="text-[11px] text-slate-500">Activez le mode pour voir la construction de la reponse.</p>
-                  )}
-                </div>
-
-                <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
                   <p className="text-[10px] text-slate-400 uppercase font-bold mb-2">Visualisation des sources</p>
                   {sourceBreakdown.length === 0 ? (
                     <p className="text-[11px] text-slate-500">Aucune source a repartir pour cette reponse.</p>
@@ -3188,7 +4257,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                     <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Sources</p>
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold">{displayedSourceCount}</span>
-                      <span className="text-[10px] text-slate-500">sources citees</span>
+                      <span className="text-[10px] text-slate-500">sources synthetisees</span>
                     </div>
                   </div>
                 </div>
@@ -3295,8 +4364,12 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
             </div>
 
             <div className="px-5 pt-4">
+              <div className="mb-2 flex items-center justify-between text-[11px] text-slate-400">
+                <span>{isActValidating ? "Generation du document..." : "Progression"}</span>
+                <span>{actMenuProgressPercent}%</span>
+              </div>
               <div className="w-full h-2 rounded-full bg-[#0f1c15] overflow-hidden border border-slate-800">
-                <div className="h-full bg-[#21C853] transition-all duration-300" style={{ width: `${actWizardProgressPercent}%` }} />
+                <div className="h-full bg-[#21C853] transition-all duration-300" style={{ width: `${actMenuProgressPercent}%` }} />
               </div>
               <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
                 <div className={`rounded-md px-2 py-1 border ${actStep >= 1 ? "border-[#21C853]/40 text-[#21C853] bg-[#21C853]/10" : "border-slate-800"}`}>1. Type d'acte</div>
@@ -3322,25 +4395,34 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
 
                   <div className="space-y-3">
                     <p className="text-sm font-semibold text-slate-100">Choisir le type d'acte</p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                      {Object.values(ACT_TEMPLATES).map((template) => {
-                        const isActive = template.type === actType;
-                        return (
-                          <button
-                            className={`text-left rounded-xl border p-3 transition-colors ${
-                              isActive
-                                ? "border-primary bg-primary/10 text-primary"
-                                : "border-slate-700 bg-[#0f1c15] text-slate-300 hover:border-primary/50"
-                            }`}
-                            key={template.type}
-                            onClick={() => handleActTypeChange(template.type)}
-                            type="button"
-                          >
-                            <p className="font-semibold text-sm">{template.label}</p>
-                            <p className="text-[11px] mt-1 text-slate-400">{template.description}</p>
-                          </button>
-                        );
-                      })}
+                    <div className="space-y-4">
+                      {actTemplatesByCategory.map((group) => (
+                        <div className="space-y-2" key={group.category}>
+                          <p className="text-[11px] uppercase tracking-wider text-slate-400 font-bold">
+                            {group.category}
+                          </p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                            {group.templates.map((template) => {
+                              const isActive = template.type === actType;
+                              return (
+                                <button
+                                  className={`text-left rounded-xl border p-3 transition-colors ${
+                                    isActive
+                                      ? "border-primary bg-primary/10 text-primary"
+                                      : "border-slate-700 bg-[#0f1c15] text-slate-300 hover:border-primary/50"
+                                  }`}
+                                  key={template.type}
+                                  onClick={() => handleActTypeChange(template.type)}
+                                  type="button"
+                                >
+                                  <p className="font-semibold text-sm">{template.label}</p>
+                                  <p className="text-[11px] mt-1 text-slate-400">{template.description}</p>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -3498,6 +4580,25 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                           </p>
                         </div>
                       ) : null}
+                      <div className="mt-4 rounded-lg border border-slate-800 bg-[#0a120e] p-3">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">
+                            Previsualisation du contrat
+                          </p>
+                          {actGeneratedDocument.trim().length > 0 ? (
+                            <span className="text-[10px] text-[#7ff0a5]">modifiable via mini chat</span>
+                          ) : null}
+                        </div>
+                        {actGeneratedDocument.trim().length > 0 ? (
+                          <pre className="max-h-[300px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-relaxed text-slate-100">
+                            {actGeneratedDocument}
+                          </pre>
+                        ) : (
+                          <p className="text-xs text-slate-500">
+                            Aucune version du contrat n&apos;est encore disponible.
+                          </p>
+                        )}
+                      </div>
                     </div>
 
                     <div className="rounded-xl border border-slate-700 bg-[#0f1c15] p-4 flex flex-col">
@@ -3597,7 +4698,7 @@ export function ChatWorkspace({ initialQuestion = "", autoOpenActGenerator = fal
                       onClick={handleActNext}
                       type="button"
                     >
-                      Previsualiser
+                      Validation
                     </button>
                   </>
                 ) : null}
