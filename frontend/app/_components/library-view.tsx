@@ -910,6 +910,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   const [keywordSearch, setKeywordSearch] = useState("");
   const [infractionSearch, setInfractionSearch] = useState("");
   const [jurisdictionSearch, setJurisdictionSearch] = useState("");
+  const [selectedSearchCategory, setSelectedSearchCategory] = useState("all");
   const [selectedDocumentId, setSelectedDocumentId] = useState("all");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedDocType, setSelectedDocType] = useState<DocTypeFilter>("Tous");
@@ -929,6 +930,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   const [templateGenerationNotice, setTemplateGenerationNotice] = useState<string>("");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState(false);
+  const [isMobileSearchPanelOpen, setIsMobileSearchPanelOpen] = useState(false);
   const templateProgressResetTimerRef = useRef<number | null>(null);
 
   const isDocumentsPage = title.toLowerCase().includes("documents");
@@ -962,6 +964,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       setKeywordSearch(nextKeywordSearch);
       setInfractionSearch(nextInfractionSearch);
       setJurisdictionSearch(nextJurisdictionSearch);
+      setSelectedSearchCategory(nextCategories[0] ?? "all");
       setSelectedDocumentId(nextDocumentId || "all");
       if (nextCategories.length > 0) {
         setSelectedCategories(nextCategories);
@@ -1166,6 +1169,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       setDocumentError("");
       const rows = await listLibraryDocumentsApi({
         q: searchTerm,
+        category: selectedSearchCategory === "all" ? "" : selectedSearchCategory,
         article: articleSearch,
         keyword: keywordSearch,
         infractionType: infractionSearch,
@@ -1193,6 +1197,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     jurisdictionSearch,
     keywordSearch,
     searchTerm,
+    selectedSearchCategory,
     selectedDocumentId,
   ]);
 
@@ -1214,6 +1219,29 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     };
   }, [isDocumentsPage]);
 
+  const searchCategoryOptions = useMemo(() => {
+    const unique = Array.from(new Set(allLibraryDocuments.map((doc) => doc.category).filter(Boolean)));
+    return unique.sort((a, b) => a.localeCompare(b, "fr"));
+  }, [allLibraryDocuments]);
+
+  const scopedSearchDocuments = useMemo(() => {
+    const scoped =
+      selectedSearchCategory === "all"
+        ? allLibraryDocuments
+        : allLibraryDocuments.filter((doc) => doc.category === selectedSearchCategory);
+    return [...scoped].sort((a, b) => a.title.localeCompare(b.title, "fr"));
+  }, [allLibraryDocuments, selectedSearchCategory]);
+
+  useEffect(() => {
+    if (selectedSearchCategory === "all") {
+      return;
+    }
+    if (searchCategoryOptions.includes(selectedSearchCategory)) {
+      return;
+    }
+    setSelectedSearchCategory("all");
+  }, [searchCategoryOptions, selectedSearchCategory]);
+
   useEffect(() => {
     if (selectedDocumentId === "all") {
       return;
@@ -1223,6 +1251,16 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     }
     setSelectedDocumentId("all");
   }, [allLibraryDocuments, selectedDocumentId]);
+
+  useEffect(() => {
+    if (selectedSearchCategory === "all" || selectedDocumentId === "all") {
+      return;
+    }
+    if (scopedSearchDocuments.some((doc) => doc.id === selectedDocumentId)) {
+      return;
+    }
+    setSelectedDocumentId("all");
+  }, [scopedSearchDocuments, selectedDocumentId, selectedSearchCategory]);
 
   const recentSidebar = useMemo(() => consultations.slice(0, 8), [consultations]);
 
@@ -1254,17 +1292,6 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       return stillValid;
     });
   }, [categories]);
-
-  const categoryCounts = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const category of categories) {
-      map.set(category, 0);
-    }
-    for (const doc of documents) {
-      map.set(doc.category, (map.get(doc.category) ?? 0) + 1);
-    }
-    return map;
-  }, [documents, categories]);
 
   const filteredDocuments = useMemo(() => {
     return documents.filter((doc) => {
@@ -1408,19 +1435,6 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     setPendingDelete(null);
   };
 
-  const toggleCategory = (category: string, checked: boolean) => {
-    setCurrentPage(1);
-    setSelectedCategories((previous) => {
-      if (checked) {
-        if (previous.includes(category)) {
-          return previous;
-        }
-        return [...previous, category];
-      }
-      return previous.filter((item) => item !== category);
-    });
-  };
-
   const resetFilters = () => {
     setSearchTerm("");
     setSelectedCategories(categories);
@@ -1429,13 +1443,9 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     setKeywordSearch("");
     setInfractionSearch("");
     setJurisdictionSearch("");
+    setSelectedSearchCategory("all");
     setSelectedDocumentId("all");
     setCurrentPage(1);
-  };
-
-  const clearAllCategories = () => {
-    setCurrentPage(1);
-    setSelectedCategories([]);
   };
 
   const clearAdvancedSearch = () => {
@@ -1444,6 +1454,13 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     setKeywordSearch("");
     setInfractionSearch("");
     setJurisdictionSearch("");
+    setSelectedSearchCategory("all");
+    setSelectedDocumentId("all");
+  };
+
+  const applySearchCategory = (nextCategory: string) => {
+    setCurrentPage(1);
+    setSelectedSearchCategory(nextCategory);
     setSelectedDocumentId("all");
   };
 
@@ -1452,6 +1469,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     keywordSearch,
     infractionSearch,
     jurisdictionSearch,
+    selectedSearchCategory !== "all" ? "category-filter" : "",
     selectedDocumentId !== "all" ? "document-filter" : "",
   ].filter((value) => value.trim().length > 0).length;
 
@@ -1793,7 +1811,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
             </div>
             {!isSidebarCollapsed ? (
               <Link
-                className="hidden lg:flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
+                className="flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
                 href="/chat"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
               >
@@ -1942,7 +1960,145 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
           </div>
 
           {!isDocumentsPage ? (
-            <section className="rounded-2xl border border-slate-800 bg-[#1a2e22] p-4 sm:p-6 space-y-4">
+            <section className="xl:hidden rounded-2xl border border-slate-800 bg-[#1a2e22] p-4 space-y-3">
+              <button
+                className="w-full flex items-center justify-between gap-2 rounded-xl border border-slate-700 bg-[#112117] px-3 py-2.5 text-left"
+                onClick={() => setIsMobileSearchPanelOpen((prev) => !prev)}
+                type="button"
+              >
+                <div>
+                  <p className="text-sm font-bold text-slate-100">Recherche + filtres documents</p>
+                  <p className="text-[11px] text-slate-400">
+                    {advancedSearchCount === 0
+                      ? "Choisissez une categorie puis un document (optionnel)."
+                      : `${advancedSearchCount} filtre(s) actif(s)`}
+                  </p>
+                </div>
+                <span className="material-symbols-outlined text-slate-300">
+                  {isMobileSearchPanelOpen ? "expand_less" : "expand_more"}
+                </span>
+              </button>
+
+              {isMobileSearchPanelOpen ? (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="space-y-1.5">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Categorie</span>
+                      <select
+                        className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                        onChange={(event) => {
+                          applySearchCategory(event.target.value);
+                        }}
+                        value={selectedSearchCategory}
+                      >
+                        <option value="all">Toutes les categories</option>
+                        {searchCategoryOptions.map((category) => (
+                          <option key={`mobile-search-category-${category}`} value={category}>
+                            {category}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {selectedSearchCategory !== "all" ? (
+                      <label className="space-y-1.5">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                          Document juridique
+                        </span>
+                        <select
+                          className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                          onChange={(event) => {
+                            setCurrentPage(1);
+                            setSelectedDocumentId(event.target.value);
+                          }}
+                          value={selectedDocumentId}
+                        >
+                          <option value="all">Tous les documents de la categorie</option>
+                          {scopedSearchDocuments.map((doc) => (
+                            <option key={`mobile-scoped-doc-${doc.id}`} value={doc.id}>
+                              {doc.title}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3">
+                    <label className="space-y-1.5">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        Article dans ce document
+                      </span>
+                      <input
+                        className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                        onChange={(event) => {
+                          setCurrentPage(1);
+                          setArticleSearch(event.target.value);
+                        }}
+                        placeholder="Ex: article 45"
+                        type="text"
+                        value={articleSearch}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="space-y-1.5">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Mot-cle</span>
+                      <input
+                        className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                        onChange={(event) => {
+                          setCurrentPage(1);
+                          setKeywordSearch(event.target.value);
+                        }}
+                        placeholder="Ex: succession"
+                        type="text"
+                        value={keywordSearch}
+                      />
+                    </label>
+                    <label className="space-y-1.5">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Type de document</span>
+                      <select
+                        className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                        onChange={(event) => {
+                          setCurrentPage(1);
+                          setSelectedDocType(event.target.value);
+                        }}
+                        value={selectedDocType}
+                      >
+                        {docTypeOptions.map((label) => (
+                          <option key={`mobile-doc-type-${label}`} value={label}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 transition-colors"
+                      onClick={clearAdvancedSearch}
+                      type="button"
+                    >
+                      <span className="material-symbols-outlined text-base">filter_alt_off</span>
+                      Effacer recherche
+                    </button>
+                    <button
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 transition-colors"
+                      onClick={resetFilters}
+                      type="button"
+                    >
+                      <span className="material-symbols-outlined text-base">restart_alt</span>
+                      Reinitialiser tout
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {!isDocumentsPage ? (
+            <section className="hidden xl:block rounded-2xl border border-slate-800 bg-[#1a2e22] p-4 sm:p-6 space-y-4">
               <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <div>
                   <h3 className="text-lg font-bold text-slate-100">Moteur de recherche juridique avance</h3>
@@ -1956,25 +2112,46 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
                 <label className="space-y-1.5">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Document juridique</span>
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Categorie</span>
                   <select
                     className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
                     onChange={(event) => {
-                      setCurrentPage(1);
-                      setSelectedDocumentId(event.target.value);
+                      applySearchCategory(event.target.value);
                     }}
-                    value={selectedDocumentId}
+                    value={selectedSearchCategory}
                   >
-                    <option value="all">Tous les documents</option>
-                    {allLibraryDocuments.map((doc) => (
-                      <option key={doc.id} value={doc.id}>
-                        {doc.title}
+                    <option value="all">Toutes les categories</option>
+                    {searchCategoryOptions.map((category) => (
+                      <option key={`desktop-search-category-${category}`} value={category}>
+                        {category}
                       </option>
                     ))}
                   </select>
                 </label>
+                {selectedSearchCategory !== "all" ? (
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                      Document juridique
+                    </span>
+                    <select
+                      className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                      onChange={(event) => {
+                        setCurrentPage(1);
+                        setSelectedDocumentId(event.target.value);
+                      }}
+                      value={selectedDocumentId}
+                    >
+                      <option value="all">Tous les documents de la categorie</option>
+                      {scopedSearchDocuments.map((doc) => (
+                        <option key={`desktop-scoped-doc-${doc.id}`} value={doc.id}>
+                          {doc.title}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 <label className="space-y-1.5">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Article de loi</span>
                   <input
@@ -2334,35 +2511,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
 
           {!isDocumentsPage ? (
             <div className="grid grid-cols-1 xl:grid-cols-[320px_1fr] gap-8">
-            <aside className="bg-[#1a2e22] rounded-2xl border border-slate-800 p-6 space-y-7 h-fit">
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Categories</h3>
-                  <button
-                    className="text-[11px] font-semibold text-[#112117] bg-[#49DE80] hover:bg-[#49DE80]/90 px-2.5 py-1 rounded-md transition-colors"
-                    onClick={clearAllCategories}
-                    type="button"
-                  >
-                    Tout deselectionner
-                  </button>
-                </div>
-                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                  {categories.map((category) => (
-                    <label className="flex items-center gap-3 px-2 py-2 rounded-md hover:bg-white/5 cursor-pointer" key={category}>
-                      <input
-                        checked={selectedCategories.includes(category)}
-                        className="rounded border-slate-700 text-[#49DE80] focus:ring-[#49DE80] bg-transparent"
-                        onChange={(event) => toggleCategory(category, event.target.checked)}
-                        type="checkbox"
-                      />
-                      <span className="text-sm text-slate-200">{category}</span>
-                      <span className="ml-auto text-xs text-slate-500">{categoryCounts.get(category) ?? 0}</span>
-                    </label>
-                  ))}
-                  {categories.length === 0 ? <p className="text-xs text-slate-500">Aucune categorie.</p> : null}
-                </div>
-              </div>
-
+            <aside className="hidden xl:block bg-[#1a2e22] rounded-2xl border border-slate-800 p-6 space-y-7 h-fit">
               <div>
                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Type de Document</h3>
                 <div className="space-y-2">

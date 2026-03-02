@@ -31,6 +31,32 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 ```
 
+## Workspace memory with Supabase (optional)
+
+By default, workspace memory uses local JSON file storage.
+To persist conversations/notes/files per user in Supabase:
+
+1. Run SQL schema: `docs/SUPABASE_WORKSPACE_SCHEMA.sql`
+2. Set backend env:
+
+```env
+WORKSPACE_STORAGE_BACKEND=supabase
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+SUPABASE_SCHEMA=public
+SUPABASE_USERS_TABLE=workspace_users
+SUPABASE_CONSULTATIONS_TABLE=workspace_consultations
+SUPABASE_NOTES_TABLE=workspace_notes
+SUPABASE_FILES_TABLE=workspace_files
+SUPABASE_TEMPLATES_TABLE=workspace_templates
+SUPABASE_TIMEOUT_SEC=8
+```
+
+Notes:
+- Backend automatically scopes workspace data by `X-User-Id` header.
+- Backend also stores user profile context (`email`, `username`, `display_name`) in `workspace_users`.
+- If Supabase is unreachable, backend falls back to local JSON storage.
+
 ## 2) Install and run
 
 ```bash

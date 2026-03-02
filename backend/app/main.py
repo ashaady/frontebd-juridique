@@ -20,6 +20,7 @@ from .api import library_router, speech_router, workspace_router
 from .schemas import ChatRequest
 from .shared_runtime import client, get_retriever, get_workspace_rag_index, settings
 from .workspace_rag import SUPPORTED_UPLOAD_EXTENSIONS, WORKSPACE_UPLOAD_DIR
+from .workspace_store import workspace_storage_summary
 
 logger = logging.getLogger("backend.app.main")
 
@@ -614,12 +615,72 @@ def _merge_unique_chunks(chunks: list[Any]) -> list[Any]:
     return merged
 
 
+def _normalize_workspace_file_ids(file_ids: list[str] | None) -> set[str]:
+    if not file_ids:
+        return set()
+    normalized: set[str] = set()
+    for raw in file_ids:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        normalized.add(value[:128])
+    return normalized
+
+
+def _workspace_chunk_file_id(chunk: Any) -> str | None:
+    doc_id = getattr(chunk, "doc_id", "")
+    if not isinstance(doc_id, str):
+        return None
+    if not doc_id.startswith("workspace:"):
+        return None
+    file_id = doc_id.split("workspace:", 1)[1].strip()
+    return file_id or None
+
+
+def _filter_workspace_candidates_by_file_ids(
+    candidates: list[Any],
+    allowed_file_ids: set[str],
+) -> list[Any]:
+    if not allowed_file_ids:
+        return candidates
+    filtered: list[Any] = []
+    for chunk in candidates:
+        file_id = _workspace_chunk_file_id(chunk)
+        if file_id and file_id in allowed_file_ids:
+            filtered.append(chunk)
+    return filtered
+
+
+def _renumber_chunks_for_context(chunks: list[Any]) -> list[Any]:
+    renumbered: list[Any] = []
+    for index, chunk in enumerate(chunks, start=1):
+        try:
+            cloned = chunk.__class__(
+                rank=index,
+                score=float(getattr(chunk, "score", 0.0)),
+                chunk_id=str(getattr(chunk, "chunk_id", "")),
+                text=str(getattr(chunk, "text", "")),
+                doc_id=getattr(chunk, "doc_id", None),
+                relative_path=getattr(chunk, "relative_path", None),
+                source_path=getattr(chunk, "source_path", None),
+                page_start=getattr(chunk, "page_start", None),
+                page_end=getattr(chunk, "page_end", None),
+                article_hint=getattr(chunk, "article_hint", None),
+            )
+        except Exception:
+            continue
+        renumbered.append(cloned)
+    return renumbered
+
+
 # ---------------------------------------------------------------------------
 # Preparation du contexte RAG
 # ---------------------------------------------------------------------------
 async def _prepare_messages_with_rag(
     messages: list[dict[str, Any]],
     rewrite_enabled_override: bool | None = None,
+    workspace_only: bool = False,
+    workspace_file_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
     if not settings.rag_enabled:
         return messages, [], None, None
@@ -670,6 +731,7 @@ async def _prepare_messages_with_rag(
 
     reranker_applied = False
     reranker_error: str | None = None
+    rerank_applied = False
     domain_filter_applied = False
     domain_filter_query_domains: list[str] = []
     domain_filter_in_domain_count = 0
@@ -680,6 +742,24 @@ async def _prepare_messages_with_rag(
     neutral_added = 0
     removed_by_threshold = 0
     workspace_candidate_count = 0
+    allowed_workspace_file_ids = _normalize_workspace_file_ids(workspace_file_ids)
+    direct_workspace_chunks: list[Any] = []
+    direct_workspace_chunk_count = 0
+
+    if allowed_workspace_file_ids:
+        try:
+            direct_workspace_chunks = get_workspace_rag_index().get_chunks_for_files(
+                sorted(allowed_workspace_file_ids),
+                max_chunks=max(settings.rag_target_max_chunks * 4, 32),
+            )
+            direct_workspace_chunk_count = len(direct_workspace_chunks)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Workspace direct context failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+
     try:
         reranker_enabled = settings.rag_reranker_enabled
         adaptive_threshold_enabled = settings.rag_adaptive_threshold_enabled
@@ -694,21 +774,33 @@ async def _prepare_messages_with_rag(
             settings.rag_target_max_chunks,
         )
         # Recherche RAG avec la question (eventuellement reformulee)
-        retrieved_candidates = retriever.search_hybrid(
-            query=retrieval_query,
-            top_k=candidate_pool_size,
-            candidate_pool_size=candidate_pool_size,
+        retrieved_candidates = (
+            []
+            if workspace_only
+            else retriever.search_hybrid(
+                query=retrieval_query,
+                top_k=candidate_pool_size,
+                candidate_pool_size=candidate_pool_size,
+            )
         )
         workspace_candidates = get_workspace_rag_index().search(
             query=retrieval_query,
             top_k=max(settings.rag_target_max_chunks, settings.rag_top_k),
         )
+        workspace_candidates = _filter_workspace_candidates_by_file_ids(
+            workspace_candidates,
+            allowed_workspace_file_ids,
+        )
         workspace_candidate_count = len(workspace_candidates)
         # Recherche exacte des articles mentionnes dans la query originale
-        exact_matches_by_ref = retriever.find_exact_article_matches(
-            query=original_query,
-            refs=article_refs,
-            per_ref_limit=4,
+        exact_matches_by_ref = (
+            {}
+            if workspace_only
+            else retriever.find_exact_article_matches(
+                query=original_query,
+                refs=article_refs,
+                per_ref_limit=4,
+            )
         )
         exact_candidates: list[Any] = []
         for ref in article_refs:
@@ -717,7 +809,12 @@ async def _prepare_messages_with_rag(
         merged_candidates = _merge_unique_chunks(
             exact_candidates + workspace_candidates + retrieved_candidates
         )
-        if settings.rag_domain_filter_enabled:
+        if workspace_only:
+            domain_filtered_candidates = workspace_candidates
+            domain_filter_applied = False
+            domain_filter_query_domains = []
+            domain_filter_in_domain_count = len(workspace_candidates)
+        elif settings.rag_domain_filter_enabled:
             domain_filtered_candidates, domain_filter_applied, domain_filter_query_domains, domain_filter_in_domain_count = filter_candidates_by_query_domains(
                 query=retrieval_query,
                 candidates=merged_candidates,
@@ -738,57 +835,79 @@ async def _prepare_messages_with_rag(
             kept = [chunk for chunk in matches if chunk.chunk_id in allowed_chunk_ids]
             if kept:
                 exact_matches_by_ref_for_selection[ref] = kept
-        pre_ranked, rerank_applied = rerank_article_aware(
-            query=retrieval_query,
-            candidates=domain_filtered_candidates,
-            top_k=candidate_pool_size,
-        )
-        if reranker_enabled:
-            ranked_candidates, reranker_applied, reranker_error = retriever.rerank_with_cross_encoder(
+        if workspace_only:
+            pre_ranked = domain_filtered_candidates[:candidate_pool_size]
+            ranked_candidates = pre_ranked
+        else:
+            pre_ranked, rerank_applied = rerank_article_aware(
                 query=retrieval_query,
-                candidates=pre_ranked,
+                candidates=domain_filtered_candidates,
                 top_k=candidate_pool_size,
-                candidate_pool_size=settings.rag_reranker_pool_size,
             )
-        else:
-            ranked_candidates = pre_ranked[:candidate_pool_size]
+            if reranker_enabled:
+                ranked_candidates, reranker_applied, reranker_error = retriever.rerank_with_cross_encoder(
+                    query=retrieval_query,
+                    candidates=pre_ranked,
+                    top_k=candidate_pool_size,
+                    candidate_pool_size=settings.rag_reranker_pool_size,
+                )
+            else:
+                ranked_candidates = pre_ranked[:candidate_pool_size]
 
-        if adaptive_threshold_enabled:
-            selected_chunks, threshold_final, adaptive_iterations, neutral_added = select_chunks_adaptive(
-                ranked_candidates,
-                min_score_threshold=settings.rag_min_score_threshold,
-                threshold_floor=settings.rag_adaptive_threshold_floor,
-                threshold_step=settings.rag_adaptive_threshold_step,
-                target_min=settings.rag_target_min_chunks,
-                target_max=settings.rag_target_max_chunks,
-                neutral_fallback_max=settings.rag_neutral_fallback_max,
-                article_refs=article_refs,
-                exact_matches_by_ref=exact_matches_by_ref_for_selection,
-            )
-            # select_chunks_adaptive already enforces article coverage.
-            if article_refs and exact_matches_by_ref_for_selection:
-                coverage_applied = True
+        if workspace_only:
+            selected_chunks = ranked_candidates[: max(1, settings.rag_target_max_chunks)]
+            threshold_final = threshold_start
+            adaptive_iterations = 0
+            neutral_added = 0
+            removed_by_threshold = max(0, len(ranked_candidates) - len(selected_chunks))
         else:
-            selected_chunks, removed_by_threshold = filter_by_score_threshold(
-                ranked_candidates,
-                min_score_threshold=settings.rag_min_score_threshold,
-            )
-            selected_chunks, coverage_applied = enforce_article_reference_coverage(
-                ranked_chunks=selected_chunks,
-                article_refs=article_refs,
-                exact_matches_by_ref=exact_matches_by_ref_for_selection,
-                top_k=settings.rag_target_max_chunks,
-            )
+            if adaptive_threshold_enabled:
+                selected_chunks, threshold_final, adaptive_iterations, neutral_added = select_chunks_adaptive(
+                    ranked_candidates,
+                    min_score_threshold=settings.rag_min_score_threshold,
+                    threshold_floor=settings.rag_adaptive_threshold_floor,
+                    threshold_step=settings.rag_adaptive_threshold_step,
+                    target_min=settings.rag_target_min_chunks,
+                    target_max=settings.rag_target_max_chunks,
+                    neutral_fallback_max=settings.rag_neutral_fallback_max,
+                    article_refs=article_refs,
+                    exact_matches_by_ref=exact_matches_by_ref_for_selection,
+                )
+                # select_chunks_adaptive already enforces article coverage.
+                if article_refs and exact_matches_by_ref_for_selection:
+                    coverage_applied = True
+            else:
+                selected_chunks, removed_by_threshold = filter_by_score_threshold(
+                    ranked_candidates,
+                    min_score_threshold=settings.rag_min_score_threshold,
+                )
+                selected_chunks, coverage_applied = enforce_article_reference_coverage(
+                    ranked_chunks=selected_chunks,
+                    article_refs=article_refs,
+                    exact_matches_by_ref=exact_matches_by_ref_for_selection,
+                    top_k=settings.rag_target_max_chunks,
+                )
+                if len(selected_chunks) > settings.rag_target_max_chunks:
+                    selected_chunks = selected_chunks[: settings.rag_target_max_chunks]
+
+        if not workspace_only and allowed_workspace_file_ids and workspace_candidates:
+            pinned_workspace_chunks = workspace_candidates[: min(3, len(workspace_candidates))]
+            selected_chunks = _merge_unique_chunks(pinned_workspace_chunks + selected_chunks)
             if len(selected_chunks) > settings.rag_target_max_chunks:
                 selected_chunks = selected_chunks[: settings.rag_target_max_chunks]
+        if direct_workspace_chunks:
+            if workspace_only:
+                selected_chunks = direct_workspace_chunks
+            else:
+                selected_chunks = _merge_unique_chunks(direct_workspace_chunks + selected_chunks)
     except Exception as exc:  # noqa: BLE001
         logger.exception("RAG retrieval pipeline failed: %s: %s", type(exc).__name__, exc)
         return messages, [], f"RAG retrieval failed: {exc}", None
 
-    if adaptive_threshold_enabled:
+    if adaptive_threshold_enabled and not workspace_only:
         removed_by_threshold = max(0, len(ranked_candidates) - len(selected_chunks))
 
-    if settings.rag_relevance_check_enabled:
+    if settings.rag_relevance_check_enabled and not workspace_only:
         relevance = score_context_relevance(
             selected_chunks,
             min_chunks_required=settings.rag_min_chunks_required,
@@ -806,7 +925,7 @@ async def _prepare_messages_with_rag(
             else 0.0
         )
 
-    if settings.rag_relevance_check_enabled and not relevance.is_relevant:
+    if settings.rag_relevance_check_enabled and not workspace_only and not relevance.is_relevant:
         confidence_level = "none"
 
     if confidence_level == "none":
@@ -823,14 +942,19 @@ async def _prepare_messages_with_rag(
             f"target_range={settings.rag_target_min_chunks}-{settings.rag_target_max_chunks}"
         )
         rag_notes.append(f"workspace_candidates={workspace_candidate_count}")
+        if allowed_workspace_file_ids:
+            rag_notes.append(f"workspace_file_scope={len(allowed_workspace_file_ids)}")
+        if direct_workspace_chunk_count > 0:
+            rag_notes.append(f"workspace_direct_chunks={direct_workspace_chunk_count}")
         rag_notes.append(f"removed={removed_by_threshold}")
         rag_notes.append(f"adaptive_iterations={adaptive_iterations}")
         rag_notes.append(f"neutral_added={neutral_added}")
         rag_note = " | ".join(rag_notes)
         return [{"role": "system", "content": RAG_NO_CONTEXT_RESPONSE}, *messages], [], None, rag_note
 
+    context_chunks = _renumber_chunks_for_context(selected_chunks)
     context_text, sources = format_retrieval_context(
-        selected_chunks,
+        context_chunks,
         max_chars=settings.rag_max_context_chars,
     )
     if not context_text:
@@ -911,6 +1035,12 @@ async def _prepare_messages_with_rag(
         rag_notes.append("definition-focus")
     if any(msg.get("content") == ACT_GENERATION_INSTRUCTIONS for msg in extra_system_messages):
         rag_notes.append("act-generation-mode")
+    if workspace_only:
+        rag_notes.append("workspace-only-context")
+    if allowed_workspace_file_ids:
+        rag_notes.append(f"workspace_file_scope={len(allowed_workspace_file_ids)}")
+    if direct_workspace_chunk_count > 0:
+        rag_notes.append(f"workspace_direct_chunks={direct_workspace_chunk_count}")
     rag_note = " | ".join(rag_notes) if rag_notes else None
 
     if not extra_system_messages:
@@ -967,7 +1097,18 @@ app.add_middleware(
     allow_origin_regex=settings.allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "User-Agent"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "User-Agent",
+        "X-User-Id",
+        "X-Clerk-User-Id",
+        "X-User-Email",
+        "X-User-Name",
+        "X-User-Username",
+    ],
 )
 if settings.gzip_enabled:
     app.add_middleware(
@@ -1057,6 +1198,7 @@ async def runtime_error_handler(_: Request, exc: RuntimeError):
 
 @app.get("/health")
 async def health():
+    workspace_storage = workspace_storage_summary()
     return {
         "status": "ok",
         "env": settings.app_env,
@@ -1101,8 +1243,10 @@ async def health():
         },
         "workspace": {
             "enabled": True,
-            "storage": "json-file",
-            "path": "data/app_state/workspace_state.json",
+            "storage": workspace_storage.get("backend", "json-file"),
+            "fallback": workspace_storage.get("fallback"),
+            "path": workspace_storage.get("path", "data/app_state/workspace_state.json"),
+            "supabase": workspace_storage.get("supabase"),
             "upload_dir": str(WORKSPACE_UPLOAD_DIR),
             "supported_extensions": sorted(SUPPORTED_UPLOAD_EXTENSIONS),
         },
@@ -1126,6 +1270,7 @@ async def ready():
         "provider": settings.llm_provider,
         "model": settings.llm_model,
         "rag_enabled": settings.rag_enabled,
+        "workspace_storage": workspace_storage_summary(),
     }
 
     rag_index_dir = Path(settings.rag_index_dir)
@@ -1179,10 +1324,19 @@ app.include_router(speech_router)
 async def chat(payload: ChatRequest):
     request_started = monotonic()
     input_messages = [message.model_dump() for message in payload.messages]
-    llm_messages, rag_sources, rag_error, rag_note = await _prepare_messages_with_rag(
-        input_messages,
-        rewrite_enabled_override=payload.rag_query_rewrite,
-    )
+    should_use_rag = settings.rag_enabled and payload.use_rag is not False
+    if should_use_rag:
+        llm_messages, rag_sources, rag_error, rag_note = await _prepare_messages_with_rag(
+            input_messages,
+            rewrite_enabled_override=payload.rag_query_rewrite,
+            workspace_only=payload.workspace_only,
+            workspace_file_ids=payload.workspace_file_ids,
+        )
+    else:
+        llm_messages = input_messages
+        rag_sources = []
+        rag_error = None
+        rag_note = "rag-bypassed-request"
     llm_messages = _normalize_messages_for_provider(llm_messages)
     rag_ready_at = monotonic()
 
@@ -1236,7 +1390,7 @@ async def chat(payload: ChatRequest):
         "model": settings.llm_model,
         "answer": answer,
         "finish_reason": finish_reason,
-        "rag_enabled": settings.rag_enabled,
+        "rag_enabled": should_use_rag,
         "rag_source_count": len(rag_sources),
         "rag_sources": rag_sources,
     }
@@ -1264,10 +1418,19 @@ async def chat(payload: ChatRequest):
 async def chat_stream(payload: ChatRequest):
     request_started = monotonic()
     input_messages = [message.model_dump() for message in payload.messages]
-    llm_messages, rag_sources, rag_error, rag_note = await _prepare_messages_with_rag(
-        input_messages,
-        rewrite_enabled_override=payload.rag_query_rewrite,
-    )
+    should_use_rag = settings.rag_enabled and payload.use_rag is not False
+    if should_use_rag:
+        llm_messages, rag_sources, rag_error, rag_note = await _prepare_messages_with_rag(
+            input_messages,
+            rewrite_enabled_override=payload.rag_query_rewrite,
+            workspace_only=payload.workspace_only,
+            workspace_file_ids=payload.workspace_file_ids,
+        )
+    else:
+        llm_messages = input_messages
+        rag_sources = []
+        rag_error = None
+        rag_note = "rag-bypassed-request"
     llm_messages = _normalize_messages_for_provider(llm_messages)
     rag_ready_at = monotonic()
 
@@ -1296,7 +1459,7 @@ async def chat_stream(payload: ChatRequest):
         meta_payload: dict[str, Any] = {
             "status": "started",
             "model": settings.llm_model,
-            "rag_enabled": settings.rag_enabled,
+            "rag_enabled": should_use_rag,
             "rag_source_count": len(rag_sources),
             "rag_sources": rag_sources,
         }

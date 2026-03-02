@@ -1,0 +1,92 @@
+-- Workspace persistence schema for JuridiqueSN backend.
+-- Run this in Supabase SQL editor (project database).
+
+create table if not exists public.workspace_users (
+  user_id text primary key,
+  email text null,
+  clerk_username text null,
+  display_name text null,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+
+create index if not exists workspace_users_email_idx
+  on public.workspace_users (email);
+
+create table if not exists public.workspace_consultations (
+  user_id text not null,
+  id text not null,
+  question text not null default '',
+  answer text not null default '',
+  status text not null default 'done',
+  finish_reason text not null default '',
+  rag_note text not null default '',
+  source_count integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create index if not exists workspace_consultations_user_updated_idx
+  on public.workspace_consultations (user_id, updated_at desc);
+
+create table if not exists public.workspace_notes (
+  user_id text primary key,
+  notes text not null default '',
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.workspace_files (
+  user_id text not null,
+  id text not null,
+  name text not null,
+  size bigint not null default 0,
+  added_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create index if not exists workspace_files_user_added_idx
+  on public.workspace_files (user_id, added_at desc);
+
+create table if not exists public.workspace_templates (
+  user_id text not null,
+  id text not null,
+  name text not null,
+  category text not null default 'Modeles personnalises',
+  domain text not null default 'Personnalise',
+  branch text not null default 'Document juridique',
+  complexity text not null default 'Simple',
+  description text not null default '',
+  legal_refs jsonb not null default '[]'::jsonb,
+  required_fields jsonb not null default '[]'::jsonb,
+  optional_fields jsonb not null default '[]'::jsonb,
+  sections jsonb not null default '[]'::jsonb,
+  warning text not null default '',
+  fields jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create index if not exists workspace_templates_user_updated_idx
+  on public.workspace_templates (user_id, updated_at desc);
+
+create or replace view public.workspace_user_history as
+select
+  u.user_id,
+  u.email,
+  u.clerk_username,
+  u.display_name,
+  u.first_seen_at,
+  u.last_seen_at,
+  count(c.id) as consultations_count,
+  max(c.updated_at) as last_consultation_at
+from public.workspace_users u
+left join public.workspace_consultations c on c.user_id = u.user_id
+group by
+  u.user_id,
+  u.email,
+  u.clerk_username,
+  u.display_name,
+  u.first_seen_at,
+  u.last_seen_at;

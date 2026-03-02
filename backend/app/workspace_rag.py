@@ -347,6 +347,46 @@ class WorkspaceRagIndex:
             if WORKSPACE_RAG_JSONL_PATH.exists():
                 WORKSPACE_RAG_JSONL_PATH.unlink()
 
+    def get_chunks_for_files(
+        self,
+        file_ids: Sequence[str],
+        *,
+        max_chunks: int = 64,
+    ) -> list[RetrievedChunk]:
+        self._ensure_loaded()
+        if max_chunks < 1:
+            return []
+        allowed_ids = {str(file_id).strip() for file_id in file_ids if str(file_id).strip()}
+        if not allowed_ids:
+            return []
+
+        with self._lock:
+            if not self._chunks:
+                return []
+            selected_rows = [row for row in self._chunks if row.file_id in allowed_ids]
+
+        if not selected_rows:
+            return []
+
+        selected_rows = selected_rows[:max_chunks]
+        rows: list[RetrievedChunk] = []
+        for rank, chunk in enumerate(selected_rows, start=1):
+            rows.append(
+                RetrievedChunk(
+                    rank=rank,
+                    score=1.0,
+                    chunk_id=chunk.chunk_id,
+                    text=chunk.text,
+                    doc_id=f"workspace:{chunk.file_id}",
+                    relative_path=chunk.relative_path,
+                    source_path=chunk.source_path,
+                    page_start=None,
+                    page_end=None,
+                    article_hint=chunk.article_hint,
+                )
+            )
+        return rows
+
     def search(self, query: str, *, top_k: int) -> list[RetrievedChunk]:
         self._ensure_loaded()
         query_text = query.strip()
