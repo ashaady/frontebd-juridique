@@ -19,9 +19,61 @@ export type WorkspaceFileRecord = {
   addedAt: string;
 };
 
+export type TemplateComplexity = "Simple" | "Intermediaire" | "Avance";
+
+export type CustomTemplateFieldRecord = {
+  key: string;
+  label: string;
+  required: boolean;
+  placeholder?: string;
+  type?: "text" | "textarea" | "date" | "number" | "select";
+  options?: Array<{ value: string; label: string }>;
+  hint?: string;
+};
+
+export type CustomDocumentTemplateRecord = {
+  id: string;
+  name: string;
+  category: string;
+  domain: string;
+  branch: string;
+  complexity: TemplateComplexity;
+  description: string;
+  legalRefs: string[];
+  requiredFields: string[];
+  optionalFields: string[];
+  sections: string[];
+  warning: string;
+  fields: CustomTemplateFieldRecord[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 const CONSULTATIONS_KEY = "juridique_sn_consultations_v1";
 const NOTES_KEY = "juridique_sn_notes_v1";
 const FILES_KEY = "juridique_sn_workspace_files_v1";
+const CUSTOM_TEMPLATES_KEY = "juridique_sn_custom_templates_v1";
+let storageScope = "anon";
+
+function normalizeStorageScope(scope?: string | null): string {
+  const raw = String(scope ?? "").trim();
+  if (!raw) {
+    return "anon";
+  }
+  const normalized = raw.replace(/[^a-zA-Z0-9_.:@-]+/g, "_").replace(/^[_:.@-]+|[_:.@-]+$/g, "");
+  return normalized.length > 0 ? normalized.slice(0, 96) : "anon";
+}
+
+function scopedKey(baseKey: string): string {
+  if (storageScope === "anon") {
+    return baseKey;
+  }
+  return `${baseKey}__${storageScope}`;
+}
+
+export function setWorkspaceStorageScope(scope?: string | null): void {
+  storageScope = normalizeStorageScope(scope);
+}
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
@@ -32,7 +84,7 @@ function safeRead<T>(key: string, fallback: T): T {
     return fallback;
   }
   try {
-    const raw = window.localStorage.getItem(key);
+    const raw = window.localStorage.getItem(scopedKey(key));
     if (!raw) {
       return fallback;
     }
@@ -48,7 +100,7 @@ function safeWrite<T>(key: string, value: T): void {
     return;
   }
   try {
-    window.localStorage.setItem(key, JSON.stringify(value));
+    window.localStorage.setItem(scopedKey(key), JSON.stringify(value));
   } catch {
     // Ignore quota and serialization failures in UI layer.
   }
@@ -143,6 +195,165 @@ function normalizeWorkspaceFile(file: WorkspaceFileRecord): WorkspaceFileRecord 
     size: Number.isFinite(file.size) ? Math.max(0, Number(file.size)) : 0,
     addedAt: file.addedAt || new Date().toISOString()
   };
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter((item) => item.length > 0);
+}
+
+function normalizeTemplateFieldType(value: unknown): CustomTemplateFieldRecord["type"] {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "textarea") {
+    return "textarea";
+  }
+  if (normalized === "date") {
+    return "date";
+  }
+  if (normalized === "number") {
+    return "number";
+  }
+  if (normalized === "select") {
+    return "select";
+  }
+  return "text";
+}
+
+function normalizeCustomTemplateField(value: unknown): CustomTemplateFieldRecord | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  const key = String(row.key ?? "").trim();
+  const label = String(row.label ?? "").trim();
+  if (!key || !label) {
+    return null;
+  }
+  const options = Array.isArray(row.options)
+    ? row.options
+        .map((option) => {
+          if (!option || typeof option !== "object") {
+            return null;
+          }
+          const parsed = option as Record<string, unknown>;
+          const valueText = String(parsed.value ?? "").trim();
+          const labelText = String(parsed.label ?? "").trim() || valueText;
+          if (!valueText) {
+            return null;
+          }
+          return {
+            value: valueText,
+            label: labelText,
+          };
+        })
+        .filter((option): option is { value: string; label: string } => Boolean(option))
+    : [];
+  const type = normalizeTemplateFieldType(row.type);
+  return {
+    key,
+    label,
+    required: Boolean(row.required),
+    placeholder: String(row.placeholder ?? "").trim() || undefined,
+    type,
+    options: type === "select" && options.length > 0 ? options : undefined,
+    hint: String(row.hint ?? "").trim() || undefined,
+  };
+}
+
+function normalizeTemplateComplexity(value: unknown): TemplateComplexity {
+  const lowered = String(value ?? "").trim().toLowerCase();
+  if (lowered === "avance") {
+    return "Avance";
+  }
+  if (lowered === "intermediaire") {
+    return "Intermediaire";
+  }
+  return "Simple";
+}
+
+function normalizeCustomTemplate(
+  value: CustomDocumentTemplateRecord
+): CustomDocumentTemplateRecord | null {
+  const nowIso = new Date().toISOString();
+  const id = String(value.id ?? "").trim();
+  const name = String(value.name ?? "").trim();
+  if (!id || !name) {
+    return null;
+  }
+  const fields = Array.isArray(value.fields)
+    ? value.fields
+        .map((field) => normalizeCustomTemplateField(field))
+        .filter((field): field is CustomTemplateFieldRecord => Boolean(field))
+    : [];
+  const requiredFields = normalizeStringList(value.requiredFields);
+  const optionalFields = normalizeStringList(value.optionalFields);
+  return {
+    id,
+    name,
+    category: String(value.category ?? "").trim() || "Modeles personnalises",
+    domain: String(value.domain ?? "").trim() || "Personnalise",
+    branch: String(value.branch ?? "").trim() || "Document juridique",
+    complexity: normalizeTemplateComplexity(value.complexity),
+    description: String(value.description ?? "").trim(),
+    legalRefs: normalizeStringList(value.legalRefs),
+    requiredFields,
+    optionalFields,
+    sections: normalizeStringList(value.sections),
+    warning:
+      String(value.warning ?? "").trim() ||
+      "Verifier la conformite du modele avec le droit senegalais avant utilisation.",
+    fields,
+    createdAt: String(value.createdAt ?? "").trim() || nowIso,
+    updatedAt: String(value.updatedAt ?? "").trim() || nowIso,
+  };
+}
+
+export function readCustomDocumentTemplates(): CustomDocumentTemplateRecord[] {
+  const rows = safeRead<CustomDocumentTemplateRecord[]>(CUSTOM_TEMPLATES_KEY, []);
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  return rows
+    .map((row) => normalizeCustomTemplate(row))
+    .filter((row): row is CustomDocumentTemplateRecord => Boolean(row))
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+export function writeCustomDocumentTemplates(
+  records: CustomDocumentTemplateRecord[]
+): CustomDocumentTemplateRecord[] {
+  const byId = new Map<string, CustomDocumentTemplateRecord>();
+  for (const record of records) {
+    const normalized = normalizeCustomTemplate(record);
+    if (!normalized) {
+      continue;
+    }
+    byId.set(normalized.id, normalized);
+  }
+  const normalizedRows = Array.from(byId.values())
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, 200);
+  safeWrite<CustomDocumentTemplateRecord[]>(CUSTOM_TEMPLATES_KEY, normalizedRows);
+  return normalizedRows;
+}
+
+export function upsertCustomDocumentTemplate(
+  record: CustomDocumentTemplateRecord
+): CustomDocumentTemplateRecord[] {
+  const normalized = normalizeCustomTemplate(record);
+  if (!normalized) {
+    return readCustomDocumentTemplates();
+  }
+  const current = readCustomDocumentTemplates();
+  const nextRows = [
+    normalized,
+    ...current.filter((row) => row.id !== normalized.id),
+  ];
+  return writeCustomDocumentTemplates(nextRows);
 }
 
 export function readWorkspaceFiles(): WorkspaceFileRecord[] {

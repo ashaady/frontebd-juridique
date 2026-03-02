@@ -3,15 +3,20 @@
 import {
   clearConsultations,
   readConsultations,
+  readCustomDocumentTemplates,
   readWorkspaceFiles,
   readWorkspaceNotes,
   removeConsultation,
+  setWorkspaceStorageScope,
+  upsertCustomDocumentTemplate,
   upsertConsultation,
   upsertWorkspaceFiles,
+  writeCustomDocumentTemplates,
   writeConsultations,
   writeWorkspaceFiles,
   writeWorkspaceNotes,
   type ConsultationRecord,
+  type CustomDocumentTemplateRecord,
   type WorkspaceFileRecord,
 } from "./workspace-store";
 
@@ -25,6 +30,10 @@ type NotesResponse = {
 
 type FileListResponse = {
   items: WorkspaceFileRecord[];
+};
+
+type TemplateListResponse = {
+  items: CustomDocumentTemplateRecord[];
 };
 
 type UploadFilesResponse = {
@@ -98,9 +107,73 @@ type SpeechTranscriptionResponse = {
   detail?: string;
 };
 
+let workspaceUserId: string | null = null;
+let workspaceUserEmail: string | null = null;
+let workspaceUserName: string | null = null;
+let workspaceUserUsername: string | null = null;
+
+type WorkspaceUserContext = {
+  userId?: string | null;
+  email?: string | null;
+  displayName?: string | null;
+  username?: string | null;
+};
+
+function normalizeWorkspaceUserId(value: string | null | undefined): string | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw.replace(/[^a-zA-Z0-9_.:@-]+/g, "_").replace(/^[_:.@-]+|[_:.@-]+$/g, "");
+  if (!normalized) {
+    return null;
+  }
+  return normalized.slice(0, 96);
+}
+
+function normalizeWorkspaceHeaderText(value: string | null | undefined): string | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+  return raw.slice(0, 320);
+}
+
+export function setWorkspaceUserContext(context?: WorkspaceUserContext | null): void {
+  workspaceUserId = normalizeWorkspaceUserId(context?.userId ?? null);
+  workspaceUserEmail = normalizeWorkspaceHeaderText(context?.email ?? null);
+  workspaceUserName = normalizeWorkspaceHeaderText(context?.displayName ?? null);
+  workspaceUserUsername = normalizeWorkspaceHeaderText(context?.username ?? null);
+  setWorkspaceStorageScope(workspaceUserId);
+}
+
+export function setWorkspaceUserId(userId?: string | null): void {
+  setWorkspaceUserContext({ userId });
+}
+
 function backendBaseUrl(): string {
   const raw = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
   return raw.replace(/\/+$/, "");
+}
+
+function buildHeaders(initHeaders?: HeadersInit, includeJsonContentType = true): Headers {
+  const headers = new Headers(initHeaders ?? {});
+  if (includeJsonContentType && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (workspaceUserId) {
+    headers.set("X-User-Id", workspaceUserId);
+  }
+  if (workspaceUserEmail) {
+    headers.set("X-User-Email", workspaceUserEmail);
+  }
+  if (workspaceUserName) {
+    headers.set("X-User-Name", workspaceUserName);
+  }
+  if (workspaceUserUsername) {
+    headers.set("X-User-Username", workspaceUserUsername);
+  }
+  return headers;
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T | null> {
@@ -108,10 +181,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T | nul
     const response = await fetch(`${backendBaseUrl()}${path}`, {
       cache: "no-store",
       ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(init?.headers ?? {}),
-      },
+      headers: buildHeaders(init?.headers, true),
     });
     if (!response.ok) {
       return null;
@@ -237,6 +307,46 @@ export async function clearWorkspaceFilesApi(): Promise<WorkspaceFileRecord[]> {
   return writeWorkspaceFiles([]);
 }
 
+export async function readWorkspaceTemplatesApi(): Promise<CustomDocumentTemplateRecord[]> {
+  const remote = await requestJson<TemplateListResponse>("/workspace/templates");
+  if (remote && Array.isArray(remote.items)) {
+    return writeCustomDocumentTemplates(remote.items);
+  }
+  return readCustomDocumentTemplates();
+}
+
+export async function upsertWorkspaceTemplateApi(
+  template: CustomDocumentTemplateRecord
+): Promise<CustomDocumentTemplateRecord[]> {
+  const remote = await requestJson<TemplateListResponse>("/workspace/templates/upsert", {
+    method: "PUT",
+    body: JSON.stringify(template),
+  });
+  if (remote && Array.isArray(remote.items)) {
+    return writeCustomDocumentTemplates(remote.items);
+  }
+  return upsertCustomDocumentTemplate(template);
+}
+
+export async function deleteWorkspaceTemplateApi(
+  templateId: string
+): Promise<CustomDocumentTemplateRecord[]> {
+  const normalizedId = String(templateId ?? "").trim();
+  if (!normalizedId) {
+    return readCustomDocumentTemplates();
+  }
+  const remote = await requestJson<TemplateListResponse>(
+    `/workspace/templates/${encodeURIComponent(normalizedId)}`,
+    { method: "DELETE" }
+  );
+  if (remote && Array.isArray(remote.items)) {
+    return writeCustomDocumentTemplates(remote.items);
+  }
+  const current = readCustomDocumentTemplates();
+  const filtered = current.filter((row) => row.id !== normalizedId);
+  return writeCustomDocumentTemplates(filtered);
+}
+
 export async function uploadWorkspaceFilesApi(files: File[]): Promise<{
   items: WorkspaceFileRecord[];
   uploaded: UploadFilesResponse["uploaded"];
@@ -251,35 +361,33 @@ export async function uploadWorkspaceFilesApi(files: File[]): Promise<{
     formData.append("files", file, file.name);
   }
 
-  try {
-    const response = await fetch(`${backendBaseUrl()}/workspace/files/upload`, {
-      method: "POST",
-      body: formData,
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+  const response = await fetch(`${backendBaseUrl()}/workspace/files/upload`, {
+    method: "POST",
+    headers: buildHeaders(undefined, false),
+    body: formData,
+  });
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      if (payload?.detail && String(payload.detail).trim().length > 0) {
+        detail = String(payload.detail).trim();
+      }
+    } catch {
+      // Keep fallback HTTP detail
     }
-    const payload = (await response.json()) as UploadFilesResponse;
-    if (payload && Array.isArray(payload.items)) {
-      const items = writeWorkspaceFiles(payload.items);
-      return {
-        items,
-        uploaded: payload.uploaded ?? [],
-        errors: payload.errors ?? [],
-      };
-    }
-  } catch {
-    // Fallback local
+    throw new Error(`Upload backend failed: ${detail}`);
   }
-
-  const mapped: WorkspaceFileRecord[] = files.map((file, index) => ({
-    id: `${file.name}-${file.size}-${Date.now()}-${index}`,
-    name: file.name,
-    size: file.size,
-    addedAt: new Date().toISOString(),
-  }));
-  const items = upsertWorkspaceFiles(mapped);
-  return { items, uploaded: [], errors: [] };
+  const payload = (await response.json()) as UploadFilesResponse;
+  if (payload && Array.isArray(payload.items)) {
+    const items = writeWorkspaceFiles(payload.items);
+    return {
+      items,
+      uploaded: payload.uploaded ?? [],
+      errors: payload.errors ?? [],
+    };
+  }
+  throw new Error("Upload backend returned an invalid response.");
 }
 
 export async function listLibraryDocumentsApi(params?: {

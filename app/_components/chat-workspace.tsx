@@ -3541,7 +3541,7 @@ export function ChatWorkspace({
             </div>
             {!isSidebarCollapsed ? (
               <button
-                className="hidden lg:flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
+                className="flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
                 onClick={() => {
                   handleStartNewChat();
                   setIsMobileLeftPanelOpen(false);

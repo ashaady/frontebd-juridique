@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "clean": "node ./scripts/dev-clean.mjs",
-    "dev": "npm run clean && next dev -p 3001",
-    "dev:fast": "next dev -p 3001",
-    "dev:fresh": "npm run clean && next dev -p 3001",
+    "dev": "node ./scripts/ensure-port-free.mjs 3001 && next dev -p 3001",
+    "dev:fast": "node ./scripts/ensure-port-free.mjs 3001 && next dev -p 3001",
+    "dev:fresh": "node ./scripts/ensure-port-free.mjs 3001 && npm run clean && next dev -p 3001",
     "build": "next build",
     "build:fresh": "npm run clean && next build",
     "start": "npm run build && next start -p 3001",
