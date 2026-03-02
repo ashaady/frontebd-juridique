@@ -3,15 +3,23 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SignInButton, SignedIn, SignedOut, UserButton, useAuth } from "@clerk/nextjs";
+import { SignInButton, SignedIn, SignedOut, UserButton, useAuth, useUser } from "@clerk/nextjs";
 import {
   buildLibraryViewUrl,
   deleteConsultationApi,
   listLibraryDocumentsApi,
   readConsultationsApi,
+  readWorkspaceTemplatesApi,
+  setWorkspaceUserContext,
+  upsertWorkspaceTemplateApi,
   type LibraryDocumentRecord,
 } from "../_lib/workspace-api";
-import { type ConsultationRecord } from "../_lib/workspace-store";
+import {
+  type ConsultationRecord,
+  type CustomDocumentTemplateRecord,
+  type CustomTemplateFieldRecord,
+  type TemplateComplexity,
+} from "../_lib/workspace-store";
 import { clerkUserButtonAppearance } from "../_lib/clerk-theme";
 
 type LibraryViewProps = {
@@ -27,11 +35,10 @@ type DecoratedDocument = LibraryDocumentRecord & {
   categoryClass: string;
 };
 
-type TemplateComplexity = "Simple" | "Intermediaire" | "Avance";
-
 type DocumentTemplate = {
   id: string;
   name: string;
+  category: string;
   domain: string;
   complexity: TemplateComplexity;
   description: string;
@@ -40,12 +47,14 @@ type DocumentTemplate = {
   optionalFields: string[];
   sections: string[];
   warning: string;
+  isCustom?: boolean;
 };
 
 const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "contrat-bail",
     name: "Contrat de bail",
+    category: "Contrats civils",
     domain: "Civil / Immobilier",
     complexity: "Simple",
     description: "Modele de bail d'habitation ou commercial avec clauses essentielles.",
@@ -78,6 +87,7 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "contrat-travail",
     name: "Contrat de travail",
+    category: "Contrats de travail",
     domain: "Travail",
     complexity: "Intermediaire",
     description: "Modele de contrat adapte au Code du travail senegalais (CDI/CDD).",
@@ -109,6 +119,7 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "mise-en-demeure",
     name: "Mise en demeure",
+    category: "Contentieux et precontentieux",
     domain: "Civil / Commercial",
     complexity: "Simple",
     description: "Modele de lettre de sommation avant action judiciaire.",
@@ -136,6 +147,7 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "plainte-penale",
     name: "Plainte penale",
+    category: "Procedure penale",
     domain: "Penal",
     complexity: "Intermediaire",
     description: "Plainte structuree selon les regles de procedure penale senegalaise.",
@@ -162,6 +174,7 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "requete",
     name: "Requete",
+    category: "Procedure civile",
     domain: "Procedure",
     complexity: "Intermediaire",
     description: "Requete adressee a une juridiction/autorite avec demandes precises.",
@@ -190,6 +203,7 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "assignation",
     name: "Assignation",
+    category: "Procedure civile",
     domain: "Procedure civile / Commercial",
     complexity: "Avance",
     description: "Projet d'assignation introductive d'instance avec demandes chiffrees.",
@@ -219,6 +233,7 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "procuration",
     name: "Procuration",
+    category: "Mandats et representations",
     domain: "Civil / Representation",
     complexity: "Simple",
     description: "Modele de mandat pour accomplir des actes au nom du mandant.",
@@ -245,6 +260,7 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "statuts-ohada",
     name: "Statuts de societe (OHADA)",
+    category: "Societes et OHADA",
     domain: "OHADA / Societes",
     complexity: "Avance",
     description: "Projet de statuts pour SARL/SA conforme au droit des societes OHADA.",
@@ -276,6 +292,7 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   {
     id: "reconnaissance-dette",
     name: "Reconnaissance de dette",
+    category: "Contrats civils",
     domain: "Civil / Obligations",
     complexity: "Simple",
     description: "Acte constatant une dette et ses modalites de remboursement.",
@@ -303,6 +320,446 @@ const DOCUMENT_TEMPLATES: DocumentTemplate[] = [
   },
 ];
 
+type GeneratedTemplateField = {
+  key?: string;
+  label?: string;
+  required?: boolean;
+  placeholder?: string;
+  type?: "text" | "textarea" | "date" | "number" | "select";
+  options?: Array<{ value?: string; label?: string }>;
+  hint?: string;
+};
+
+type GeneratedTemplatePayload = {
+  name?: string;
+  category?: string;
+  domain?: string;
+  branch?: string;
+  complexity?: TemplateComplexity | string;
+  description?: string;
+  legalRefs?: string[];
+  requiredFields?: string[];
+  optionalFields?: string[];
+  sections?: string[];
+  warning?: string;
+  fields?: GeneratedTemplateField[];
+};
+
+function slugifyTemplateId(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "modele-personnalise";
+}
+
+function normalizeGeneratedComplexity(value: unknown): TemplateComplexity {
+  const lowered = String(value ?? "").trim().toLowerCase();
+  if (lowered === "avance") {
+    return "Avance";
+  }
+  if (lowered === "intermediaire") {
+    return "Intermediaire";
+  }
+  return "Simple";
+}
+
+function extractJsonObjectFromText(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    return null;
+  }
+  return trimmed.slice(firstBrace, lastBrace + 1).trim();
+}
+
+function extractAssistantTextFromPayload(payload: unknown): string {
+  if (typeof payload === "string") {
+    return payload.trim();
+  }
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  const data = payload as Record<string, unknown>;
+  const direct = String(data.answer ?? "").trim();
+  if (direct.length > 0) {
+    return direct;
+  }
+  if (Array.isArray(data.choices) && data.choices.length > 0) {
+    const first = data.choices[0] as Record<string, unknown>;
+    const message = first.message as Record<string, unknown> | undefined;
+    const content = String(message?.content ?? first.text ?? "").trim();
+    if (content.length > 0) {
+      return content;
+    }
+  }
+  return "";
+}
+
+function parseGeneratedTemplatePayload(candidate: string): GeneratedTemplatePayload | null {
+  const raw = String(candidate ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+  const attempts: string[] = [raw];
+
+  const normalizedQuotes = raw
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[ ]/g, " ");
+  if (!attempts.includes(normalizedQuotes)) {
+    attempts.push(normalizedQuotes);
+  }
+
+  const trailingCommaFixed = normalizedQuotes.replace(/,\s*([}\]])/g, "$1");
+  if (!attempts.includes(trailingCommaFixed)) {
+    attempts.push(trailingCommaFixed);
+  }
+
+  const singleQuoteFixed = trailingCommaFixed
+    .replace(/([{,]\s*)'([^']+?)'\s*:/g, '$1"$2":')
+    .replace(/:\s*'([^']*?)'(\s*[,}])/g, (_m, value, suffix) => {
+      const escaped = String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      return `: "${escaped}"${suffix}`;
+    });
+  if (!attempts.includes(singleQuoteFixed)) {
+    attempts.push(singleQuoteFixed);
+  }
+
+  for (const attempt of attempts) {
+    try {
+      return JSON.parse(attempt) as GeneratedTemplatePayload;
+    } catch {
+      // continue next repair attempt
+    }
+  }
+  return null;
+}
+
+function normalizeFieldKey(name: string): string {
+  return slugifyTemplateId(name).replace(/-/g, "_");
+}
+
+function toDocumentTemplateFromCustom(template: CustomDocumentTemplateRecord): DocumentTemplate {
+  return {
+    id: template.id,
+    name: template.name,
+    category: template.category,
+    domain: template.domain,
+    complexity: template.complexity,
+    description: template.description,
+    legalRefs: template.legalRefs,
+    requiredFields: template.requiredFields,
+    optionalFields: template.optionalFields,
+    sections: template.sections,
+    warning: template.warning,
+    isCustom: true,
+  };
+}
+
+function toCustomTemplateFromGenerated(
+  payload: GeneratedTemplatePayload,
+  prompt: string
+): CustomDocumentTemplateRecord {
+  const nowIso = new Date().toISOString();
+  const name = String(payload.name ?? "").trim() || "Modele juridique personnalise";
+  const id = `custom-${slugifyTemplateId(name)}-${Date.now()}`;
+  const rawFields = Array.isArray(payload.fields) ? payload.fields : [];
+  const fields: CustomTemplateFieldRecord[] = rawFields
+    .map((field, index): CustomTemplateFieldRecord | null => {
+      const label = String(field.label ?? "").trim();
+      if (!label) {
+        return null;
+      }
+      const rawType = String(field.type ?? "text").trim().toLowerCase();
+      const type: CustomTemplateFieldRecord["type"] =
+        rawType === "textarea" || rawType === "date" || rawType === "number" || rawType === "select"
+          ? (rawType as CustomTemplateFieldRecord["type"])
+          : "text";
+      const options = Array.isArray(field.options)
+        ? field.options
+            .map((option) => {
+              const optionValue = String(option.value ?? "").trim();
+              const optionLabel = String(option.label ?? "").trim() || optionValue;
+              if (!optionValue) {
+                return null;
+              }
+              return { value: optionValue, label: optionLabel };
+            })
+            .filter((option): option is { value: string; label: string } => Boolean(option))
+        : [];
+      return {
+        key: String(field.key ?? "").trim() || normalizeFieldKey(`${label}-${index + 1}`),
+        label,
+        required: Boolean(field.required),
+        placeholder: String(field.placeholder ?? "").trim() || undefined,
+        type,
+        options: type === "select" && options.length > 0 ? options : undefined,
+        hint: String(field.hint ?? "").trim() || undefined,
+      };
+    })
+    .filter((field): field is CustomTemplateFieldRecord => field !== null);
+
+  const requiredFields = Array.from(
+    new Set(
+      (Array.isArray(payload.requiredFields) ? payload.requiredFields : [])
+        .map((item) => String(item ?? "").trim())
+        .filter((item) => item.length > 0)
+    )
+  );
+  const optionalFields = Array.from(
+    new Set(
+      (Array.isArray(payload.optionalFields) ? payload.optionalFields : [])
+        .map((item) => String(item ?? "").trim())
+        .filter((item) => item.length > 0)
+    )
+  );
+  if (fields.length > 0 && requiredFields.length === 0) {
+    for (const field of fields) {
+      if (field.required) {
+        requiredFields.push(field.label);
+      }
+    }
+  }
+  if (fields.length === 0 && requiredFields.length > 0) {
+    for (const label of requiredFields) {
+      fields.push({
+        key: normalizeFieldKey(label),
+        label,
+        required: true,
+        type: "text",
+      });
+    }
+  }
+
+  return {
+    id,
+    name,
+    category: String(payload.category ?? "").trim() || "Modeles personnalises",
+    domain: String(payload.domain ?? "").trim() || "Personnalise",
+    branch: String(payload.branch ?? "").trim() || String(payload.domain ?? "").trim() || "Document juridique",
+    complexity: normalizeGeneratedComplexity(payload.complexity),
+    description: String(payload.description ?? "").trim() || `Modele genere depuis la demande: "${prompt}"`,
+    legalRefs: (Array.isArray(payload.legalRefs) ? payload.legalRefs : [])
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => item.length > 0),
+    requiredFields,
+    optionalFields,
+    sections: (Array.isArray(payload.sections) ? payload.sections : [])
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => item.length > 0),
+    warning:
+      String(payload.warning ?? "").trim() ||
+      "Verifier la conformite du modele avec le droit senegalais avant utilisation.",
+    fields,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+}
+
+function normalizePromptForDetection(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function buildFallbackTemplateFromPrompt(prompt: string): CustomDocumentTemplateRecord {
+  const lowered = normalizePromptForDetection(prompt);
+
+  const commonWarning =
+    "Verifier la conformite du modele avec le droit senegalais avant signature et usage.";
+
+  const notarialTemplate: GeneratedTemplatePayload = {
+    name: "Acte notarie",
+    category: "Notariat",
+    domain: "Droit civil / Notariat",
+    branch: "Notariat",
+    complexity: "Intermediaire",
+    description: "Modele d'acte notarie personnalise pour formaliser une convention entre parties.",
+    legalRefs: ["Code des obligations civiles et commerciales", "Reglementation notariale"],
+    requiredFields: [
+      "Nom complet partie 1",
+      "Nom complet partie 2",
+      "Objet de l'acte",
+      "Montant ou valeur",
+      "Date de signature",
+      "Ville",
+      "Office notarial",
+    ],
+    optionalFields: ["Temoins", "Garanties", "Clauses particulieres"],
+    sections: [
+      "Titre de l'acte",
+      "Identification des parties",
+      "Declarations et objet",
+      "Clauses principales",
+      "Dispositions notariales",
+      "Date, lieu et signatures",
+    ],
+    warning: commonWarning,
+    fields: [
+      { key: "partie1_nom", label: "Nom complet partie 1", required: true, type: "text" },
+      { key: "partie2_nom", label: "Nom complet partie 2", required: true, type: "text" },
+      { key: "objet_acte", label: "Objet de l'acte", required: true, type: "textarea" },
+      { key: "montant_valeur", label: "Montant ou valeur", required: true, type: "text" },
+      { key: "date_signature", label: "Date de signature", required: true, type: "date" },
+      { key: "ville", label: "Ville", required: true, type: "text" },
+      { key: "office_notaire", label: "Office notarial", required: true, type: "text" },
+      { key: "clauses_particulieres", label: "Clauses particulieres", required: false, type: "textarea" },
+    ],
+  };
+
+  const contractTemplate: GeneratedTemplatePayload = {
+    name: "Contrat personnalise",
+    category: "Contrats civils",
+    domain: "Droit des obligations",
+    branch: "Contrat",
+    complexity: "Simple",
+    description: "Modele de contrat personnalise genere a partir de votre demande.",
+    legalRefs: ["Code des obligations civiles et commerciales"],
+    requiredFields: [
+      "Nom partie 1",
+      "Nom partie 2",
+      "Objet du contrat",
+      "Duree",
+      "Montant",
+      "Date de prise d'effet",
+    ],
+    optionalFields: ["Modalites de paiement", "Penalites", "Clause de resiliation"],
+    sections: [
+      "Titre",
+      "Parties",
+      "Objet",
+      "Clauses essentielles",
+      "Date, lieu et signatures",
+    ],
+    warning: commonWarning,
+    fields: [
+      { key: "partie1_nom", label: "Nom partie 1", required: true, type: "text" },
+      { key: "partie2_nom", label: "Nom partie 2", required: true, type: "text" },
+      { key: "objet_contrat", label: "Objet du contrat", required: true, type: "textarea" },
+      { key: "duree", label: "Duree", required: true, type: "text" },
+      { key: "montant", label: "Montant", required: true, type: "text" },
+      { key: "date_effet", label: "Date de prise d'effet", required: true, type: "date" },
+      { key: "modalites_paiement", label: "Modalites de paiement", required: false, type: "textarea" },
+    ],
+  };
+
+  const genericTemplate: GeneratedTemplatePayload = {
+    name: "Document juridique personnalise",
+    category: "Modeles personnalises",
+    domain: "Personnalise",
+    branch: "Document juridique",
+    complexity: "Simple",
+    description: "Modele de document juridique genere automatiquement.",
+    legalRefs: ["Droit senegalais applicable"],
+    requiredFields: ["Parties concernees", "Objet", "Date", "Ville"],
+    optionalFields: ["Contexte", "Pieces justificatives", "Clauses particulieres"],
+    sections: ["Titre", "Contexte", "Corps du document", "Date, lieu et signatures"],
+    warning: commonWarning,
+    fields: [
+      { key: "parties", label: "Parties concernees", required: true, type: "text" },
+      { key: "objet", label: "Objet du document", required: true, type: "textarea" },
+      { key: "date_document", label: "Date", required: true, type: "date" },
+      { key: "ville", label: "Ville", required: true, type: "text" },
+      { key: "clauses", label: "Clauses particulieres", required: false, type: "textarea" },
+    ],
+  };
+
+  if (lowered.includes("notarie") || lowered.includes("notarial") || lowered.includes("notaire")) {
+    return toCustomTemplateFromGenerated(notarialTemplate, prompt);
+  }
+  if (lowered.includes("contrat") || lowered.includes("bail") || lowered.includes("travail")) {
+    return toCustomTemplateFromGenerated(contractTemplate, prompt);
+  }
+  return toCustomTemplateFromGenerated(genericTemplate, prompt);
+}
+
+function ensureTemplateReadiness(
+  template: CustomDocumentTemplateRecord
+): CustomDocumentTemplateRecord {
+  const next: CustomDocumentTemplateRecord = {
+    ...template,
+    warning:
+      String(template.warning ?? "").trim() ||
+      "Verifier la conformite du modele avec le droit senegalais avant signature et usage.",
+  };
+
+  const fieldByKey = new Map<string, CustomTemplateFieldRecord>();
+  for (const field of next.fields) {
+    const key = String(field.key ?? "").trim();
+    const label = String(field.label ?? "").trim();
+    if (!key || !label) {
+      continue;
+    }
+    fieldByKey.set(key, {
+      ...field,
+      key,
+      label,
+      type: field.type ?? "text",
+      required: Boolean(field.required),
+    });
+  }
+
+  const requiredSet = new Set(
+    (next.requiredFields ?? []).map((item) => String(item ?? "").trim()).filter((item) => item.length > 0)
+  );
+  const optionalSet = new Set(
+    (next.optionalFields ?? []).map((item) => String(item ?? "").trim()).filter((item) => item.length > 0)
+  );
+
+  const coreRequired: Array<{ key: string; label: string }> = [
+    { key: "parties", label: "Parties concernees" },
+    { key: "objet", label: "Objet du document" },
+    { key: "date_document", label: "Date du document" },
+    { key: "ville", label: "Ville" },
+  ];
+
+  for (const item of coreRequired) {
+    if (!Array.from(fieldByKey.values()).some((field) => field.label.toLowerCase() === item.label.toLowerCase())) {
+      fieldByKey.set(item.key, {
+        key: item.key,
+        label: item.label,
+        required: true,
+        type: item.key === "objet" ? "textarea" : item.key === "date_document" ? "date" : "text",
+      });
+    }
+    requiredSet.add(item.label);
+    optionalSet.delete(item.label);
+  }
+
+  for (const field of fieldByKey.values()) {
+    if (field.required) {
+      requiredSet.add(field.label);
+      optionalSet.delete(field.label);
+    }
+  }
+
+  next.fields = Array.from(fieldByKey.values());
+  next.requiredFields = Array.from(requiredSet);
+  next.optionalFields = Array.from(optionalSet).filter((label) => !requiredSet.has(label));
+  if (!Array.isArray(next.sections) || next.sections.length === 0) {
+    next.sections = [
+      "Titre",
+      "Identification des parties",
+      "Objet",
+      "Clauses principales",
+      "Date, lieu et signatures",
+    ];
+  }
+  return next;
+}
+
 function formatShortDate(isoDate: string): string {
   const date = new Date(isoDate);
   if (Number.isNaN(date.getTime())) {
@@ -314,6 +771,40 @@ function formatShortDate(isoDate: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function truncateConsultationTitle(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Discussion";
+  }
+  if (normalized.length <= 96) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 93).trimEnd()}...`;
+}
+
+function consultationTitleLabel(record: ConsultationRecord): string {
+  const direct = String(record.question ?? "").trim();
+  if (direct && !/^session du/i.test(direct)) {
+    return truncateConsultationTitle(direct);
+  }
+  const answerRaw = String(record.answer ?? "").trim();
+  if (answerRaw.startsWith("{")) {
+    try {
+      const payload = JSON.parse(answerRaw) as Record<string, unknown>;
+      const title = String(payload.title ?? "").trim();
+      if (title) {
+        return truncateConsultationTitle(title);
+      }
+    } catch {
+      // Ignore malformed payload fallback below.
+    }
+  }
+  if (direct) {
+    return truncateConsultationTitle(direct.replace(/^session du/i, "Discussion"));
+  }
+  return "Discussion";
 }
 
 function iconForCategory(category: string): string {
@@ -404,7 +895,8 @@ function enrichDocuments(rows: LibraryDocumentRecord[]): DecoratedDocument[] {
 }
 
 export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewProps) {
-  const { isLoaded: isAuthLoaded, isSignedIn } = useAuth();
+  const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
+  const { user } = useUser();
   const router = useRouter();
   const signInModalTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [consultations, setConsultations] = useState<ConsultationRecord[]>([]);
@@ -428,11 +920,77 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   const [selectedModelComplexity, setSelectedModelComplexity] = useState<string>("Tous");
   const [favoriteModelIds, setFavoriteModelIds] = useState<string[]>([]);
   const [recentModelIds, setRecentModelIds] = useState<string[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState<string>(DOCUMENT_TEMPLATES[0]?.id ?? "");
+  const [customTemplates, setCustomTemplates] = useState<CustomDocumentTemplateRecord[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [newTemplatePrompt, setNewTemplatePrompt] = useState<string>("");
+  const [isGeneratingTemplate, setIsGeneratingTemplate] = useState<boolean>(false);
+  const [templateGenerationProgress, setTemplateGenerationProgress] = useState<number>(0);
+  const [templateGenerationError, setTemplateGenerationError] = useState<string>("");
+  const [templateGenerationNotice, setTemplateGenerationNotice] = useState<string>("");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState(false);
+  const templateProgressResetTimerRef = useRef<number | null>(null);
 
   const isDocumentsPage = title.toLowerCase().includes("documents");
+  const backendBaseUrl = useMemo(() => {
+    const raw = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
+    return raw.replace(/\/+$/, "");
+  }, []);
+
+  useEffect(() => {
+    if (isDocumentsPage) {
+      return;
+    }
+    const applyUrlSearch = () => {
+      const params = new URLSearchParams(window.location.search);
+      const nextSearchTerm = (params.get("q") ?? "").trim();
+      const nextArticleSearch = (params.get("article") ?? "").trim();
+      const nextKeywordSearch = (params.get("keyword") ?? "").trim();
+      const nextInfractionSearch = (params.get("infractionType") ?? "").trim();
+      const nextJurisdictionSearch = (params.get("jurisdiction") ?? "").trim();
+      const nextDocumentId = (params.get("documentId") ?? "").trim();
+      const rawCategories = (params.get("category") ?? "").trim();
+      const nextCategories = rawCategories
+        ? rawCategories
+            .split(",")
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0)
+        : [];
+
+      setSearchTerm(nextSearchTerm);
+      setArticleSearch(nextArticleSearch);
+      setKeywordSearch(nextKeywordSearch);
+      setInfractionSearch(nextInfractionSearch);
+      setJurisdictionSearch(nextJurisdictionSearch);
+      setSelectedDocumentId(nextDocumentId || "all");
+      if (nextCategories.length > 0) {
+        setSelectedCategories(nextCategories);
+      }
+      setCurrentPage(1);
+    };
+
+    applyUrlSearch();
+    window.addEventListener("popstate", applyUrlSearch);
+    return () => {
+      window.removeEventListener("popstate", applyUrlSearch);
+    };
+  }, [isDocumentsPage]);
+
+  useEffect(() => {
+    if (!isAuthLoaded) {
+      return;
+    }
+    setWorkspaceUserContext(
+      isSignedIn
+        ? {
+            userId: userId ?? null,
+            email: user?.primaryEmailAddress?.emailAddress ?? null,
+            displayName: user?.fullName ?? user?.firstName ?? null,
+            username: user?.username ?? null,
+          }
+        : null
+    );
+  }, [isAuthLoaded, isSignedIn, userId, user]);
 
   const requireSignedIn = useCallback(() => {
     if (!isAuthLoaded) {
@@ -482,6 +1040,76 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     }
     window.localStorage.setItem("juridiquesn:model-recent", JSON.stringify(recentModelIds));
   }, [recentModelIds]);
+
+  useEffect(() => {
+    if (!isGeneratingTemplate) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setTemplateGenerationProgress((previous) => {
+        if (previous >= 92) {
+          return previous;
+        }
+        if (previous < 30) {
+          return previous + 5;
+        }
+        if (previous < 65) {
+          return previous + 3;
+        }
+        return previous + 1;
+      });
+    }, 280);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isGeneratingTemplate]);
+
+  useEffect(() => {
+    return () => {
+      if (templateProgressResetTimerRef.current !== null) {
+        window.clearTimeout(templateProgressResetTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthLoaded) {
+      return;
+    }
+    let active = true;
+    const loadTemplates = async () => {
+      const rows = await readWorkspaceTemplatesApi();
+      if (active) {
+        setCustomTemplates(rows);
+      }
+    };
+    void loadTemplates();
+    return () => {
+      active = false;
+    };
+  }, [isAuthLoaded, isSignedIn, userId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const refreshCustomTemplates = async () => {
+      const rows = await readWorkspaceTemplatesApi();
+      setCustomTemplates(rows);
+    };
+    const onFocus = () => {
+      void refreshCustomTemplates();
+    };
+    const onStorage = () => {
+      void refreshCustomTemplates();
+    };
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isAuthLoaded) {
@@ -658,10 +1286,21 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   const clampedPage = Math.min(currentPage, totalPages);
   const currentRows = filteredDocuments.slice((clampedPage - 1) * pageSize, clampedPage * pageSize);
 
+  const availableTemplates = useMemo(() => {
+    const customAsDocumentTemplates = customTemplates.map((template) =>
+      toDocumentTemplateFromCustom(template)
+    );
+    const byId = new Map<string, DocumentTemplate>();
+    for (const template of [...DOCUMENT_TEMPLATES, ...customAsDocumentTemplates]) {
+      byId.set(template.id, template);
+    }
+    return Array.from(byId.values());
+  }, [customTemplates]);
+
   const modelDomains = useMemo(() => {
-    const values = Array.from(new Set(DOCUMENT_TEMPLATES.map((template) => template.domain)));
+    const values = Array.from(new Set(availableTemplates.map((template) => template.domain)));
     return ["Tous", ...values.sort((a, b) => a.localeCompare(b, "fr"))];
-  }, []);
+  }, [availableTemplates]);
 
   const modelComplexities = useMemo(
     () => ["Tous", "Simple", "Intermediaire", "Avance"] as const,
@@ -670,7 +1309,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
 
   const filteredTemplates = useMemo(() => {
     const query = modelSearch.trim().toLowerCase();
-    return DOCUMENT_TEMPLATES.filter((template) => {
+    return availableTemplates.filter((template) => {
       if (selectedModelDomain !== "Tous" && template.domain !== selectedModelDomain) {
         return false;
       }
@@ -680,23 +1319,58 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       if (!query) {
         return true;
       }
-      const haystack = `${template.name} ${template.description} ${template.domain} ${template.legalRefs.join(" ")}`.toLowerCase();
+      const haystack =
+        `${template.name} ${template.description} ${template.domain} ${template.category} ${template.legalRefs.join(" ")}`.toLowerCase();
       return haystack.includes(query);
     });
-  }, [modelSearch, selectedModelDomain, selectedModelComplexity]);
+  }, [availableTemplates, modelSearch, selectedModelDomain, selectedModelComplexity]);
+
+  const groupedTemplates = useMemo(() => {
+    const groups = new Map<string, DocumentTemplate[]>();
+    for (const template of filteredTemplates) {
+      const key = template.category || "Autres";
+      const current = groups.get(key) ?? [];
+      current.push(template);
+      groups.set(key, current);
+    }
+    return Array.from(groups.entries())
+      .sort(([left], [right]) => left.localeCompare(right, "fr"))
+      .map(([category, templates]) => ({
+        category,
+        templates: templates.sort((left, right) => left.name.localeCompare(right.name, "fr")),
+      }));
+  }, [filteredTemplates]);
+
+  const compactTemplates = useMemo(
+    () =>
+      groupedTemplates.flatMap((group) =>
+        group.templates.map((template) => ({
+          ...template,
+          _categoryOrder: group.category,
+        }))
+      ),
+    [groupedTemplates]
+  );
+
+  useEffect(() => {
+    if (selectedModelId && availableTemplates.some((template) => template.id === selectedModelId)) {
+      return;
+    }
+    setSelectedModelId(availableTemplates[0]?.id ?? "");
+  }, [availableTemplates, selectedModelId]);
 
   const selectedTemplate = useMemo(() => {
-    const byId = filteredTemplates.find((item) => item.id === selectedModelId);
+    const byId = availableTemplates.find((item) => item.id === selectedModelId);
     if (byId) {
       return byId;
     }
-    return filteredTemplates[0] ?? null;
-  }, [filteredTemplates, selectedModelId]);
+    return filteredTemplates[0] ?? availableTemplates[0] ?? null;
+  }, [availableTemplates, filteredTemplates, selectedModelId]);
 
   const recentTemplates = useMemo(() => {
-    const byId = new Map(DOCUMENT_TEMPLATES.map((item) => [item.id, item]));
+    const byId = new Map(availableTemplates.map((item) => [item.id, item]));
     return recentModelIds.map((id) => byId.get(id)).filter((item): item is DocumentTemplate => Boolean(item));
-  }, [recentModelIds]);
+  }, [availableTemplates, recentModelIds]);
 
   const openChatWithQuestion = (question: string) => {
     if (!requireSignedIn()) {
@@ -815,9 +1489,189 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       return;
     }
     markRecentTemplate(template.id);
-    const prompt = `Je veux utiliser le modele "${template.name}". Pose les questions manquantes puis genere un document structure conforme au droit applicable.`;
-    openChatWithQuestion(prompt);
+    setIsMobileLeftPanelOpen(false);
+    router.push(`/chat?act=1&template=${encodeURIComponent(template.id)}`);
   };
+
+  const handleGenerateTemplateWithAi = useCallback(async () => {
+    const prompt = newTemplatePrompt.trim();
+    if (!prompt) {
+      setTemplateGenerationError("Decrivez le modele a creer.");
+      return;
+    }
+    if (!requireSignedIn()) {
+      return;
+    }
+    if (isGeneratingTemplate) {
+      return;
+    }
+
+    const persistTemplate = async (
+      template: CustomDocumentTemplateRecord,
+      noticeMessage: string = ""
+    ) => {
+      const readyTemplate = ensureTemplateReadiness(template);
+      setTemplateGenerationProgress((previous) => Math.max(previous, 88));
+      setCustomTemplates((previous) => [
+        readyTemplate,
+        ...previous.filter((row) => row.id !== readyTemplate.id),
+      ]);
+      setSelectedModelId(readyTemplate.id);
+      setRecentModelIds((previous) =>
+        [readyTemplate.id, ...previous.filter((id) => id !== readyTemplate.id)].slice(0, 10)
+      );
+      setModelSearch("");
+      setSelectedModelDomain("Tous");
+      setSelectedModelComplexity("Tous");
+      setCurrentPage(1);
+      let persistedRemotely = true;
+      try {
+        const nextRows = await upsertWorkspaceTemplateApi(readyTemplate);
+        setCustomTemplates(nextRows);
+      } catch {
+        persistedRemotely = false;
+        const localOnlyMessage =
+          "Modele cree localement. La synchronisation distante sera retentee automatiquement.";
+        if (noticeMessage.trim().length > 0) {
+          setTemplateGenerationNotice(`${noticeMessage} ${localOnlyMessage}`.trim());
+        } else {
+          setTemplateGenerationNotice(localOnlyMessage);
+        }
+      }
+      setNewTemplatePrompt("");
+      setTemplateGenerationError("");
+      if (persistedRemotely && noticeMessage.trim().length > 0) {
+        setTemplateGenerationNotice(noticeMessage);
+      }
+    };
+
+    setTemplateGenerationError("");
+    setTemplateGenerationNotice("");
+    if (templateProgressResetTimerRef.current !== null) {
+      window.clearTimeout(templateProgressResetTimerRef.current);
+      templateProgressResetTimerRef.current = null;
+    }
+    setTemplateGenerationProgress(6);
+    setIsGeneratingTemplate(true);
+    try {
+      const generationPrompt = [
+        "Tu es juriste redacteur specialise en droit senegalais/OHADA.",
+        "Tu t'appuies d'abord sur les sources juridiques recuperees par RAG.",
+        "Genere un modele de document juridique SENEGALAIS et retourne UNIQUEMENT un JSON valide.",
+        "Schema strict:",
+        "{\"name\":\"...\",\"category\":\"...\",\"domain\":\"...\",\"branch\":\"...\",\"complexity\":\"Simple|Intermediaire|Avance\",\"description\":\"...\",\"legalRefs\":[\"...\"],\"requiredFields\":[\"...\"],\"optionalFields\":[\"...\"],\"sections\":[\"...\"],\"warning\":\"...\",\"fields\":[{\"key\":\"...\",\"label\":\"...\",\"required\":true,\"type\":\"text|textarea|date|number|select\",\"placeholder\":\"...\",\"hint\":\"...\",\"options\":[{\"value\":\"...\",\"label\":\"...\"}]}]}",
+        "Contraintes:",
+        "- Le JSON doit etre utilisable tel quel.",
+        "- Au moins 6 champs obligatoires dans fields.",
+        "- category doit etre une categorie claire (ex: Contrats civils, Procedure penale, Societes et OHADA).",
+        "- requiredFields doit correspondre aux champs required=true.",
+        "- Ajouter les references juridiques pertinentes dans legalRefs.",
+        "- Les champs doivent couvrir les informations necessaires a la redaction pratique du document.",
+        "- Ne retourne aucun texte hors JSON.",
+        "",
+        `Demande utilisateur: ${prompt}`,
+      ].join("\n");
+      setTemplateGenerationProgress((previous) => Math.max(previous, 20));
+
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 12000);
+
+      let response: Response;
+      try {
+        response = await fetch(`${backendBaseUrl}/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: generationPrompt }],
+            temperature: 0,
+            top_p: 0.8,
+            max_tokens: 900,
+            thinking: false,
+            use_rag: true,
+            rag_query_rewrite: true,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+      setTemplateGenerationProgress((previous) => Math.max(previous, 62));
+
+      const rawBody = await response.text();
+      let parsedPayload: unknown = null;
+      if (rawBody.trim().length > 0) {
+        try {
+          parsedPayload = JSON.parse(rawBody);
+        } catch {
+          parsedPayload = rawBody;
+        }
+      }
+      setTemplateGenerationProgress((previous) => Math.max(previous, 72));
+
+      if (!response.ok) {
+        const fallbackTemplate = buildFallbackTemplateFromPrompt(prompt);
+        await persistTemplate(
+          fallbackTemplate,
+          "Modele cree automatiquement et pret a etre utilise."
+        );
+        return;
+      }
+
+      const assistantText = extractAssistantTextFromPayload(parsedPayload);
+      const jsonCandidate = extractJsonObjectFromText(assistantText);
+      if (!jsonCandidate) {
+        const fallbackTemplate = buildFallbackTemplateFromPrompt(prompt);
+        await persistTemplate(
+          fallbackTemplate,
+          "Modele cree automatiquement et pret a etre utilise."
+        );
+        return;
+      }
+
+      const generated = parseGeneratedTemplatePayload(jsonCandidate);
+      if (!generated) {
+        const fallbackTemplate = buildFallbackTemplateFromPrompt(prompt);
+        await persistTemplate(
+          fallbackTemplate,
+          "Modele cree automatiquement et pret a etre utilise."
+        );
+        return;
+      }
+
+      const customTemplate = ensureTemplateReadiness(toCustomTemplateFromGenerated(generated, prompt));
+      if (customTemplate.fields.length === 0) {
+        const fallbackTemplate = buildFallbackTemplateFromPrompt(prompt);
+        await persistTemplate(
+          fallbackTemplate,
+          "Modele cree automatiquement et pret a etre utilise."
+        );
+        return;
+      }
+
+      await persistTemplate(customTemplate);
+    } catch (error) {
+      try {
+        const fallbackTemplate = buildFallbackTemplateFromPrompt(prompt);
+        await persistTemplate(
+          fallbackTemplate,
+          "Modele cree automatiquement et pret a etre utilise."
+        );
+      } catch {
+        const detail =
+          error instanceof Error ? error.message : "Generation du modele impossible pour le moment.";
+        setTemplateGenerationError(detail);
+      }
+    } finally {
+      setTemplateGenerationProgress(100);
+      setIsGeneratingTemplate(false);
+      templateProgressResetTimerRef.current = window.setTimeout(() => {
+        setTemplateGenerationProgress((previous) => (previous >= 100 ? 0 : previous));
+        templateProgressResetTimerRef.current = null;
+      }, 900);
+    }
+  }, [backendBaseUrl, isGeneratingTemplate, newTemplatePrompt, requireSignedIn]);
 
   return (
     <div className="min-h-screen lg:h-screen flex flex-col overflow-x-hidden lg:overflow-hidden bg-[#112117] text-slate-100">
@@ -827,12 +1681,27 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
         </SignInButton>
       </SignedOut>
       <header className="flex items-center gap-4 px-3 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
+        <button
+          className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+          onClick={() => {
+            setIsMobileLeftPanelOpen((previous) => {
+              const next = !previous;
+              if (next) {
+                setIsSidebarCollapsed(false);
+              }
+              return next;
+            });
+          }}
+          type="button"
+        >
+          <span className="material-symbols-outlined text-base">menu</span>
+        </button>
         <div className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0`}>
-          <div className="size-8 bg-primary rounded flex items-center justify-center">
-            <span className="material-symbols-outlined text-[#0a120e] font-bold">gavel</span>
+          <div className="size-8 bg-[#13221a] border border-[#49DE80]/40 rounded flex items-center justify-center">
+            <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
           </div>
           <h1 className={`text-lg font-bold tracking-tight truncate ${isSidebarCollapsed ? "lg:hidden" : ""}`}>
-            LegalAI <span className="text-primary">Senegal</span>
+            Juridique <span className="text-[#7ef1a9]">SN</span>
           </h1>
         </div>
         <div className="hidden md:flex items-center gap-4 min-w-0 flex-1">
@@ -867,31 +1736,16 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
             </Link>
           </SignedOut>
           <SignedIn>
-            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance} />
+            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance}>
+              <UserButton.MenuItems>
+                <UserButton.Link
+                  href="/dashboard"
+                  label="Dashboard utilisateur"
+                  labelIcon={<span className="material-symbols-outlined text-[16px]">space_dashboard</span>}
+                />
+              </UserButton.MenuItems>
+            </UserButton>
           </SignedIn>
-        </div>
-        <div className="lg:hidden flex items-center gap-2">
-          <button
-            className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
-            onClick={() => {
-              setIsMobileLeftPanelOpen((previous) => {
-                const next = !previous;
-                if (next) {
-                  setIsSidebarCollapsed(false);
-                }
-                return next;
-              });
-            }}
-            type="button"
-          >
-            <span className="material-symbols-outlined text-base">menu</span>
-          </button>
-          <Link
-            className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
-            href="/chat"
-          >
-            <span className="material-symbols-outlined text-base">chat</span>
-          </Link>
         </div>
       </header>
 
@@ -918,7 +1772,11 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                 >
                   <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
                 </div>
-                {!isSidebarCollapsed ? <span className="text-lg font-bold tracking-tight">JuridiqueSN</span> : null}
+                {!isSidebarCollapsed ? (
+                  <span className="text-lg font-bold tracking-tight">
+                    Juridique <span className="text-[#7ef1a9]">SN</span>
+                  </span>
+                ) : null}
               </div>
               <button
                 aria-label={isSidebarCollapsed ? "Etendre le menu" : "Reduire le menu"}
@@ -935,7 +1793,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
             </div>
             {!isSidebarCollapsed ? (
               <Link
-                className="w-full flex items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
+                className="hidden lg:flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
                 href="/chat"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
               >
@@ -953,23 +1811,12 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                 className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
                   isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
                 }`}
-                href="/dashboard"
-                onClick={() => setIsMobileLeftPanelOpen(false)}
-                title="Dashboard"
-              >
-                <span className="material-symbols-outlined">space_dashboard</span>
-                {!isSidebarCollapsed ? <span className="text-sm font-medium">Dashboard</span> : null}
-              </Link>
-              <Link
-                className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
-                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
-                }`}
                 href="/bibliotheque"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
-                title="Codes & Lois"
+                title="Bibliotheque juridique"
               >
                 <span className="material-symbols-outlined">library_books</span>
-                {!isSidebarCollapsed ? <span className="text-sm font-medium">Codes &amp; Lois</span> : null}
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Bibliotheque juridique</span> : null}
               </Link>
               <Link
                 className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
@@ -982,17 +1829,6 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                 <span className="material-symbols-outlined">description</span>
                 {!isSidebarCollapsed ? <span className="text-sm font-medium">Modeles de documents</span> : null}
               </Link>
-              <button
-                className={`w-full flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
-                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
-                }`}
-                onClick={() => openChatWithQuestion("Verifier un contrat au regard du droit senegalais.")}
-                title="Verifier un contrat"
-                type="button"
-              >
-                <span className="material-symbols-outlined">rule</span>
-                {!isSidebarCollapsed ? <span className="text-sm font-medium">Verifier un contrat</span> : null}
-              </button>
               <button
                 className={`w-full flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
                   isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
@@ -1026,10 +1862,15 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                         <div className="flex items-start gap-2">
                           <button
                             className="flex-1 min-w-0 text-left cursor-pointer"
-                            onClick={() => openChatWithQuestion(item.question)}
+                            onClick={() => {
+                              setIsMobileLeftPanelOpen(false);
+                              router.push("/chat");
+                            }}
                             type="button"
                           >
-                            <p className="text-sm font-medium text-slate-200 truncate">{item.question}</p>
+                            <p className="text-sm font-medium text-slate-200 truncate">
+                              {consultationTitleLabel(item)}
+                            </p>
                             <p className="text-xs text-slate-500 mt-1">{formatShortDate(item.updatedAt)}</p>
                           </button>
                           <button
@@ -1069,12 +1910,16 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                 <input
                   className="pl-9 pr-4 py-2.5 text-sm bg-[#1a2e22] border border-slate-800 rounded-xl w-full sm:w-72 focus:ring-1 focus:ring-[#49DE80] focus:border-[#49DE80] transition-all text-white placeholder:text-slate-400"
                   onChange={(event) => {
+                    if (isDocumentsPage) {
+                      setModelSearch(event.target.value);
+                      return;
+                    }
                     setCurrentPage(1);
                     setSearchTerm(event.target.value);
                   }}
-                  placeholder="Rechercher un document..."
+                  placeholder={isDocumentsPage ? "Rechercher un modele..." : "Rechercher un document..."}
                   type="text"
-                  value={searchTerm}
+                  value={isDocumentsPage ? modelSearch : searchTerm}
                 />
               </div>
               <div className="flex gap-2 bg-[#1a2e22] p-1 rounded-lg border border-slate-800 self-end sm:self-auto">
@@ -1223,8 +2068,27 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
 
                 <div className="space-y-2">
                   <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Domaine</h3>
+                  <div className="xl:hidden flex flex-wrap gap-2">
+                    {modelDomains.map((domain) => {
+                      const isActive = selectedModelDomain === domain;
+                      return (
+                        <button
+                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                            isActive
+                              ? "border-[#49DE80]/50 bg-[#49DE80]/15 text-[#49DE80]"
+                              : "border-slate-700 bg-[#112117] text-slate-300 hover:border-[#49DE80]/40"
+                          }`}
+                          key={domain}
+                          onClick={() => setSelectedModelDomain(domain)}
+                          type="button"
+                        >
+                          {domain}
+                        </button>
+                      );
+                    })}
+                  </div>
                   <select
-                    className="w-full py-2.5 px-3 rounded-xl bg-[#112117] border border-slate-800 text-sm text-slate-100 focus:ring-1 focus:ring-[#49DE80] focus:border-[#49DE80]"
+                    className="hidden xl:block w-full py-2.5 px-3 rounded-xl bg-[#112117] border border-slate-800 text-sm text-slate-100 focus:ring-1 focus:ring-[#49DE80] focus:border-[#49DE80]"
                     onChange={(event) => setSelectedModelDomain(event.target.value)}
                     value={selectedModelDomain}
                   >
@@ -1256,6 +2120,51 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                   </div>
                 </div>
 
+                <div className="rounded-xl border border-slate-800 bg-[#112117] p-4 space-y-3">
+                  <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">
+                    Creer un modele par IA
+                  </p>
+                  <textarea
+                    className="w-full rounded-lg bg-[#0d1a12] border border-slate-800 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:ring-1 focus:ring-[#49DE80] focus:border-[#49DE80] min-h-[90px]"
+                    onChange={(event) => setNewTemplatePrompt(event.target.value)}
+                    placeholder='Ex: "Cree un contrat de prestation de service informatique conforme au droit senegalais"'
+                    value={newTemplatePrompt}
+                  ></textarea>
+                  {templateGenerationError ? (
+                    <p className="text-xs text-rose-300">{templateGenerationError}</p>
+                  ) : null}
+                  {templateGenerationNotice ? (
+                    <p className="text-xs text-emerald-300">{templateGenerationNotice}</p>
+                  ) : null}
+                  {isGeneratingTemplate || templateGenerationProgress > 0 ? (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span>{isGeneratingTemplate ? "Generation du modele..." : "Generation terminee"}</span>
+                        <span>{Math.max(0, Math.min(100, Math.round(templateGenerationProgress)))}%</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full bg-[#49DE80] transition-all duration-300 ease-out"
+                          style={{
+                            width: `${Math.max(2, Math.min(100, templateGenerationProgress))}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                  <button
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-[#49DE80] px-3 py-2 text-sm font-bold text-[#112117] hover:bg-[#3fd273] transition-colors disabled:opacity-60"
+                    disabled={isGeneratingTemplate}
+                    onClick={() => void handleGenerateTemplateWithAi()}
+                    type="button"
+                  >
+                    <span className="material-symbols-outlined text-sm">
+                      {isGeneratingTemplate ? "hourglass_top" : "auto_awesome"}
+                    </span>
+                    {isGeneratingTemplate ? "Generation en cours..." : "Generer le modele"}
+                  </button>
+                </div>
+
                 <div className="rounded-xl border border-slate-800 bg-[#112117] p-4">
                   <p className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-2">Historique modeles utilises</p>
                   {recentTemplates.length === 0 ? (
@@ -1279,30 +2188,30 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
               </aside>
 
               <section className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4">
-                  {filteredTemplates.map((template) => {
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+                  {compactTemplates.map((template) => {
                     const isSelected = selectedTemplate?.id === template.id;
                     const isFavorite = favoriteModelIds.includes(template.id);
                     return (
                       <article
-                        className={`rounded-2xl border p-4 transition-colors ${
+                        className={`rounded-xl border p-3 transition-colors ${
                           isSelected
                             ? "border-[#49DE80]/50 bg-[#1f3527]"
                             : "border-slate-800 bg-[#1a2e22] hover:border-[#49DE80]/40"
                         }`}
                         key={template.id}
                       >
-                        <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start justify-between gap-2">
                           <button
-                            className="text-left flex-1"
+                            className="text-left flex-1 min-w-0"
                             onClick={() => setSelectedModelId(template.id)}
                             type="button"
                           >
-                            <h4 className="font-bold text-slate-100">{template.name}</h4>
-                            <p className="text-xs text-slate-400 mt-1">{template.domain}</p>
+                            <h4 className="font-bold text-slate-100 truncate">{template.name}</h4>
+                            <p className="text-[11px] text-slate-400 mt-0.5 truncate">{template.domain}</p>
                           </button>
                           <button
-                            className={`p-1.5 rounded-md border transition-colors ${
+                            className={`p-1 rounded-md border transition-colors ${
                               isFavorite
                                 ? "text-amber-300 border-amber-400/40 bg-amber-500/10"
                                 : "text-slate-500 border-slate-700 hover:text-amber-300 hover:border-amber-400/30"
@@ -1311,21 +2220,17 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                             title={isFavorite ? "Retirer des favoris" : "Ajouter aux favoris"}
                             type="button"
                           >
-                            <span className="material-symbols-outlined text-base">star</span>
+                            <span className="material-symbols-outlined text-[18px]">star</span>
                           </button>
                         </div>
-                        <p className="text-sm text-slate-300 mt-3 line-clamp-3">{template.description}</p>
-                        <div className="flex items-center justify-between mt-4">
+                        <p className="text-xs text-slate-300 mt-2 line-clamp-3">{template.description}</p>
+                        <div className="flex items-center justify-between mt-3 gap-2">
+                          <span className="text-[10px] font-bold uppercase px-2 py-1 rounded-full bg-slate-800 text-slate-200 border border-slate-700 truncate">
+                            {template.category}
+                          </span>
                           <span className="text-[10px] font-bold uppercase px-2 py-1 rounded-full bg-[#254632] text-[#49DE80]">
                             {template.complexity}
                           </span>
-                          <button
-                            className="text-xs font-bold text-[#49DE80]"
-                            onClick={() => setSelectedModelId(template.id)}
-                            type="button"
-                          >
-                            Apercu
-                          </button>
                         </div>
                       </article>
                     );
@@ -1361,7 +2266,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                           onClick={() => openTemplateInChat(selectedTemplate)}
                           type="button"
                         >
-                          Utiliser ce modele
+                          Utiliser ce document
                         </button>
                         <button
                           className="px-4 py-2 rounded-lg border border-slate-700 text-slate-200 text-sm hover:bg-white/5 transition-colors"

@@ -7,6 +7,7 @@ import {
   listLibraryDocumentsApi,
   readConsultationsApi,
   readWorkspaceFilesApi,
+  setWorkspaceUserContext,
 } from "../_lib/workspace-api";
 import { clerkUserButtonAppearance } from "../_lib/clerk-theme";
 import type { ConsultationRecord, WorkspaceFileRecord } from "../_lib/workspace-store";
@@ -38,6 +39,18 @@ function formatShortDate(isoDate: string): string {
   });
 }
 
+function consultationTitleLabel(record: ConsultationRecord): string {
+  const direct = String(record.question ?? "").replace(/\s+/g, " ").trim();
+  if (direct && !/^session du/i.test(direct)) {
+    return direct.length > 96 ? `${direct.slice(0, 93).trimEnd()}...` : direct;
+  }
+  if (direct) {
+    const fallback = direct.replace(/^session du/i, "Discussion").trim();
+    return fallback.length > 96 ? `${fallback.slice(0, 93).trimEnd()}...` : fallback;
+  }
+  return "Discussion";
+}
+
 export function UserDashboard() {
   const { isLoaded, isSignedIn, user } = useUser();
   const [loading, setLoading] = useState(true);
@@ -45,6 +58,22 @@ export function UserDashboard() {
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileRecord[]>([]);
   const [libraryCount, setLibraryCount] = useState(0);
   const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    if (!isLoaded) {
+      return;
+    }
+    setWorkspaceUserContext(
+      isSignedIn
+        ? {
+            userId: user?.id ?? null,
+            email: user?.primaryEmailAddress?.emailAddress ?? null,
+            displayName: user?.fullName ?? user?.firstName ?? null,
+            username: user?.username ?? null,
+          }
+        : null
+    );
+  }, [isLoaded, isSignedIn, user]);
 
   useEffect(() => {
     if (!isLoaded) {
@@ -158,7 +187,15 @@ export function UserDashboard() {
             </SignInButton>
           </SignedOut>
           <SignedIn>
-            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance} />
+            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance}>
+              <UserButton.MenuItems>
+                <UserButton.Link
+                  href="/dashboard"
+                  label="Dashboard utilisateur"
+                  labelIcon={<span className="material-symbols-outlined text-[16px]">space_dashboard</span>}
+                />
+              </UserButton.MenuItems>
+            </UserButton>
           </SignedIn>
         </div>
       </header>
@@ -252,11 +289,11 @@ export function UserDashboard() {
                       {recentConsultations.map((item) => (
                         <Link
                           className="block rounded-xl border border-slate-800 p-3 hover:border-[#49DE80]/50 hover:bg-[#0f1d15] transition-colors"
-                          href={`/chat?q=${encodeURIComponent(item.question)}`}
+                          href="/chat"
                           key={item.id}
                         >
                           <div className="flex items-start justify-between gap-3">
-                            <p className="text-sm font-semibold line-clamp-1">{item.question}</p>
+                            <p className="text-sm font-semibold line-clamp-1">{consultationTitleLabel(item)}</p>
                             <span
                               className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ${
                                 item.status === "done"
