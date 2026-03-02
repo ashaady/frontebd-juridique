@@ -75,6 +75,7 @@ class SupabaseWorkspaceConfig:
     notes_table: str
     files_table: str
     templates_table: str
+    guest_qa_logs_table: str
     timeout_sec: float
 
 
@@ -113,6 +114,10 @@ class SupabaseWorkspaceStore:
                 os.getenv("SUPABASE_TEMPLATES_TABLE"),
                 "workspace_templates",
             ),
+            guest_qa_logs_table=_parse_non_empty(
+                os.getenv("SUPABASE_GUEST_QA_LOGS_TABLE"),
+                "workspace_guest_qa_logs",
+            ),
             timeout_sec=_parse_positive_float(
                 os.getenv("SUPABASE_TIMEOUT_SEC", "8"),
                 8.0,
@@ -134,6 +139,7 @@ class SupabaseWorkspaceStore:
             "notes_table": self._config.notes_table,
             "files_table": self._config.files_table,
             "templates_table": self._config.templates_table,
+            "guest_qa_logs_table": self._config.guest_qa_logs_table,
             "timeout_sec": self._config.timeout_sec,
         }
 
@@ -161,6 +167,44 @@ class SupabaseWorkspaceStore:
             payload=payload,
             prefer="resolution=merge-duplicates,return=minimal",
         )
+
+    def append_guest_qa_log(self, *, record: dict[str, Any]) -> bool:
+        raw_auth_mode = record.get("auth_mode")
+        auth_mode = str(raw_auth_mode).strip() if raw_auth_mode is not None else ""
+        raw_user_id = record.get("user_id")
+        user_id = str(raw_user_id).strip() if raw_user_id is not None else ""
+        raw_user_email = record.get("user_email")
+        user_email = str(raw_user_email).strip() if raw_user_email is not None else ""
+        raw_user_name = record.get("user_name")
+        user_name = str(raw_user_name).strip() if raw_user_name is not None else ""
+        raw_user_username = record.get("user_username")
+        user_username = str(raw_user_username).strip() if raw_user_username is not None else ""
+        payload = [
+            {
+                "created_at": _safe_iso(record.get("created_at")),
+                "auth_mode": auth_mode,
+                "user_id": user_id or None,
+                "user_email": user_email or None,
+                "user_name": user_name or None,
+                "user_username": user_username or None,
+                "client_ip": str(record.get("client_ip", "")).strip(),
+                "question": str(record.get("question", "")).strip(),
+                "answer": str(record.get("answer", "")).strip(),
+                "rag_note": str(record.get("rag_note", "")).strip(),
+                "finish_reason": str(record.get("finish_reason", "")).strip(),
+                "rag_source_count": _to_int(record.get("rag_source_count", 0)),
+                "provider": str(record.get("provider", "")).strip(),
+                "model": str(record.get("model", "")).strip(),
+                "metadata": record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {},
+            }
+        ]
+        self._request_json(
+            method="POST",
+            table=self._config.guest_qa_logs_table,
+            payload=payload,
+            prefer="return=minimal",
+        )
+        return True
 
     def _request_json(
         self,

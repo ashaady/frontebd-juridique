@@ -20,17 +20,107 @@ from .api import library_router, speech_router, workspace_router
 from .schemas import ChatRequest
 from .shared_runtime import client, get_retriever, get_workspace_rag_index, settings
 from .workspace_rag import SUPPORTED_UPLOAD_EXTENSIONS, WORKSPACE_UPLOAD_DIR
-from .workspace_store import workspace_storage_summary
+from .workspace_store import append_guest_qa_log, register_user_context, workspace_storage_summary
 
 logger = logging.getLogger("backend.app.main")
 
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_STATE: dict[str, tuple[float, int]] = {}
 
+_CHAT_USER_HEADER_CANDIDATES = (
+    "x-user-id",
+    "x-clerk-user-id",
+    "x-client-user-id",
+)
+
+_CHAT_CAPTURE_MODES = {
+    "guest",
+    "anonymous",
+    "signed-out",
+    "signed-in",
+    "authenticated",
+}
+
+
+def _chat_user_id(request: Request) -> str:
+    for header in _CHAT_USER_HEADER_CANDIDATES:
+        raw = request.headers.get(header)
+        if raw and raw.strip():
+            return raw.strip()
+    return ""
+
+
+def _chat_auth_mode(request: Request) -> str:
+    mode = (request.headers.get("x-client-auth-mode") or "").strip().lower()
+    if mode in _CHAT_CAPTURE_MODES:
+        return mode
+    if _chat_user_id(request):
+        return "signed-in"
+    return ""
+
 
 def _sse(event: str, data: dict) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
+
+
+def _should_capture_chat_sample(request: Request) -> bool:
+    return bool(_chat_auth_mode(request))
+
+
+def _persist_chat_qa_sample(
+    *,
+    request: Request,
+    question: str,
+    answer: str,
+    rag_note: str | None,
+    finish_reason: str | None,
+    rag_source_count: int,
+) -> None:
+    question_clean = (question or "").strip()
+    answer_clean = (answer or "").strip()
+    if not question_clean or not answer_clean:
+        return
+
+    auth_mode = _chat_auth_mode(request)
+    user_id = _chat_user_id(request)
+    user_email = (request.headers.get("x-user-email") or "").strip()
+    user_name = (request.headers.get("x-user-name") or "").strip()
+    user_username = (request.headers.get("x-user-username") or "").strip()
+
+    record: dict[str, Any] = {
+        "created_at": None,
+        "auth_mode": auth_mode,
+        "user_id": user_id,
+        "user_email": user_email,
+        "user_name": user_name,
+        "user_username": user_username,
+        "client_ip": request.client.host if request.client else "",
+        "question": question_clean,
+        "answer": answer_clean,
+        "rag_note": rag_note or "",
+        "finish_reason": finish_reason or "",
+        "rag_source_count": int(max(0, rag_source_count)),
+        "provider": settings.llm_provider,
+        "model": settings.llm_model,
+        "metadata": {
+            "path": str(request.url.path),
+            "method": str(request.method),
+            "auth_mode": auth_mode,
+        },
+    }
+
+    try:
+        if user_id:
+            register_user_context(
+                user_id=user_id,
+                email=user_email or None,
+                username=user_username or None,
+                display_name=user_name or None,
+            )
+        append_guest_qa_log(record)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Chat QA log write failed: %s: %s", type(exc).__name__, exc)
 
 
 def _clip_for_log(value: str, max_len: int = 260) -> str:
@@ -1640,6 +1730,7 @@ app.add_middleware(
         "Accept",
         "Origin",
         "User-Agent",
+        "X-Client-Auth-Mode",
         "X-User-Id",
         "X-Clerk-User-Id",
         "X-User-Email",
@@ -1858,9 +1949,11 @@ app.include_router(speech_router)
 
 
 @app.post("/chat")
-async def chat(payload: ChatRequest):
+async def chat(payload: ChatRequest, request: Request):
     request_started = monotonic()
     input_messages = [message.model_dump() for message in payload.messages]
+    original_query, _ = _extract_query_for_rag(input_messages)
+    should_capture_chat_qa = _should_capture_chat_sample(request)
     should_use_rag = settings.rag_enabled and payload.use_rag is not False
     if should_use_rag:
         llm_messages, rag_sources, rag_error, rag_note = await _prepare_messages_with_rag(
@@ -1946,6 +2039,15 @@ async def chat(payload: ChatRequest):
         response_payload["rag_error"] = rag_error
     if rag_note:
         response_payload["rag_note"] = rag_note
+    if should_capture_chat_qa:
+        _persist_chat_qa_sample(
+            request=request,
+            question=original_query or "",
+            answer=answer,
+            rag_note=rag_note,
+            finish_reason=finish_reason,
+            rag_source_count=len(rag_sources),
+        )
     completed_at = monotonic()
     logger.info(
         "[CHAT-LATENCY] prep_ms=%.1f llm_ms=%.1f total_ms=%.1f sources=%d provider=%s model=%s note=%s",
@@ -1961,9 +2063,11 @@ async def chat(payload: ChatRequest):
 
 
 @app.post("/chat/stream")
-async def chat_stream(payload: ChatRequest):
+async def chat_stream(payload: ChatRequest, request: Request):
     request_started = monotonic()
     input_messages = [message.model_dump() for message in payload.messages]
+    original_query, _ = _extract_query_for_rag(input_messages)
+    should_capture_chat_qa = _should_capture_chat_sample(request)
     stream_fast_target_min = 8
     stream_fast_target_max = 10
     should_use_rag = settings.rag_enabled and payload.use_rag is not False
@@ -1987,6 +2091,27 @@ async def chat_stream(payload: ChatRequest):
     async def event_generator() -> AsyncGenerator[str, None]:
         stream_rag_note = rag_note
         first_token_at: float | None = None
+        captured_chat_sample = False
+
+        def _capture_chat_qa_once(
+            *,
+            answer: str,
+            finish_reason: str | None,
+            rag_note_value: str | None,
+            rag_source_count: int,
+        ) -> None:
+            nonlocal captured_chat_sample
+            if captured_chat_sample or not should_capture_chat_qa:
+                return
+            _persist_chat_qa_sample(
+                request=request,
+                question=original_query or "",
+                answer=answer,
+                rag_note=rag_note_value,
+                finish_reason=finish_reason,
+                rag_source_count=rag_source_count,
+            )
+            captured_chat_sample = True
 
         def _log_stream_latency(final_note: str | None) -> None:
             completed_at = monotonic()
@@ -2081,6 +2206,12 @@ async def chat_stream(payload: ChatRequest):
                             done_payload["rag_note"] = final_rag_note
                         if citation_underuse:
                             done_payload["citation_underuse"] = True
+                        _capture_chat_qa_once(
+                            answer=sanitized_answer,
+                            finish_reason="loop_guard_stop",
+                            rag_note_value=final_rag_note,
+                            rag_source_count=len(final_sources),
+                        )
                         _log_stream_latency(final_rag_note)
                         yield _sse("done", done_payload)
                         return
@@ -2115,6 +2246,12 @@ async def chat_stream(payload: ChatRequest):
                         done_payload["rag_note"] = final_rag_note
                     if citation_underuse:
                         done_payload["citation_underuse"] = True
+                    _capture_chat_qa_once(
+                        answer=final_answer,
+                        finish_reason=choice.finish_reason,
+                        rag_note_value=final_rag_note,
+                        rag_source_count=len(final_sources),
+                    )
                     _log_stream_latency(final_rag_note)
                     yield _sse("done", done_payload)
                     return
@@ -2146,6 +2283,12 @@ async def chat_stream(payload: ChatRequest):
                 done_payload["rag_note"] = final_rag_note
             if citation_underuse:
                 done_payload["citation_underuse"] = True
+            _capture_chat_qa_once(
+                answer=final_answer,
+                finish_reason="stop",
+                rag_note_value=final_rag_note,
+                rag_source_count=len(final_sources),
+            )
             _log_stream_latency(final_rag_note)
             yield _sse("done", done_payload)
         except Exception as exc:  # noqa: BLE001

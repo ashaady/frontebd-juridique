@@ -13,6 +13,7 @@ from .paths import data_path
 from .workspace_supabase import SupabaseWorkspaceError, SupabaseWorkspaceStore
 
 WORKSPACE_STATE_PATH = data_path("app_state", "workspace_state.json")
+GUEST_QA_LOG_PATH = data_path("app_state", "guest_qa_logs.jsonl")
 
 _STATE_LOCK = threading.Lock()
 _LOGGER = logging.getLogger("backend.app.workspace_store")
@@ -95,6 +96,59 @@ def register_user_context(
             display_name=_normalize_profile_text(display_name),
         ),
     )
+
+
+def _append_guest_qa_log_local(record: dict[str, Any]) -> None:
+    _ensure_parent_dir(GUEST_QA_LOG_PATH)
+    with GUEST_QA_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def append_guest_qa_log(record: dict[str, Any]) -> None:
+    question = str(record.get("question", "")).strip()
+    answer = str(record.get("answer", "")).strip()
+    if not question or not answer:
+        return
+    try:
+        rag_source_count = max(0, int(record.get("rag_source_count", 0) or 0))
+    except (TypeError, ValueError):
+        rag_source_count = 0
+    raw_user_id = str(record.get("user_id", "")).strip()
+    normalized_user_id = _normalize_user_id(raw_user_id) if raw_user_id else None
+    raw_created_at = record.get("created_at")
+    created_at = str(raw_created_at).strip() if raw_created_at is not None else ""
+    if not created_at or created_at.lower() == "none":
+        created_at = _now_iso()
+
+    normalized_record = {
+        "created_at": created_at,
+        "auth_mode": str(record.get("auth_mode", "")).strip(),
+        "user_id": normalized_user_id,
+        "user_email": _normalize_profile_text(record.get("user_email")),
+        "user_name": _normalize_profile_text(record.get("user_name")),
+        "user_username": _normalize_profile_text(record.get("user_username")),
+        "client_ip": str(record.get("client_ip", "")).strip(),
+        "question": question,
+        "answer": answer,
+        "rag_note": str(record.get("rag_note", "")).strip(),
+        "finish_reason": str(record.get("finish_reason", "")).strip(),
+        "rag_source_count": rag_source_count,
+        "provider": str(record.get("provider", "")).strip(),
+        "model": str(record.get("model", "")).strip(),
+        "metadata": record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {},
+    }
+
+    remote = _try_supabase(
+        "append_guest_qa_log",
+        lambda: _SUPABASE_STORE.append_guest_qa_log(  # type: ignore[union-attr]
+            record=normalized_record
+        ),
+    )
+    if remote is True:
+        return
+
+    with _STATE_LOCK:
+        _append_guest_qa_log_local(normalized_record)
 
 
 def _default_user_state() -> dict[str, Any]:

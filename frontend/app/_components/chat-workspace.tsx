@@ -2173,7 +2173,16 @@ export function ChatWorkspace({
       const response = await fetch(`${backendBaseUrl}/chat/stream`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "X-Client-Auth-Mode": isSignedIn ? "signed-in" : "guest",
+          ...(userId ? { "X-User-Id": userId } : {}),
+          ...(user?.primaryEmailAddress?.emailAddress
+            ? { "X-User-Email": user.primaryEmailAddress.emailAddress }
+            : {}),
+          ...(user?.fullName || user?.firstName
+            ? { "X-User-Name": user.fullName ?? user.firstName ?? "" }
+            : {}),
+          ...(user?.username ? { "X-User-Username": user.username } : {}),
         },
         body: JSON.stringify({
           messages: [...historyBeforeQuestion, { role: "user", content: trimmedQuestion }],
@@ -3159,6 +3168,15 @@ export function ChatWorkspace({
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "X-Client-Auth-Mode": isSignedIn ? "signed-in" : "guest",
+            ...(userId ? { "X-User-Id": userId } : {}),
+            ...(user?.primaryEmailAddress?.emailAddress
+              ? { "X-User-Email": user.primaryEmailAddress.emailAddress }
+              : {}),
+            ...(user?.fullName || user?.firstName
+              ? { "X-User-Name": user.fullName ?? user.firstName ?? "" }
+              : {}),
+            ...(user?.username ? { "X-User-Username": user.username } : {}),
           },
           body: JSON.stringify({
             messages: [{ role: "user", content: prompt }],
@@ -3593,96 +3611,135 @@ export function ChatWorkspace({
           <button ref={signInModalTriggerRef} type="button" className="hidden" aria-hidden="true" />
         </SignInButton>
       </SignedOut>
-      <header className="flex items-center gap-4 px-3 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
-        <button
-          className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
-          onClick={() => {
-            setIsMobileLeftPanelOpen((previous) => {
-              const next = !previous;
-              if (next) {
-                setIsSidebarCollapsed(false);
-              }
-              return next;
-            });
-            setIsMobileRightPanelOpen(false);
-          }}
-          type="button"
-        >
-          <span className="material-symbols-outlined text-base">menu</span>
-        </button>
-        <button
-          className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0 text-left`}
-          onClick={handleStartNewChat}
-          type="button"
-        >
-          <div className="size-8 bg-[#13221a] border border-[#49DE80]/40 rounded flex items-center justify-center">
-            <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
+      <header className="px-3 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
+        <div className="flex items-center gap-3 w-full min-w-0">
+          <button
+            className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+            onClick={() => {
+              setIsMobileLeftPanelOpen((previous) => {
+                const next = !previous;
+                if (next) {
+                  setIsSidebarCollapsed(false);
+                }
+                return next;
+              });
+              setIsMobileRightPanelOpen(false);
+            }}
+            type="button"
+          >
+            <span className="material-symbols-outlined text-base">menu</span>
+          </button>
+          <button
+            className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0 text-left`}
+            onClick={handleStartNewChat}
+            type="button"
+          >
+            <div className="size-8 bg-[#13221a] border border-[#49DE80]/40 rounded flex items-center justify-center">
+              <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
+            </div>
+            <h1 className={`text-lg font-bold tracking-tight truncate ${isSidebarCollapsed ? "lg:hidden" : ""}`}>
+              Juridique <span className="text-[#7ef1a9]">SN</span>
+            </h1>
+          </button>
+          <div className="hidden md:flex items-center gap-4 min-w-0 flex-1">
+            <span className="flex items-center gap-1 text-[10px] font-bold text-[#49DE80] uppercase tracking-wider shrink-0">
+              <span className="size-2 bg-[#49DE80] rounded-full animate-pulse"></span>
+              Actualites
+            </span>
+            <div className="news-ticker flex-1 overflow-hidden">
+              <div className="news-ticker-track text-sm text-slate-400">
+                <span className="news-ticker-item pr-16">
+                  Publication du nouveau decret sur l&apos;amenagement foncier urbain au Journal Officiel...
+                  | Reforme du Code du Travail : Consultation nationale en cours...
+                </span>
+                <span aria-hidden="true" className="news-ticker-item pr-16">
+                  Publication du nouveau decret sur l&apos;amenagement foncier urbain au Journal Officiel...
+                  | Reforme du Code du Travail : Consultation nationale en cours...
+                </span>
+              </div>
+            </div>
           </div>
-          <h1 className={`text-lg font-bold tracking-tight truncate ${isSidebarCollapsed ? "lg:hidden" : ""}`}>
-            Juridique <span className="text-[#7ef1a9]">SN</span>
-          </h1>
-        </button>
-        <div className="hidden md:flex items-center gap-4 min-w-0 flex-1">
+          <div className="hidden md:flex items-center gap-2 shrink-0">
+            <SignedOut>
+              <Link
+                className="inline-flex items-center justify-center rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-semibold text-slate-200 hover:border-[#49DE80]/60 hover:text-[#49DE80] transition-colors"
+                href="/sign-in"
+              >
+                Se connecter
+              </Link>
+              <Link
+                className="inline-flex items-center justify-center rounded-lg bg-[#49DE80] px-3 py-1.5 text-sm font-bold text-[#112117] hover:bg-[#3fd273] transition-colors"
+                href="/sign-up"
+              >
+                Creer un compte
+              </Link>
+            </SignedOut>
+            <SignedIn>
+              <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance}>
+                <UserButton.MenuItems>
+                  <UserButton.Link
+                    href="/dashboard"
+                    label="Dashboard utilisateur"
+                    labelIcon={<span className="material-symbols-outlined text-[16px]">space_dashboard</span>}
+                  />
+                </UserButton.MenuItems>
+              </UserButton>
+            </SignedIn>
+          </div>
+          <div className="lg:hidden flex items-center gap-2 ml-auto shrink-0">
+            <SignedOut>
+              <Link
+                className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#1e2e24] transition-colors"
+                href="/sign-in"
+              >
+                Connexion
+              </Link>
+            </SignedOut>
+            <SignedIn>
+              <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance}>
+                <UserButton.MenuItems>
+                  <UserButton.Link
+                    href="/dashboard"
+                    label="Dashboard utilisateur"
+                    labelIcon={<span className="material-symbols-outlined text-[16px]">space_dashboard</span>}
+                  />
+                </UserButton.MenuItems>
+              </UserButton>
+            </SignedIn>
+            <button
+              className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+              onClick={() => {
+                if (isMobileRightPanelOpen) {
+                  handleCloseWorkspacePanel();
+                } else {
+                  handleOpenWorkspacePanel();
+                  setIsMobileRightPanelOpen(true);
+                }
+                setIsMobileLeftPanelOpen(false);
+              }}
+              type="button"
+            >
+              <span className="material-symbols-outlined text-base">tune</span>
+            </button>
+          </div>
+        </div>
+        <div className="md:hidden mt-2 flex items-center gap-2 min-w-0">
           <span className="flex items-center gap-1 text-[10px] font-bold text-[#49DE80] uppercase tracking-wider shrink-0">
             <span className="size-2 bg-[#49DE80] rounded-full animate-pulse"></span>
-            Actualites
+            Actu
           </span>
-          <div className="news-ticker flex-1 overflow-hidden">
-            <div className="news-ticker-track text-sm text-slate-400">
-              <span className="news-ticker-item pr-16">
+          <div className="news-ticker flex-1 overflow-hidden min-w-0">
+            <div className="news-ticker-track text-xs text-slate-500 dark:text-slate-400">
+              <span className="news-ticker-item pr-12">
                 Publication du nouveau decret sur l&apos;amenagement foncier urbain au Journal Officiel...
                 | Reforme du Code du Travail : Consultation nationale en cours...
               </span>
-              <span aria-hidden="true" className="news-ticker-item pr-16">
+              <span aria-hidden="true" className="news-ticker-item pr-12">
                 Publication du nouveau decret sur l&apos;amenagement foncier urbain au Journal Officiel...
                 | Reforme du Code du Travail : Consultation nationale en cours...
               </span>
             </div>
           </div>
-        </div>
-        <div className="hidden md:flex items-center gap-2 shrink-0">
-          <SignedOut>
-            <Link
-              className="inline-flex items-center justify-center rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-semibold text-slate-200 hover:border-[#49DE80]/60 hover:text-[#49DE80] transition-colors"
-              href="/sign-in"
-            >
-              Se connecter
-            </Link>
-            <Link
-              className="inline-flex items-center justify-center rounded-lg bg-[#49DE80] px-3 py-1.5 text-sm font-bold text-[#112117] hover:bg-[#3fd273] transition-colors"
-              href="/sign-up"
-            >
-              Creer un compte
-            </Link>
-          </SignedOut>
-          <SignedIn>
-            <UserButton afterSignOutUrl="/sign-in" appearance={clerkUserButtonAppearance}>
-              <UserButton.MenuItems>
-                <UserButton.Link
-                  href="/dashboard"
-                  label="Dashboard utilisateur"
-                  labelIcon={<span className="material-symbols-outlined text-[16px]">space_dashboard</span>}
-                />
-              </UserButton.MenuItems>
-            </UserButton>
-          </SignedIn>
-        </div>
-        <div className="lg:hidden flex items-center gap-2 ml-auto">
-          <button
-            className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
-            onClick={() => {
-              if (isMobileRightPanelOpen) {
-                handleCloseWorkspacePanel();
-              } else {
-                handleOpenWorkspacePanel();
-                setIsMobileRightPanelOpen(true);
-              }
-              setIsMobileLeftPanelOpen(false);
-            }}
-            type="button"
-          >
-            <span className="material-symbols-outlined text-base">tune</span>
-          </button>
         </div>
       </header>
 
