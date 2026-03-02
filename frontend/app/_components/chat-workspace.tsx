@@ -73,6 +73,7 @@ type StreamReasoningEvent = {
 type StreamDoneEvent = {
   finish_reason?: string;
   rag_note?: string;
+  rag_sources?: RagSource[];
 };
 
 type StreamReplaceEvent = {
@@ -109,6 +110,7 @@ type ChatWorkspaceProps = {
   initialQuestion?: string;
   autoOpenActGenerator?: boolean;
   initialActTemplateId?: string;
+  initialStartNewSession?: boolean;
 };
 
 type RightPanelTab = "workspace" | "notes" | "files";
@@ -171,6 +173,7 @@ const QUICK_QUESTIONS: string[] = [
 const WORKSPACE_ONLY_AUTO_PROMPT =
   "Analyse le document joint et fournis une synthese juridique exploitable (resume, risques, points sensibles, recommandations).";
 const HISTORY_TITLE_MAX_CHARS = 96;
+const ACTIVE_CHAT_SESSION_STORAGE_KEY = "juridiquesn:active-chat-session-id";
 
 const ACT_TEMPLATES: Record<ActType, ActTemplateDefinition> = {
   contrat_bail: {
@@ -1241,6 +1244,69 @@ function parsePageFromCitationText(value: string): number | null {
   return page;
 }
 
+function resolveExpertiseDocument(
+  domain: {
+    category: string;
+    documentKeywords: readonly string[];
+    preferredDocumentTitles?: readonly string[];
+  },
+  documents: LibraryDocumentRecord[]
+): LibraryDocumentRecord | null {
+  if (documents.length === 0) {
+    return null;
+  }
+  const normalizedCategory = normalizeForMatch(domain.category);
+  const categoryScoped = documents.filter(
+    (doc) => normalizeForMatch(doc.category || "") === normalizedCategory
+  );
+  if (categoryScoped.length === 0) {
+    return null;
+  }
+
+  const normalizedKeywords = domain.documentKeywords.map((item) => normalizeForMatch(item)).filter(Boolean);
+  const normalizedPreferredTitles = (domain.preferredDocumentTitles ?? [])
+    .map((item) => normalizeForMatch(item))
+    .filter(Boolean);
+
+  if (normalizedPreferredTitles.length > 0) {
+    for (const preferred of normalizedPreferredTitles) {
+      const exact = categoryScoped.find((doc) => normalizeForMatch(doc.title || "") === preferred);
+      if (exact) {
+        return exact;
+      }
+      const contains = categoryScoped.find((doc) => normalizeForMatch(doc.title || "").includes(preferred));
+      if (contains) {
+        return contains;
+      }
+    }
+  }
+
+  if (normalizedKeywords.length === 0) {
+    return categoryScoped[0] ?? null;
+  }
+
+  let best: LibraryDocumentRecord | null = null;
+  let bestScore = 0;
+  for (const doc of categoryScoped) {
+    const title = normalizeForMatch(doc.title || "");
+    const fileName = normalizeForMatch(doc.fileName || "");
+    let score = 0;
+    for (const keyword of normalizedKeywords) {
+      if (title.includes(keyword)) {
+        score += 4;
+      } else if (fileName.includes(keyword)) {
+        score += 3;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = doc;
+    }
+  }
+
+  return best ?? categoryScoped[0] ?? null;
+}
+
 function normalizeHighlightNeedle(value: string): string {
   const cleaned = value.replace(/\s+/g, " ").trim();
   if (cleaned.length < 6) {
@@ -1395,7 +1461,17 @@ function highlightArticleReference(text: string): ReactNode[] {
 }
 
 function renderAnswerContent(answer: string): ReactNode {
-  const rows = answer
+  const cleanedAnswer = answer
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`{1,3}([^`]+)`{1,3}/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+
+  const rows = cleanedAnswer
     .split("\n")
     .map((row) => row.trim())
     .filter((row) => row.length > 0);
@@ -1437,6 +1513,7 @@ export function ChatWorkspace({
   initialQuestion = "",
   autoOpenActGenerator = false,
   initialActTemplateId = "",
+  initialStartNewSession = false,
 }: ChatWorkspaceProps) {
   const router = useRouter();
   const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
@@ -1499,6 +1576,7 @@ export function ChatWorkspace({
   const libraryDocumentsCacheRef = useRef<LibraryDocumentRecord[]>([]);
   const signInModalTriggerRef = useRef<HTMLButtonElement | null>(null);
   const actGenerationProgressResetTimerRef = useRef<number | null>(null);
+  const hasRestoredSessionFromHistoryRef = useRef(false);
 
   const backendBaseUrl = useMemo(() => {
     const raw = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
@@ -1524,7 +1602,10 @@ export function ChatWorkspace({
         shortTitle: "Famille",
         desc: "Mariage, divorce, autorite parentale et successions au Senegal.",
         tone: "blue",
-        href: "/bibliotheque?q=code%20de%20la%20famille",
+        category: "02 — DROIT CIVIL, DE LA FAMILLE ET PROCEDURE CIVILE",
+        documentKeywords: ["code de la famille", "famille"],
+        preferredDocumentTitles: ["Code de la famille"],
+        searchQuery: "code de la famille",
       },
       {
         icon: "work",
@@ -1532,7 +1613,10 @@ export function ChatWorkspace({
         shortTitle: "Travail",
         desc: "Contrats, licenciements, preavis et droits des salaries.",
         tone: "orange",
-        href: "/bibliotheque?q=code%20du%20travail",
+        category: "11 — DROIT DU TRAVAIL ET SECURITE SOCIALE",
+        documentKeywords: ["code du travail", "travail"],
+        preferredDocumentTitles: ["Droit du travaail", "Code du travail"],
+        searchQuery: "code du travail",
       },
       {
         icon: "home_work",
@@ -1540,7 +1624,10 @@ export function ChatWorkspace({
         shortTitle: "Immobilier",
         desc: "Baux d'habitation, foncier et contentieux locatifs.",
         tone: "teal",
-        href: "/bibliotheque?q=code%20urbanisme%20construction%20bail%20foncier",
+        category: "08 — DROIT FONCIER, URBANISME ET CONSTRUCTION",
+        documentKeywords: ["urbanisme", "construction", "foncier", "bail"],
+        preferredDocumentTitles: ["Code de l’Urbanisme", "Code de lUrbanisme"],
+        searchQuery: "urbanisme construction foncier bail",
       },
       {
         icon: "corporate_fare",
@@ -1548,10 +1635,45 @@ export function ChatWorkspace({
         shortTitle: "Affaires",
         desc: "OHADA, creation d'entreprise et fiscalite des societes.",
         tone: "primary",
-        href: "/bibliotheque?q=ohada%20societes%20commerciales%20droit%20des%20affaires",
+        category: "04 — DROIT COMMERCIAL ET DES AFFAIRES - OHADA",
+        documentKeywords: ["ohada", "societes", "commercial", "auscgie"],
+        preferredDocumentTitles: ["Acte uniforme Societes commerciales", "Traite OHADA (revise 2008)"],
+        searchQuery: "ohada societes commerciales droit des affaires",
       },
     ] as const,
     []
+  );
+
+  const openExpertiseDomain = useCallback(
+    async (domain: (typeof expertiseDomains)[number]) => {
+      setIsMobileLeftPanelOpen(false);
+      let documents = libraryDocumentsCacheRef.current;
+      if (documents.length === 0) {
+        try {
+          documents = await listLibraryDocumentsApi();
+          if (documents.length > 0) {
+            libraryDocumentsCacheRef.current = documents;
+          }
+        } catch {
+          documents = [];
+        }
+      }
+
+      const params = new URLSearchParams();
+      const matched = resolveExpertiseDocument(domain, documents);
+      params.set("category", matched?.category?.trim() || domain.category);
+      if (matched?.id) {
+        params.set("documentId", matched.id);
+      }
+      const documentTitle = matched?.title?.trim() || domain.preferredDocumentTitles[0] || "";
+      if (documentTitle) {
+        params.set("documentTitle", documentTitle);
+      }
+      params.set("keyword", domain.searchQuery);
+
+      router.push(`/bibliotheque?${params.toString()}`);
+    },
+    [expertiseDomains, router]
   );
   const actTemplatesByCategory = useMemo(() => {
     const groups = new Map<string, ActTemplateDefinition[]>();
@@ -2159,7 +2281,10 @@ export function ChatWorkspace({
               status: "done",
               finishReason:
                 typeof donePayload.finish_reason === "string" ? donePayload.finish_reason : "stop",
-              ragNote: typeof donePayload.rag_note === "string" ? donePayload.rag_note : ""
+              ragNote: typeof donePayload.rag_note === "string" ? donePayload.rag_note : "",
+              ragSources: Array.isArray(donePayload.rag_sources)
+                ? donePayload.rag_sources
+                : undefined
             });
             streamDone = true;
             break;
@@ -2223,10 +2348,11 @@ export function ChatWorkspace({
       return;
     }
     const url = new URL(window.location.href);
-    if (!url.searchParams.has("q")) {
+    if (!url.searchParams.has("q") && !url.searchParams.has("new")) {
       return;
     }
     url.searchParams.delete("q");
+    url.searchParams.delete("new");
     const cleanedUrl = `${url.pathname}${url.search}${url.hash}`;
     window.history.replaceState(window.history.state, "", cleanedUrl || "/chat");
   }, []);
@@ -2562,6 +2688,13 @@ export function ChatWorkspace({
     pushUiMessage("Nouvelle session demarree.");
   }, [clearQuestionParamFromUrl, pushUiMessage, stopVoiceCapture]);
 
+  useEffect(() => {
+    if (!initialStartNewSession) {
+      return;
+    }
+    handleStartNewChat();
+  }, [handleStartNewChat, initialStartNewSession]);
+
   const handleOpenHistorySession = useCallback((session: ConsultationRecord) => {
     if (abortRef.current) {
       abortRef.current.abort();
@@ -2609,6 +2742,61 @@ export function ChatWorkspace({
     setWorkspaceSelectedTurnId(restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1].id : null);
     pushUiMessage("Session chargee.");
   }, [pushUiMessage, stopVoiceCapture]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (!activeSessionId) {
+      return;
+    }
+    window.localStorage.setItem(ACTIVE_CHAT_SESSION_STORAGE_KEY, activeSessionId);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!isAuthLoaded || !isSignedIn) {
+      return;
+    }
+    if (hasRestoredSessionFromHistoryRef.current) {
+      return;
+    }
+    if (sessionHistory.length === 0) {
+      return;
+    }
+    if (turns.length > 0 || pendingDashboardQuestion.length > 0 || initialStartNewSession) {
+      hasRestoredSessionFromHistoryRef.current = true;
+      return;
+    }
+    if (isSending) {
+      return;
+    }
+
+    let targetSession: ConsultationRecord | null = null;
+    if (typeof window !== "undefined") {
+      const savedId = window.localStorage.getItem(ACTIVE_CHAT_SESSION_STORAGE_KEY) ?? "";
+      if (savedId) {
+        targetSession = sessionHistory.find((session) => session.id === savedId) ?? null;
+      }
+    }
+    if (!targetSession) {
+      targetSession = sessionHistory[0] ?? null;
+    }
+    if (!targetSession) {
+      return;
+    }
+
+    hasRestoredSessionFromHistoryRef.current = true;
+    handleOpenHistorySession(targetSession);
+  }, [
+    handleOpenHistorySession,
+    initialStartNewSession,
+    isAuthLoaded,
+    isSending,
+    isSignedIn,
+    pendingDashboardQuestion.length,
+    sessionHistory,
+    turns.length,
+  ]);
 
   const handleClearHistory = useCallback(async () => {
     if (sessionHistory.length === 0) {
@@ -3422,14 +3610,18 @@ export function ChatWorkspace({
         >
           <span className="material-symbols-outlined text-base">menu</span>
         </button>
-        <div className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0`}>
+        <button
+          className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0 text-left`}
+          onClick={handleStartNewChat}
+          type="button"
+        >
           <div className="size-8 bg-[#13221a] border border-[#49DE80]/40 rounded flex items-center justify-center">
             <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
           </div>
           <h1 className={`text-lg font-bold tracking-tight truncate ${isSidebarCollapsed ? "lg:hidden" : ""}`}>
             Juridique <span className="text-[#7ef1a9]">SN</span>
           </h1>
-        </div>
+        </button>
         <div className="hidden md:flex items-center gap-4 min-w-0 flex-1">
           <span className="flex items-center gap-1 text-[10px] font-bold text-[#49DE80] uppercase tracking-wider shrink-0">
             <span className="size-2 bg-[#49DE80] rounded-full animate-pulse"></span>
@@ -3514,7 +3706,11 @@ export function ChatWorkspace({
         >
           <div className={isSidebarCollapsed ? "p-2" : "p-6"}>
             <div className={`flex ${isSidebarCollapsed ? "flex-col items-center gap-2" : "items-center justify-between"} mb-6`}>
-              <div className={`flex items-center ${isSidebarCollapsed ? "" : "gap-3"}`}>
+              <button
+                className={`flex items-center ${isSidebarCollapsed ? "" : "gap-3"} text-left`}
+                onClick={handleStartNewChat}
+                type="button"
+              >
                 <div
                   className={`${isSidebarCollapsed ? "size-9" : "size-10"} bg-[#1a2e22] border border-[#49DE80]/40 rounded-lg flex items-center justify-center shadow-lg shadow-[#49DE80]/10`}
                 >
@@ -3525,7 +3721,7 @@ export function ChatWorkspace({
                     Juridique <span className="text-[#7ef1a9]">SN</span>
                   </span>
                 ) : null}
-              </div>
+              </button>
               <button
                 aria-label={isSidebarCollapsed ? "Etendre le menu" : "Reduire le menu"}
                 className={`hidden lg:inline-flex items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/60 text-slate-300 transition-all hover:border-[#49DE80]/60 hover:bg-[#49DE80]/10 hover:text-[#49DE80] ${
@@ -3769,7 +3965,7 @@ export function ChatWorkspace({
                           <button
                             className="bg-[#1a2e22] px-2 py-2 rounded-lg border border-slate-800 text-center hover:border-primary/40 transition-colors"
                             key={domain.title}
-                            onClick={() => router.push(domain.href)}
+                            onClick={() => void openExpertiseDomain(domain)}
                             type="button"
                           >
                             <div
@@ -3790,7 +3986,7 @@ export function ChatWorkspace({
                       <div className="flex justify-center">
                         <button
                           className="w-[32%] min-w-[104px] max-w-[132px] bg-[#1a2e22] px-2 py-2 rounded-lg border border-slate-800 text-center hover:border-primary/40 transition-colors"
-                          onClick={() => router.push(expertiseDomains[3].href)}
+                          onClick={() => void openExpertiseDomain(expertiseDomains[3])}
                           type="button"
                         >
                           <div className="size-5 rounded-md flex items-center justify-center mb-1 mx-auto border bg-gradient-to-br from-[#49DE80]/25 to-[#49DE80]/5 text-[#7ef1a9] border-[#49DE80]/30">
@@ -3812,7 +4008,7 @@ export function ChatWorkspace({
                         <button
                           className="bg-[#1a2e22] p-3 rounded-lg border border-slate-800 hover:border-primary/40 transition-all group cursor-pointer shadow-sm text-left"
                           key={domain.title}
-                          onClick={() => router.push(domain.href)}
+                          onClick={() => void openExpertiseDomain(domain)}
                           type="button"
                         >
                           <div

@@ -467,6 +467,15 @@ function toDocumentTemplateFromCustom(template: CustomDocumentTemplateRecord): D
   };
 }
 
+function normalizeForMatch(raw: string): string {
+  return String(raw ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 function toCustomTemplateFromGenerated(
   payload: GeneratedTemplatePayload,
   prompt: string
@@ -932,6 +941,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState(false);
   const [isMobileSearchPanelOpen, setIsMobileSearchPanelOpen] = useState(false);
   const templateProgressResetTimerRef = useRef<number | null>(null);
+  const hasAppliedExpertisePresetRef = useRef(false);
 
   const isDocumentsPage = title.toLowerCase().includes("documents");
   const backendBaseUrl = useMemo(() => {
@@ -1236,7 +1246,25 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     if (selectedSearchCategory === "all") {
       return;
     }
+    if (searchCategoryOptions.length === 0) {
+      return;
+    }
     if (searchCategoryOptions.includes(selectedSearchCategory)) {
+      return;
+    }
+    const normalizedWanted = normalizeForMatch(selectedSearchCategory);
+    const fuzzyCategory =
+      searchCategoryOptions.find((category) => normalizeForMatch(category) === normalizedWanted) ??
+      searchCategoryOptions.find((category) => {
+        const normalizedCategory = normalizeForMatch(category);
+        return (
+          normalizedCategory.includes(normalizedWanted) ||
+          normalizedWanted.includes(normalizedCategory)
+        );
+      }) ??
+      null;
+    if (fuzzyCategory) {
+      setSelectedSearchCategory(fuzzyCategory);
       return;
     }
     setSelectedSearchCategory("all");
@@ -1244,6 +1272,9 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
 
   useEffect(() => {
     if (selectedDocumentId === "all") {
+      return;
+    }
+    if (allLibraryDocuments.length === 0) {
       return;
     }
     if (allLibraryDocuments.some((doc) => doc.id === selectedDocumentId)) {
@@ -1261,6 +1292,86 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     }
     setSelectedDocumentId("all");
   }, [scopedSearchDocuments, selectedDocumentId, selectedSearchCategory]);
+
+  useEffect(() => {
+    if (hasAppliedExpertisePresetRef.current) {
+      return;
+    }
+    if (allLibraryDocuments.length === 0) {
+      return;
+    }
+    if (typeof window === "undefined") {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const rawCategory = (params.get("category") ?? "").trim();
+    const rawTitle = (params.get("documentTitle") ?? "").trim();
+    const rawDocumentId = (params.get("documentId") ?? "").trim();
+    if (!rawCategory && !rawTitle && !rawDocumentId) {
+      hasAppliedExpertisePresetRef.current = true;
+      return;
+    }
+
+    const byId =
+      selectedDocumentId !== "all"
+        ? allLibraryDocuments.find((doc) => doc.id === selectedDocumentId) ?? null
+        : rawDocumentId
+          ? allLibraryDocuments.find((doc) => doc.id === rawDocumentId) ?? null
+          : null;
+    if (byId) {
+      if (selectedSearchCategory !== byId.category) {
+        setSelectedSearchCategory(byId.category);
+      }
+      if (selectedDocumentId !== byId.id) {
+        setSelectedDocumentId(byId.id);
+      }
+      hasAppliedExpertisePresetRef.current = true;
+      return;
+    }
+
+    const categoryFromUrl = rawCategory
+      ? searchCategoryOptions.find((category) => category === rawCategory) ??
+        searchCategoryOptions.find((category) => normalizeForMatch(category) === normalizeForMatch(rawCategory)) ??
+        searchCategoryOptions.find((category) => {
+          const normalizedCategory = normalizeForMatch(category);
+          const wanted = normalizeForMatch(rawCategory);
+          return normalizedCategory.includes(wanted) || wanted.includes(normalizedCategory);
+        }) ??
+        "all"
+      : "all";
+    if (categoryFromUrl !== "all" && selectedSearchCategory !== categoryFromUrl) {
+      setSelectedSearchCategory(categoryFromUrl);
+    }
+
+    if (!rawTitle) {
+      hasAppliedExpertisePresetRef.current = true;
+      return;
+    }
+    const normalizedWanted = normalizeForMatch(rawTitle);
+    if (!normalizedWanted) {
+      hasAppliedExpertisePresetRef.current = true;
+      return;
+    }
+    const scoped = categoryFromUrl === "all"
+      ? allLibraryDocuments
+      : allLibraryDocuments.filter((doc) => doc.category === categoryFromUrl);
+    const source = scoped.length > 0 ? scoped : allLibraryDocuments;
+    const exact = source.find((doc) => normalizeForMatch(doc.title) === normalizedWanted);
+    const contains =
+      exact ??
+      source.find((doc) => {
+        const candidate = normalizeForMatch(doc.title);
+        return candidate.includes(normalizedWanted) || normalizedWanted.includes(candidate);
+      }) ??
+      null;
+    if (!contains) {
+      hasAppliedExpertisePresetRef.current = true;
+      return;
+    }
+    setSelectedSearchCategory(contains.category);
+    setSelectedDocumentId(contains.id);
+    hasAppliedExpertisePresetRef.current = true;
+  }, [allLibraryDocuments, searchCategoryOptions, selectedDocumentId, selectedSearchCategory]);
 
   const recentSidebar = useMemo(() => consultations.slice(0, 8), [consultations]);
 
@@ -1714,14 +1825,18 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
         >
           <span className="material-symbols-outlined text-base">menu</span>
         </button>
-        <div className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0`}>
+        <button
+          className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0 text-left`}
+          onClick={() => router.push("/chat?new=1")}
+          type="button"
+        >
           <div className="size-8 bg-[#13221a] border border-[#49DE80]/40 rounded flex items-center justify-center">
             <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
           </div>
           <h1 className={`text-lg font-bold tracking-tight truncate ${isSidebarCollapsed ? "lg:hidden" : ""}`}>
             Juridique <span className="text-[#7ef1a9]">SN</span>
           </h1>
-        </div>
+        </button>
         <div className="hidden md:flex items-center gap-4 min-w-0 flex-1">
           <span className="flex items-center gap-1 text-[10px] font-bold text-[#49DE80] uppercase tracking-wider shrink-0">
             <span className="size-2 bg-[#49DE80] rounded-full animate-pulse"></span>
@@ -1784,7 +1899,14 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
         >
           <div className={isSidebarCollapsed ? "p-2" : "p-6"}>
             <div className={`flex ${isSidebarCollapsed ? "flex-col items-center gap-2" : "items-center justify-between"} mb-6`}>
-              <div className={`flex items-center ${isSidebarCollapsed ? "" : "gap-3"}`}>
+              <button
+                className={`flex items-center ${isSidebarCollapsed ? "" : "gap-3"} text-left`}
+                onClick={() => {
+                  setIsMobileLeftPanelOpen(false);
+                  router.push("/chat?new=1");
+                }}
+                type="button"
+              >
                 <div
                   className={`${isSidebarCollapsed ? "size-9" : "size-10"} bg-[#1a2e22] border border-[#49DE80]/40 rounded-lg flex items-center justify-center shadow-lg shadow-[#49DE80]/10`}
                 >
@@ -1795,7 +1917,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                     Juridique <span className="text-[#7ef1a9]">SN</span>
                   </span>
                 ) : null}
-              </div>
+              </button>
               <button
                 aria-label={isSidebarCollapsed ? "Etendre le menu" : "Reduire le menu"}
                 className={`hidden lg:inline-flex items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/60 text-slate-300 transition-all hover:border-[#49DE80]/60 hover:bg-[#49DE80]/10 hover:text-[#49DE80] ${
@@ -1812,7 +1934,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
             {!isSidebarCollapsed ? (
               <Link
                 className="flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
-                href="/chat"
+                href="/chat?new=1"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
               >
                 <span className="material-symbols-outlined">add</span>
@@ -2002,7 +2124,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                     {selectedSearchCategory !== "all" ? (
                       <label className="space-y-1.5">
                         <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                          Document juridique
+                          Type de document
                         </span>
                         <select
                           className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
@@ -2012,7 +2134,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                           }}
                           value={selectedDocumentId}
                         >
-                          <option value="all">Tous les documents de la categorie</option>
+                          <option value="all">Tous les types de document</option>
                           {scopedSearchDocuments.map((doc) => (
                             <option key={`mobile-scoped-doc-${doc.id}`} value={doc.id}>
                               {doc.title}
@@ -2133,7 +2255,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                 {selectedSearchCategory !== "all" ? (
                   <label className="space-y-1.5">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                      Document juridique
+                      Type de document
                     </span>
                     <select
                       className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2.5 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
@@ -2143,7 +2265,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                       }}
                       value={selectedDocumentId}
                     >
-                      <option value="all">Tous les documents de la categorie</option>
+                      <option value="all">Tous les types de document</option>
                       {scopedSearchDocuments.map((doc) => (
                         <option key={`desktop-scoped-doc-${doc.id}`} value={doc.id}>
                           {doc.title}

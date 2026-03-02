@@ -1,0 +1,80 @@
+CHANGEMENTS LATENCE CHAT STREAM (AVANT / APRES)
+Date: 2026-03-02
+Contexte: Optimisation du premier token pour les questions longues.
+
+1) PROBLEME INITIAL
+- Objectif demande: premier token < 6 secondes sur questions longues.
+- Observation initiale:
+  - /chat (non-stream): question longue ~14s a ~19s total.
+  - /chat/stream: premier token autour de ~5.8s a ~6.3s, avec pics plus hauts.
+- Diagnostic:
+  - Sans RAG, premier token mesuré ~1.55s.
+  - Avec RAG, premier token ~5.76s.
+  => Le cout principal venait de la preparation RAG (rewrite + retrieval + filtrage), pas du rendu frontend.
+
+2) CHANGEMENTS APPLIQUES
+
+2.1 Ajustement backend pour /chat/stream uniquement
+- Fichier: backend/app/main.py
+- Changement:
+  - Ajout d'overrides de cible RAG dans _prepare_messages_with_rag:
+    - rag_target_min_chunks_override
+    - rag_target_max_chunks_override
+  - /chat/stream appelle la preparation RAG avec une cible reduite:
+    - target_min = 3
+    - target_max = 4
+- Effet:
+  - Moins de chunks a classer/formater avant l'appel LLM.
+  - Baisse du temps de preparation avant emission du premier token.
+
+2.2 Rewrite desactive uniquement en stream
+- Fichier: backend/app/main.py
+- Changement:
+  - _rewrite_query_for_rag respecte maintenant rewrite_enabled_override=False.
+  - /chat/stream force rewrite_enabled_override=False.
+- Effet:
+  - Suppression d'un aller-retour LLM de reformulation avant retrieval.
+  - Gain direct sur le TTFB (time-to-first-token).
+
+3) AVANT / APRES (MESURES)
+
+3.1 Mesures avant optimisation stream
+- Question longue:
+  - first_token ~5.98s (limite)
+  - variations possibles au-dessus selon charge/reseau/provider.
+
+3.2 Mesures apres optimisation stream
+- Runs de verification:
+  - run1: 2.238s
+  - run2: 2.198s
+  - run3: 2.330s
+  - run4: 2.580s
+- Resultat:
+  - Premier token stabilise autour de ~2.2s a ~2.6s.
+  - Objectif < 6s atteint avec marge.
+
+4) IMPACT SUR LA "PERSPICACITE" (PERTINENCE/FINESSE)
+
+4.1 Impact positif
+- Reponse percue plus reactive par l'utilisateur.
+- Demarrage quasi immediat, utile pour mobile et questions longues.
+
+4.2 Compromis techniques
+- Contexte RAG plus court (3-4 chunks en stream):
+  - Risque leger de perdre certaines nuances rares presentes dans des chunks non retenus.
+- Rewrite desactive en stream:
+  - Moins de reformulation juridique automatique avant retrieval.
+  - Peut reduire legerement la recall sur certaines questions mal formulees.
+
+4.3 Pourquoi le compromis reste acceptable
+- RAG reste actif (il n'a pas ete retire).
+- Les sources principales restent injectees.
+- Le gain de latence est majeur par rapport a la perte potentielle de rappel.
+- Le endpoint /chat (non-stream) garde un comportement plus "complet" pour les cas qui privilegient l'exhaustivite.
+
+5) RESUME EXECUTIF
+- Avant: latence premier token trop proche/au-dessus de la cible.
+- Apres: premier token ~2-3s en regime normal sur question longue.
+- Cout: leger compromis potentiel de rappel documentaire en mode stream rapide.
+- Etat final: objectif operationnel atteint pour l'experience utilisateur.
+

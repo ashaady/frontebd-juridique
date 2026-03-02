@@ -87,6 +87,12 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "travail": (
         "droit du travail",
         "code du travail",
+        "conge",
+        "conges",
+        "conges payes",
+        "repos hebdomadaire",
+        "temps de travail",
+        "indemnite de conges",
         "licenciement",
         "salaire",
         "employeur",
@@ -370,7 +376,7 @@ def _contains_prefixed_near_miss(text: str, canonical_ref: str) -> bool:
 
 def _contains_plain_article_exact(text: str, number: str) -> bool:
     pattern = re.compile(
-        rf"\b(?:article|art\.?)\s+{re.escape(number)}\b"
+        rf"\b(?:article|art\.?)\s+(?:[A-Za-z]\s*\.?\s*)?{re.escape(number)}\b"
         rf"(?!\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies)\b)"
         rf"(?!\s*[-/.]\s*\d)"
         rf"(?![A-Za-z0-9])",
@@ -606,8 +612,9 @@ def filter_candidates_by_query_domains(
     if filtered:
         return filtered, True, query_domains, in_domain_count
 
-    # Strict policy: never fallback to out-domain chunks.
-    return [], True, query_domains, in_domain_count
+    # Robust fallback: if domain inference is too strict, keep top-ranked candidates
+    # instead of returning an empty set (which harms answer quality).
+    return candidate_list[:top_k], True, query_domains, in_domain_count
 
 
 def select_chunks_adaptive(
@@ -1042,10 +1049,12 @@ class FaissRetriever:
                             token_overlap = sum(
                                 1 for token in legal_domain_tokens if token in source_text
                             )
-                            if len(legal_domain_tokens) <= 1 and token_overlap >= 1:
-                                score += min(0.12, token_overlap * 0.06)
+                            if token_overlap >= 2:
+                                score += min(0.24, token_overlap * 0.08)
+                            elif token_overlap == 1:
+                                score += 0.06
                             else:
-                                score -= 0.35
+                                score -= 0.25
                     matched[ref].append((score, idx))
 
         results: dict[ArticleRef, list[RetrievedChunk]] = {}
@@ -1377,6 +1386,9 @@ def format_retrieval_context(
             block = block[:max_chars]
         context_parts.append(block)
         used_chars += len(block)
-        used_sources.append(chunk.to_source_dict())
+        source_dict = chunk.to_source_dict()
+        # Keep a short excerpt for post-generation citation validation.
+        source_dict["excerpt"] = snippet[:1200]
+        used_sources.append(source_dict)
 
     return "\n".join(context_parts).strip(), used_sources

@@ -76,6 +76,10 @@ def _extract_completion_text(message: Any) -> str:
 
 
 _SOURCE_CITATION_RE = re.compile(r"\[source\s+(\d+)\]", re.IGNORECASE)
+_ARTICLE_MENTION_RE = re.compile(
+    r"\b(?:l['’]\s*)?(?:article|art\.?)\s*(?:[a-z]\s*)?\d+[a-z]?(?:-\d+)?\b",
+    re.IGNORECASE,
+)
 _CODE_FENCE_BLOCK_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
 _CODE_FENCE_CAPTURE_RE = re.compile(r"```(?:\s*([a-zA-Z0-9_+-]+))?\s*\n?([\s\S]*?)\n?```", re.MULTILINE)
 _PROGRAMMING_LINE_RE = re.compile(
@@ -119,6 +123,193 @@ def _check_citation_underuse(
         return rag_note, False
     updated_note = _append_rag_note(rag_note, "citation-underuse")
     return updated_note, True
+
+
+def _public_rag_sources(rag_sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    public_sources: list[dict[str, Any]] = []
+    for source in rag_sources:
+        if not isinstance(source, dict):
+            continue
+        public_source = dict(source)
+        # Internal field used only for backend citation checks.
+        public_source.pop("excerpt", None)
+        public_sources.append(public_source)
+    return public_sources
+
+
+_CITATION_MATCH_STOPWORDS = {
+    "les",
+    "des",
+    "une",
+    "dans",
+    "avec",
+    "pour",
+    "par",
+    "sur",
+    "aux",
+    "est",
+    "sont",
+    "que",
+    "qui",
+    "pas",
+    "plus",
+    "moins",
+    "dans",
+    "leur",
+    "leurs",
+    "cette",
+    "cet",
+    "celles",
+    "ceux",
+    "vous",
+    "nous",
+    "elle",
+    "elles",
+    "ils",
+    "ainsi",
+    "donc",
+    "selon",
+    "article",
+    "articles",
+    "source",
+}
+
+
+def _normalize_for_citation_match(text: str) -> str:
+    lowered = unicodedata.normalize("NFKD", text.lower())
+    ascii_like = "".join(ch for ch in lowered if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", ascii_like).strip()
+
+
+def _tokenize_for_citation_match(text: str) -> set[str]:
+    normalized = _normalize_for_citation_match(text)
+    if not normalized:
+        return set()
+    tokens = {token for token in normalized.split(" ") if len(token) >= 3}
+    return {token for token in tokens if token not in _CITATION_MATCH_STOPWORDS}
+
+
+def _sanitize_citations_against_sources(
+    answer: str,
+    rag_sources: list[dict[str, Any]],
+    *,
+    min_overlap_ratio: float = 0.12,
+) -> tuple[str, list[dict[str, Any]], bool]:
+    if not answer.strip():
+        return answer, rag_sources, False
+
+    source_text_by_rank: dict[int, str] = {}
+    filtered_sources: list[dict[str, Any]] = []
+    for source in rag_sources:
+        if not isinstance(source, dict):
+            continue
+        rank_raw = source.get("rank")
+        try:
+            rank = int(rank_raw)
+        except (TypeError, ValueError):
+            continue
+        excerpt = str(source.get("excerpt") or "").strip()
+        if not excerpt:
+            excerpt = str(source.get("citation") or "").strip()
+        if excerpt:
+            source_text_by_rank[rank] = excerpt
+        filtered_sources.append(source)
+
+    if not source_text_by_rank:
+        return answer, rag_sources, False
+
+    updated_answer = answer
+    changed = False
+
+    # Drop citations that reference unknown source ranks.
+    known_ranks = set(source_text_by_rank.keys())
+    for cited_rank in _distinct_source_citations(updated_answer):
+        if cited_rank in known_ranks:
+            continue
+        updated_answer = re.sub(
+            rf"\[source\s+{cited_rank}\]",
+            "",
+            updated_answer,
+            flags=re.IGNORECASE,
+        )
+        changed = True
+
+    # Validate each cited source against the local sentence/line claim text.
+    segments = [seg.strip() for seg in re.split(r"[\n\.!\?;:]+", updated_answer) if seg.strip()]
+    bad_ranks: set[int] = set()
+    for segment in segments:
+        cited_in_segment = _distinct_source_citations(segment)
+        if not cited_in_segment:
+            continue
+        claim_text = _SOURCE_CITATION_RE.sub(" ", segment)
+        claim_tokens = _tokenize_for_citation_match(claim_text)
+        if not claim_tokens:
+            continue
+        for rank in cited_in_segment:
+            source_tokens = _tokenize_for_citation_match(source_text_by_rank.get(rank, ""))
+            if not source_tokens:
+                bad_ranks.add(rank)
+                continue
+            overlap = len(claim_tokens.intersection(source_tokens)) / max(1, len(claim_tokens))
+            if overlap < min_overlap_ratio:
+                bad_ranks.add(rank)
+
+    for rank in sorted(bad_ranks):
+        before = updated_answer
+        updated_answer = re.sub(
+            rf"\[source\s+{rank}\]",
+            "",
+            updated_answer,
+            flags=re.IGNORECASE,
+        )
+        if updated_answer != before:
+            changed = True
+
+    updated_answer = re.sub(r"\s{2,}", " ", updated_answer).replace(" .", ".").strip()
+    if updated_answer != answer:
+        changed = True
+
+    kept_citations = _distinct_source_citations(updated_answer)
+    if kept_citations:
+        kept_sources = []
+        for source in filtered_sources:
+            try:
+                rank = int(source.get("rank"))
+            except (TypeError, ValueError):
+                continue
+            if rank in kept_citations:
+                kept_sources.append(source)
+    else:
+        kept_sources = []
+
+    if len(kept_sources) != len(rag_sources):
+        changed = True
+    return updated_answer, kept_sources, changed
+
+
+def _sanitize_unbacked_article_mentions(answer: str) -> tuple[str, bool]:
+    if not answer.strip():
+        return answer, False
+    changed = False
+    # Process by sentence-like segments so one sourced sentence does not mask
+    # another unsourced sentence on the same line.
+    parts = re.split(r"([\.!\?;\n])", answer)
+    rebuilt: list[str] = []
+    for idx in range(0, len(parts), 2):
+        segment = parts[idx]
+        delimiter = parts[idx + 1] if idx + 1 < len(parts) else ""
+        updated_segment = segment
+        if _ARTICLE_MENTION_RE.search(segment) and not _SOURCE_CITATION_RE.search(segment):
+            updated_segment = _ARTICLE_MENTION_RE.sub(
+                "Une disposition legale applicable (numero d'article non confirme dans le contexte)",
+                segment,
+            )
+            changed = True
+        rebuilt.append(updated_segment)
+        if delimiter:
+            rebuilt.append(delimiter)
+    cleaned = "".join(rebuilt)
+    return cleaned, changed
 
 
 def _strip_programming_artifacts(text: str) -> tuple[str, bool]:
@@ -261,9 +452,10 @@ RAG_SYSTEM_INSTRUCTIONS = (
     "Priorise le CONTEXTE RAG fourni comme base principale.\n"
     "Ne mentionne jamais le niveau de confiance interne (LOW, MEDIUM, HIGH) dans la reponse.\n"
     "Si tu cites un article ou une loi, ecris-le explicitement (ex: Article 55) dans la reponse.\n"
-    "Quand une source RAG supporte cet article, ajoute la reference [source X].\n"
-    "Si un article est mentionne par raisonnement interne et n'apparait pas clairement dans les sources RAG,\n"
-    "marque-le comme 'a verifier sur texte officiel' et n'invente pas de citation [source X].\n"
+    "Toute affirmation juridique substantielle doit etre rattachee a au moins une [source X] du contexte.\n"
+    "N'associe jamais un numero d'article a un contenu qui n'apparait pas clairement dans la source citee.\n"
+    "Si l'article exact n'est pas explicite dans le contexte, n'ecris pas son numero.\n"
+    "A la place, formule prudemment 'base legale non explicite dans le contexte fourni'.\n"
     "Quand au moins 3 sources sont fournies, synthetise au moins 3 sources distinctes.\n"
     "Si moins de 3 sources sont disponibles, dis-le explicitement et reponds avec ce qui est disponible.\n"
     "Tu peux faire un raisonnement juridique simple en t'appuyant sur ton entrainement interne\n"
@@ -278,9 +470,10 @@ RAG_SYSTEM_INSTRUCTIONS = (
 
 RAG_NO_CONTEXT_RESPONSE = (
     "Tu es un assistant juridique francophone specialise en droit senegalais.\n"
-    "Aucun contexte documentaire fiable n'est disponible pour cette question.\n"
-    "Reponds honnetement que l'information n'est pas disponible dans la base actuelle,\n"
-    "sans inventer de contenu juridique, puis recommande de verifier le texte officiel.\n"
+    "Le contexte documentaire exploitable est insuffisant pour citer des articles de facon fiable.\n"
+    "Fournis quand meme une reponse utile, claire et prudente a partir des principes juridiques generaux.\n"
+    "N'invente ni numero d'article, ni sanction, ni citation [source X].\n"
+    "Si un point depend d'un texte precis non present, indique: 'base legale non explicite dans le contexte'.\n"
     "Format de sortie obligatoire: texte brut uniquement, sans markdown ni caracteres de balisage.\n"
 )
 
@@ -332,17 +525,25 @@ RAG_RETRIEVAL_OVERFETCH_FACTOR = 4
 RAG_QUERY_REWRITE_SYSTEM_INSTRUCTIONS = (
     "Tu es un assistant de reformulation pour la recherche documentaire juridique.\n"
     "Objectif: transformer la question utilisateur en requete RAG precise, en francais, "
-    "avec synonymes juridiques utiles (Senegal/OHADA) sans changer l'intention.\n"
+    "sans changer l'intention.\n"
     "Regles:\n"
     "- La requete finale doit etre STRICTEMENT en francais.\n"
     "- N'utilise pas d'anglais, sauf sigle officiel ou nom propre.\n"
+    "- Determine d'abord le domaine juridique principal de la question.\n"
+    "- Ajoute obligatoirement une ancre de domaine explicite a la requete.\n"
+    "- Exemples d'ancres: 'code du travail senegal', 'code de la famille senegal', "
+    "'code penal senegal', 'code de procedure civile senegal', "
+    "'code general des impots senegal', 'ohada acte uniforme'.\n"
+    "- Si la question vise un sous-theme, ajoute aussi un mot-cle thematique utile "
+    "(ex: 'chapitre conges', 'rupture contrat', 'indemnite de conges').\n"
+    "- N'ajoute jamais des domaines hors sujet (ex: ne pas ajouter 'ohada' pour une question travail).\n"
     "- Retourne uniquement un JSON valide sur une seule ligne.\n"
     "- Format exact: {\"query\":\"...\"}\n"
-    "- La valeur `query` doit contenir la question reformulee et enrichie en termes juridiques.\n"
+    "- La valeur `query` doit contenir la question reformulee + l'ancre domaine + mot-cle utile.\n"
     "- Si la question est une demande de definition simple (ex: 'c quoi ...', 'definition ...', "
     "'exemple ...'), retourne une requete courte de type 'definition ...' sans sur-enrichissement.\n"
     "- N'ajoute aucune explication, aucun markdown, aucun commentaire.\n"
-    "- Maximum 40 mots.\n"
+    "- Maximum 55 mots.\n"
 )
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -393,6 +594,10 @@ def _definition_rewrite_candidate(original_query: str) -> str | None:
         subject = _LEADING_DETERMINER_RE.sub("", subject).strip()
         if not subject:
             subject = query
+        # Keep definition shortcut only for concise concept queries.
+        subject_tokens = [token for token in re.split(r"\s+", _strip_accents(subject).lower()) if token]
+        if len(subject_tokens) > 8:
+            return None
         return _normalize_spaces(f"definition {subject}")
 
     # Short concept queries (e.g. "contrat de travail") should remain concise.
@@ -405,6 +610,102 @@ def _definition_rewrite_candidate(original_query: str) -> str | None:
 
 def _is_definition_question(query: str) -> bool:
     return _definition_rewrite_candidate(query) is not None
+
+
+_REWRITE_DOMAIN_ANCHORS: list[tuple[tuple[str, ...], str]] = [
+    (
+        (
+            "travail",
+            "licenciement",
+            "salaire",
+            "conge",
+            "conges",
+            "conges payes",
+            "preavis",
+            "employeur",
+            "employe",
+            "contrat de travail",
+        ),
+        "code du travail senegal",
+    ),
+    (
+        ("famille", "mariage", "divorce", "filiation", "succession"),
+        "code de la famille senegal",
+    ),
+    (
+        ("penal", "crime", "delit", "contravention", "infraction", "peine"),
+        "code penal senegal",
+    ),
+    (
+        ("procedure penale", "garde a vue", "opj", "mandat de depot"),
+        "code de procedure penale senegal",
+    ),
+    (
+        ("procedure civile", "cpc", "execution", "saisie"),
+        "code de procedure civile senegal",
+    ),
+    (
+        ("impot", "fiscal", "taxe", "douane", "cgi"),
+        "code general des impots senegal",
+    ),
+    (
+        ("ohada", "acte uniforme", "societes commerciales", "suretes"),
+        "ohada acte uniforme",
+    ),
+]
+
+_REWRITE_TOPIC_HINTS: list[tuple[tuple[str, ...], str]] = [
+    (("conge", "conges", "conges payes"), "chapitre conges"),
+    (("licenciement", "rupture"), "rupture contrat"),
+    (("indemnite", "dommages et interets"), "indemnites"),
+]
+
+
+def _infer_rewrite_domain_anchor(query: str) -> str | None:
+    normalized = _strip_accents(query).lower()
+    for keywords, anchor in _REWRITE_DOMAIN_ANCHORS:
+        if any(keyword in normalized for keyword in keywords):
+            return anchor
+    return None
+
+
+def _infer_rewrite_topic_hint(query: str) -> str | None:
+    normalized = _strip_accents(query).lower()
+    for keywords, hint in _REWRITE_TOPIC_HINTS:
+        if any(keyword in normalized for keyword in keywords):
+            return hint
+    return None
+
+
+def _enforce_rewrite_anchor(original_query: str, rewritten_query: str) -> str:
+    rewritten = _normalize_spaces(rewritten_query)
+    if not rewritten:
+        return rewritten
+
+    original_norm = _strip_accents(original_query).lower()
+    rewritten_norm = _strip_accents(rewritten).lower()
+
+    anchor = _infer_rewrite_domain_anchor(original_query)
+    if anchor:
+        anchor_norm = _strip_accents(anchor).lower()
+        if anchor_norm not in rewritten_norm:
+            rewritten = _normalize_spaces(f"{rewritten} {anchor}")
+            rewritten_norm = _strip_accents(rewritten).lower()
+        # Remove obvious cross-domain drift when user did not ask it.
+        if "ohada" in rewritten_norm and "ohada" not in original_norm and "travail" in anchor_norm:
+            rewritten = _normalize_spaces(re.sub(r"\bohada\b", " ", rewritten, flags=re.IGNORECASE))
+            rewritten_norm = _strip_accents(rewritten).lower()
+
+    topic_hint = _infer_rewrite_topic_hint(original_query)
+    if topic_hint:
+        topic_norm = _strip_accents(topic_hint).lower()
+        if topic_norm not in rewritten_norm:
+            rewritten = _normalize_spaces(f"{rewritten} {topic_hint}")
+
+    tokens = [token for token in rewritten.split(" ") if token]
+    if len(tokens) > 55:
+        rewritten = " ".join(tokens[:55])
+    return rewritten
 
 
 def _is_small_talk_query(query: str) -> bool:
@@ -504,16 +805,17 @@ async def _rewrite_query_for_rag(
     original_query: str,
     rewrite_enabled_override: bool | None = None,
 ) -> tuple[str, str | None]:
+    if rewrite_enabled_override is None and not settings.rag_query_rewrite_enabled:
+        return original_query, "query-rewrite-disabled"
     if rewrite_enabled_override is False:
         return original_query, "query-rewrite-request-disabled"
-    if not settings.rag_query_rewrite_enabled:
-        return original_query, None
 
-    definition_candidate = _definition_rewrite_candidate(original_query)
-    if definition_candidate:
-        return definition_candidate, "query-rewrite-definition-intent"
-    if _should_skip_query_rewrite(original_query):
-        return original_query, "query-rewrite-skip-explicit-query"
+    definition_query = _definition_rewrite_candidate(original_query)
+    if definition_query:
+        anchored_definition_query = _enforce_rewrite_anchor(original_query, definition_query)
+        if anchored_definition_query != definition_query:
+            return anchored_definition_query, "query-rewrite-definition-intent-anchor"
+        return definition_query, "query-rewrite-definition-intent"
 
     rewrite_model = settings.rag_query_rewrite_model or settings.llm_model
     rewrite_messages = [
@@ -529,25 +831,21 @@ async def _rewrite_query_for_rag(
     if settings.llm_provider == "nvidia":
         kwargs["extra_body"] = {"chat_template_kwargs": {"thinking": False}}
 
-    try:
-        completion = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=rewrite_model,
-                messages=rewrite_messages,
-                **kwargs,
-            ),
-            timeout=settings.rag_query_rewrite_timeout_sec,
-        )
-    except asyncio.TimeoutError:
-        return original_query, "query-rewrite-timeout"
-    except Exception as exc:  # noqa: BLE001
-        return original_query, f"query-rewrite-fallback={type(exc).__name__}"
+    completion = await client.chat.completions.create(
+        model=rewrite_model,
+        messages=rewrite_messages,
+        **kwargs,
+    )
 
     rewritten_content = ""
     if getattr(completion, "choices", None):
         rewritten_content = _extract_completion_text(getattr(completion.choices[0], "message", None))
 
     rewritten_query, status = _extract_rewritten_query(rewritten_content, original_query)
+    anchored_query = _enforce_rewrite_anchor(original_query, rewritten_query)
+    if anchored_query != rewritten_query:
+        rewritten_query = anchored_query
+        status = f"{status}-anchor"
     return rewritten_query, status
 
 
@@ -686,6 +984,8 @@ async def _prepare_messages_with_rag(
     rewrite_enabled_override: bool | None = None,
     workspace_only: bool = False,
     workspace_file_ids: list[str] | None = None,
+    rag_target_min_chunks_override: int | None = None,
+    rag_target_max_chunks_override: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
     if not settings.rag_enabled:
         return messages, [], None, None
@@ -750,12 +1050,20 @@ async def _prepare_messages_with_rag(
     allowed_workspace_file_ids = _normalize_workspace_file_ids(workspace_file_ids)
     direct_workspace_chunks: list[Any] = []
     direct_workspace_chunk_count = 0
+    effective_target_max_chunks = settings.rag_target_max_chunks
+    if isinstance(rag_target_max_chunks_override, int) and rag_target_max_chunks_override > 0:
+        effective_target_max_chunks = min(settings.rag_target_max_chunks, rag_target_max_chunks_override)
+    effective_target_min_chunks = settings.rag_target_min_chunks
+    if isinstance(rag_target_min_chunks_override, int) and rag_target_min_chunks_override > 0:
+        effective_target_min_chunks = min(effective_target_max_chunks, rag_target_min_chunks_override)
+    if effective_target_min_chunks > effective_target_max_chunks:
+        effective_target_min_chunks = effective_target_max_chunks
 
     if allowed_workspace_file_ids:
         try:
             direct_workspace_chunks = get_workspace_rag_index().get_chunks_for_files(
                 sorted(allowed_workspace_file_ids),
-                max_chunks=max(settings.rag_target_max_chunks * 4, 32),
+                max_chunks=max(effective_target_max_chunks * 4, 32),
             )
             direct_workspace_chunk_count = len(direct_workspace_chunks)
         except Exception as exc:  # noqa: BLE001
@@ -776,7 +1084,7 @@ async def _prepare_messages_with_rag(
             settings.rag_top_k,
             settings.rag_top_k * RAG_RETRIEVAL_OVERFETCH_FACTOR,
             reranker_pool_size,
-            settings.rag_target_max_chunks,
+            effective_target_max_chunks,
         )
         # Recherche RAG avec la question (eventuellement reformulee)
         retrieved_candidates = (
@@ -788,14 +1096,18 @@ async def _prepare_messages_with_rag(
                 candidate_pool_size=candidate_pool_size,
             )
         )
-        workspace_candidates = get_workspace_rag_index().search(
-            query=retrieval_query,
-            top_k=max(settings.rag_target_max_chunks, settings.rag_top_k),
-        )
-        workspace_candidates = _filter_workspace_candidates_by_file_ids(
-            workspace_candidates,
-            allowed_workspace_file_ids,
-        )
+        include_workspace_candidates = workspace_only or bool(allowed_workspace_file_ids)
+        if include_workspace_candidates:
+            workspace_candidates = get_workspace_rag_index().search(
+                query=retrieval_query,
+                top_k=max(effective_target_max_chunks, settings.rag_top_k),
+            )
+            workspace_candidates = _filter_workspace_candidates_by_file_ids(
+                workspace_candidates,
+                allowed_workspace_file_ids,
+            )
+        else:
+            workspace_candidates = []
         workspace_candidate_count = len(workspace_candidates)
         # Recherche exacte des articles mentionnes dans la query originale
         exact_matches_by_ref = (
@@ -804,7 +1116,7 @@ async def _prepare_messages_with_rag(
             else retriever.find_exact_article_matches(
                 query=original_query,
                 refs=article_refs,
-                per_ref_limit=4,
+                per_ref_limit=12,
             )
         )
         exact_candidates: list[Any] = []
@@ -826,7 +1138,7 @@ async def _prepare_messages_with_rag(
                 top_k=candidate_pool_size,
                 neutral_fallback_max=settings.rag_neutral_fallback_max,
             )
-            if workspace_candidates:
+            if include_workspace_candidates and workspace_candidates:
                 # Preserve workspace chunks for user-provided documents while keeping strict
                 # domain filtering for indexed legal corpus.
                 domain_filtered_candidates = _merge_unique_chunks(
@@ -860,7 +1172,7 @@ async def _prepare_messages_with_rag(
                 ranked_candidates = pre_ranked[:candidate_pool_size]
 
         if workspace_only:
-            selected_chunks = ranked_candidates[: max(1, settings.rag_target_max_chunks)]
+            selected_chunks = ranked_candidates[: max(1, effective_target_max_chunks)]
             threshold_final = threshold_start
             adaptive_iterations = 0
             neutral_added = 0
@@ -872,8 +1184,8 @@ async def _prepare_messages_with_rag(
                     min_score_threshold=settings.rag_min_score_threshold,
                     threshold_floor=settings.rag_adaptive_threshold_floor,
                     threshold_step=settings.rag_adaptive_threshold_step,
-                    target_min=settings.rag_target_min_chunks,
-                    target_max=settings.rag_target_max_chunks,
+                    target_min=effective_target_min_chunks,
+                    target_max=effective_target_max_chunks,
                     neutral_fallback_max=settings.rag_neutral_fallback_max,
                     article_refs=article_refs,
                     exact_matches_by_ref=exact_matches_by_ref_for_selection,
@@ -890,16 +1202,16 @@ async def _prepare_messages_with_rag(
                     ranked_chunks=selected_chunks,
                     article_refs=article_refs,
                     exact_matches_by_ref=exact_matches_by_ref_for_selection,
-                    top_k=settings.rag_target_max_chunks,
+                    top_k=effective_target_max_chunks,
                 )
-                if len(selected_chunks) > settings.rag_target_max_chunks:
-                    selected_chunks = selected_chunks[: settings.rag_target_max_chunks]
+                if len(selected_chunks) > effective_target_max_chunks:
+                    selected_chunks = selected_chunks[: effective_target_max_chunks]
 
-        if not workspace_only and allowed_workspace_file_ids and workspace_candidates:
+        if not workspace_only and include_workspace_candidates and allowed_workspace_file_ids and workspace_candidates:
             pinned_workspace_chunks = workspace_candidates[: min(3, len(workspace_candidates))]
             selected_chunks = _merge_unique_chunks(pinned_workspace_chunks + selected_chunks)
-            if len(selected_chunks) > settings.rag_target_max_chunks:
-                selected_chunks = selected_chunks[: settings.rag_target_max_chunks]
+            if len(selected_chunks) > effective_target_max_chunks:
+                selected_chunks = selected_chunks[: effective_target_max_chunks]
         if direct_workspace_chunks:
             if workspace_only:
                 selected_chunks = direct_workspace_chunks
@@ -944,7 +1256,7 @@ async def _prepare_messages_with_rag(
         rag_notes.append(f"threshold_final={threshold_final:.2f}")
         rag_notes.append(f"selected_chunks={len(selected_chunks)}")
         rag_notes.append(
-            f"target_range={settings.rag_target_min_chunks}-{settings.rag_target_max_chunks}"
+            f"target_range={effective_target_min_chunks}-{effective_target_max_chunks}"
         )
         rag_notes.append(f"workspace_candidates={workspace_candidate_count}")
         if allowed_workspace_file_ids:
@@ -1024,7 +1336,7 @@ async def _prepare_messages_with_rag(
     rag_notes.append(f"threshold_start={threshold_start:.2f}")
     rag_notes.append(f"threshold_final={threshold_final:.2f}")
     rag_notes.append(
-        f"target_range={settings.rag_target_min_chunks}-{settings.rag_target_max_chunks}"
+        f"target_range={effective_target_min_chunks}-{effective_target_max_chunks}"
     )
     rag_notes.append(f"selected_chunks={len(selected_chunks)}")
     rag_notes.append(f"workspace_candidates={workspace_candidate_count}")
@@ -1369,6 +1681,15 @@ async def chat(payload: ChatRequest):
         answer, answer_sanitized = _sanitize_generated_answer(answer)
         if answer_sanitized:
             rag_note = _append_rag_note(rag_note, "answer-sanitized")
+        answer, rag_sources, citations_sanitized = _sanitize_citations_against_sources(
+            answer,
+            rag_sources,
+        )
+        if citations_sanitized:
+            rag_note = _append_rag_note(rag_note, "citation-sanitized")
+        answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(answer)
+        if article_mentions_sanitized:
+            rag_note = _append_rag_note(rag_note, "article-mention-sanitized")
 
     if is_act_generation_mode and (not answer or _is_rag_note_like_text(answer)):
         fallback_payload = {
@@ -1397,7 +1718,7 @@ async def chat(payload: ChatRequest):
         "finish_reason": finish_reason,
         "rag_enabled": should_use_rag,
         "rag_source_count": len(rag_sources),
-        "rag_sources": rag_sources,
+        "rag_sources": _public_rag_sources(rag_sources),
     }
     if citation_underuse:
         response_payload["citation_underuse"] = True
@@ -1423,6 +1744,8 @@ async def chat(payload: ChatRequest):
 async def chat_stream(payload: ChatRequest):
     request_started = monotonic()
     input_messages = [message.model_dump() for message in payload.messages]
+    stream_fast_target_min = 8
+    stream_fast_target_max = 10
     should_use_rag = settings.rag_enabled and payload.use_rag is not False
     if should_use_rag:
         llm_messages, rag_sources, rag_error, rag_note = await _prepare_messages_with_rag(
@@ -1430,6 +1753,8 @@ async def chat_stream(payload: ChatRequest):
             rewrite_enabled_override=payload.rag_query_rewrite,
             workspace_only=payload.workspace_only,
             workspace_file_ids=payload.workspace_file_ids,
+            rag_target_min_chunks_override=stream_fast_target_min,
+            rag_target_max_chunks_override=stream_fast_target_max,
         )
     else:
         llm_messages = input_messages
@@ -1466,7 +1791,7 @@ async def chat_stream(payload: ChatRequest):
             "model": settings.llm_model,
             "rag_enabled": should_use_rag,
             "rag_source_count": len(rag_sources),
-            "rag_sources": rag_sources,
+            "rag_sources": _public_rag_sources(rag_sources),
         }
         if rag_error:
             meta_payload["rag_error"] = rag_error
@@ -1507,15 +1832,31 @@ async def chat_stream(payload: ChatRequest):
                         sanitized_answer, answer_sanitized = _sanitize_generated_answer(current_answer)
                         if answer_sanitized:
                             yield _sse("replace", {"text": sanitized_answer})
+                        sanitized_answer, final_sources, citations_sanitized = _sanitize_citations_against_sources(
+                            sanitized_answer,
+                            rag_sources,
+                        )
+                        if citations_sanitized:
+                            yield _sse("replace", {"text": sanitized_answer})
+                        sanitized_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(
+                            sanitized_answer
+                        )
+                        if article_mentions_sanitized:
+                            yield _sse("replace", {"text": sanitized_answer})
                         final_rag_note = _append_rag_note(stream_rag_note, "loop-guard-stop")
                         if answer_sanitized:
                             final_rag_note = _append_rag_note(final_rag_note, "answer-sanitized")
+                        if citations_sanitized:
+                            final_rag_note = _append_rag_note(final_rag_note, "citation-sanitized")
+                        if article_mentions_sanitized:
+                            final_rag_note = _append_rag_note(final_rag_note, "article-mention-sanitized")
                         final_rag_note, citation_underuse = _check_citation_underuse(
                             answer=sanitized_answer,
-                            rag_source_count=len(rag_sources),
+                            rag_source_count=len(final_sources),
                             rag_note=final_rag_note,
                         )
                         done_payload: dict[str, Any] = {"finish_reason": "loop_guard_stop"}
+                        done_payload["rag_sources"] = _public_rag_sources(final_sources)
                         if final_rag_note:
                             done_payload["rag_note"] = final_rag_note
                         if citation_underuse:
@@ -1530,12 +1871,26 @@ async def chat_stream(payload: ChatRequest):
                     if answer_sanitized:
                         yield _sse("replace", {"text": final_answer})
                         stream_rag_note = _append_rag_note(stream_rag_note, "answer-sanitized")
+                    final_answer, final_sources, citations_sanitized = _sanitize_citations_against_sources(
+                        final_answer,
+                        rag_sources,
+                    )
+                    if citations_sanitized:
+                        yield _sse("replace", {"text": final_answer})
+                        stream_rag_note = _append_rag_note(stream_rag_note, "citation-sanitized")
+                    final_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(
+                        final_answer
+                    )
+                    if article_mentions_sanitized:
+                        yield _sse("replace", {"text": final_answer})
+                        stream_rag_note = _append_rag_note(stream_rag_note, "article-mention-sanitized")
                     final_rag_note, citation_underuse = _check_citation_underuse(
                         answer=final_answer,
-                        rag_source_count=len(rag_sources),
+                        rag_source_count=len(final_sources),
                         rag_note=stream_rag_note,
                     )
                     done_payload: dict[str, Any] = {"finish_reason": choice.finish_reason}
+                    done_payload["rag_sources"] = _public_rag_sources(final_sources)
                     if final_rag_note:
                         done_payload["rag_note"] = final_rag_note
                     if citation_underuse:
@@ -1549,12 +1904,24 @@ async def chat_stream(payload: ChatRequest):
             if answer_sanitized:
                 yield _sse("replace", {"text": final_answer})
                 stream_rag_note = _append_rag_note(stream_rag_note, "answer-sanitized")
+            final_answer, final_sources, citations_sanitized = _sanitize_citations_against_sources(
+                final_answer,
+                rag_sources,
+            )
+            if citations_sanitized:
+                yield _sse("replace", {"text": final_answer})
+                stream_rag_note = _append_rag_note(stream_rag_note, "citation-sanitized")
+            final_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(final_answer)
+            if article_mentions_sanitized:
+                yield _sse("replace", {"text": final_answer})
+                stream_rag_note = _append_rag_note(stream_rag_note, "article-mention-sanitized")
             final_rag_note, citation_underuse = _check_citation_underuse(
                 answer=final_answer,
-                rag_source_count=len(rag_sources),
+                rag_source_count=len(final_sources),
                 rag_note=stream_rag_note,
             )
             done_payload = {"finish_reason": "stop"}
+            done_payload["rag_sources"] = _public_rag_sources(final_sources)
             if final_rag_note:
                 done_payload["rag_note"] = final_rag_note
             if citation_underuse:
