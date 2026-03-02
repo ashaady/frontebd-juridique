@@ -558,6 +558,10 @@ _LEGAL_INTENT_HINT_RE = re.compile(
     r"\b(?:droit|code|loi|article|infraction|crime|delit|contravention|contrat|licenciement|travail|bail|succession|ohada|juridique|penal|civil|fiscal)\b",
     re.IGNORECASE,
 )
+_REFERENCE_LOOKUP_QUERY_RE = re.compile(
+    r"\b(?:quel(?:le)?\s+(?:article|texte|loi|code|disposition)|lequel|laquelle|cet?\s+article|ce\s+texte)\b",
+    re.IGNORECASE,
+)
 _SMALL_TALK_EXACT = {
     "bonjour",
     "bonsoir",
@@ -618,6 +622,8 @@ def _definition_rewrite_candidate(original_query: str) -> str | None:
 
     # Protect explicit article/legal reference questions from definition shortcut.
     if _ARTICLE_LIKE_QUERY_RE.search(query):
+        return None
+    if _REFERENCE_LOOKUP_QUERY_RE.search(query):
         return None
 
     if has_definition_prefix:
@@ -833,6 +839,8 @@ def _is_ambiguous_followup_query(query: str) -> bool:
         return False
     if _ARTICLE_LIKE_QUERY_RE.search(normalized):
         return False
+    if _REFERENCE_LOOKUP_QUERY_RE.search(query):
+        return True
 
     tokens = [token for token in re.split(r"\s+", normalized) if token]
     if not tokens:
