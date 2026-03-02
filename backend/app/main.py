@@ -552,6 +552,7 @@ _DEFINITION_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _ARTICLE_LIKE_QUERY_RE = re.compile(r"\b(?:article|art\.?)\s*\d+", re.IGNORECASE)
+_LEADING_FOLLOWUP_RE = re.compile(r"^(?:et|alors|sinon|donc|du coup)\s+", re.IGNORECASE)
 _LEADING_DETERMINER_RE = re.compile(r"^(?:l'|le|la|les|du|de la|de l')\s+", re.IGNORECASE)
 _LEGAL_INTENT_HINT_RE = re.compile(
     r"\b(?:droit|code|loi|article|infraction|crime|delit|contravention|contrat|licenciement|travail|bail|succession|ohada|juridique|penal|civil|fiscal)\b",
@@ -569,6 +570,36 @@ _SMALL_TALK_EXACT = {
     "merci beaucoup",
     "ca va",
     "comment ca va",
+}
+
+_REWRITE_MEMORY_MAX_MESSAGES = 6
+_REWRITE_MEMORY_MAX_LINE_CHARS = 160
+_REWRITE_FOLLOWUP_PREFIXES = (
+    "et ",
+    "et pour",
+    "et si",
+    "et concernant",
+    "dans ce cas",
+    "pour ca",
+    "pour ça",
+    "a ce sujet",
+    "a ce propos",
+    "aussi",
+    "encore",
+    "idem",
+)
+_REWRITE_FOLLOWUP_MARKERS = {
+    "et",
+    "aussi",
+    "encore",
+    "cela",
+    "ceci",
+    "ca",
+    "ça",
+    "idem",
+    "pareil",
+    "meme",
+    "même",
 }
 
 
@@ -591,6 +622,7 @@ def _definition_rewrite_candidate(original_query: str) -> str | None:
 
     if has_definition_prefix:
         subject = _DEFINITION_PREFIX_RE.sub("", query).strip(" .,:;?!-")
+        subject = _LEADING_FOLLOWUP_RE.sub("", subject).strip()
         subject = _LEADING_DETERMINER_RE.sub("", subject).strip()
         if not subject:
             subject = query
@@ -603,7 +635,11 @@ def _definition_rewrite_candidate(original_query: str) -> str | None:
     # Short concept queries (e.g. "contrat de travail") should remain concise.
     tokens = [token for token in re.split(r"\s+", lowered) if token]
     if 1 <= len(tokens) <= 4 and not any(char.isdigit() for char in lowered):
-        return _normalize_spaces(f"definition {query}")
+        compact_query = _normalize_spaces(_LEADING_FOLLOWUP_RE.sub("", query))
+        compact_query = _LEADING_DETERMINER_RE.sub("", compact_query).strip()
+        if not compact_query:
+            compact_query = query
+        return _normalize_spaces(f"definition {compact_query}")
 
     return None
 
@@ -678,6 +714,21 @@ def _infer_rewrite_topic_hint(query: str) -> str | None:
 
 
 def _enforce_rewrite_anchor(original_query: str, rewritten_query: str) -> str:
+    return _enforce_rewrite_anchor_with_lock(
+        original_query,
+        rewritten_query,
+        forced_anchor=None,
+        forced_topic_hint=None,
+    )
+
+
+def _enforce_rewrite_anchor_with_lock(
+    original_query: str,
+    rewritten_query: str,
+    *,
+    forced_anchor: str | None,
+    forced_topic_hint: str | None,
+) -> str:
     rewritten = _normalize_spaces(rewritten_query)
     if not rewritten:
         return rewritten
@@ -685,7 +736,7 @@ def _enforce_rewrite_anchor(original_query: str, rewritten_query: str) -> str:
     original_norm = _strip_accents(original_query).lower()
     rewritten_norm = _strip_accents(rewritten).lower()
 
-    anchor = _infer_rewrite_domain_anchor(original_query)
+    anchor = forced_anchor or _infer_rewrite_domain_anchor(original_query)
     if anchor:
         anchor_norm = _strip_accents(anchor).lower()
         if anchor_norm not in rewritten_norm:
@@ -696,7 +747,7 @@ def _enforce_rewrite_anchor(original_query: str, rewritten_query: str) -> str:
             rewritten = _normalize_spaces(re.sub(r"\bohada\b", " ", rewritten, flags=re.IGNORECASE))
             rewritten_norm = _strip_accents(rewritten).lower()
 
-    topic_hint = _infer_rewrite_topic_hint(original_query)
+    topic_hint = forced_topic_hint or _infer_rewrite_topic_hint(original_query)
     if topic_hint:
         topic_norm = _strip_accents(topic_hint).lower()
         if topic_norm not in rewritten_norm:
@@ -759,6 +810,96 @@ def _normalize_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _normalize_chat_messages_for_rewrite(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    normalized: list[tuple[str, str]] = []
+    for message in messages:
+        role_raw = message.get("role")
+        role = role_raw.strip().lower() if isinstance(role_raw, str) else ""
+        if role not in {"user", "assistant"}:
+            continue
+        content_raw = message.get("content")
+        if not isinstance(content_raw, str):
+            continue
+        content = _normalize_spaces(content_raw)
+        if not content:
+            continue
+        normalized.append((role, content))
+    return normalized
+
+
+def _is_ambiguous_followup_query(query: str) -> bool:
+    normalized = _normalize_spaces(_strip_accents(query).lower())
+    if not normalized:
+        return False
+    if _ARTICLE_LIKE_QUERY_RE.search(normalized):
+        return False
+
+    tokens = [token for token in re.split(r"\s+", normalized) if token]
+    if not tokens:
+        return False
+
+    if len(tokens) <= 8 and any(normalized.startswith(prefix) for prefix in _REWRITE_FOLLOWUP_PREFIXES):
+        return True
+
+    marker_count = sum(1 for token in tokens if token in _REWRITE_FOLLOWUP_MARKERS)
+    if marker_count == 0:
+        return False
+
+    if len(tokens) <= 5:
+        return True
+    if len(tokens) <= 7 and not _LEGAL_INTENT_HINT_RE.search(normalized):
+        return True
+    return False
+
+
+def _build_rewrite_memory_context(
+    messages: list[dict[str, Any]],
+    original_query: str,
+) -> tuple[str, str | None, str | None]:
+    normalized_messages = _normalize_chat_messages_for_rewrite(messages)
+    if not normalized_messages:
+        return "", None, None
+
+    current_query_norm = _normalize_spaces(original_query).lower()
+    history_cutoff = len(normalized_messages)
+    for idx in range(len(normalized_messages) - 1, -1, -1):
+        role, text = normalized_messages[idx]
+        if role != "user":
+            continue
+        if _normalize_spaces(text).lower() == current_query_norm:
+            history_cutoff = idx
+        break
+
+    history = normalized_messages[:history_cutoff]
+    if not history:
+        return "", None, None
+
+    recent_history = history[-_REWRITE_MEMORY_MAX_MESSAGES:]
+    context_lines: list[str] = []
+    for role, text in recent_history:
+        label = "Utilisateur" if role == "user" else "Assistant"
+        context_lines.append(f"{label}: {_clip_for_log(text, _REWRITE_MEMORY_MAX_LINE_CHARS)}")
+    context_text = "\n".join(context_lines)
+
+    history_anchor: str | None = None
+    history_topic_hint: str | None = None
+    for role, text in reversed(history):
+        if role != "user":
+            continue
+        if history_anchor is None:
+            candidate_anchor = _infer_rewrite_domain_anchor(text)
+            if candidate_anchor:
+                history_anchor = candidate_anchor
+        if history_topic_hint is None:
+            candidate_topic = _infer_rewrite_topic_hint(text)
+            if candidate_topic:
+                history_topic_hint = candidate_topic
+        if history_anchor and history_topic_hint:
+            break
+
+    return context_text, history_anchor, history_topic_hint
+
+
 def _extract_rewritten_query(content: str, fallback_query: str) -> tuple[str, str]:
     raw = _normalize_spaces(_CODE_FENCE_RE.sub("", content or ""))
     if not raw:
@@ -803,6 +944,7 @@ def _extract_rewritten_query(content: str, fallback_query: str) -> tuple[str, st
 
 async def _rewrite_query_for_rag(
     original_query: str,
+    messages: list[dict[str, Any]] | None = None,
     rewrite_enabled_override: bool | None = None,
 ) -> tuple[str, str | None]:
     if rewrite_enabled_override is None and not settings.rag_query_rewrite_enabled:
@@ -810,18 +952,76 @@ async def _rewrite_query_for_rag(
     if rewrite_enabled_override is False:
         return original_query, "query-rewrite-request-disabled"
 
+    rewrite_context_text = ""
+    history_anchor = None
+    history_topic_hint = None
+    if messages:
+        rewrite_context_text, history_anchor, history_topic_hint = _build_rewrite_memory_context(
+            messages,
+            original_query,
+        )
+
+    explicit_anchor = _infer_rewrite_domain_anchor(original_query)
+    explicit_topic_hint = _infer_rewrite_topic_hint(original_query)
+    should_lock_to_history = _is_ambiguous_followup_query(original_query)
+    forced_anchor = history_anchor if should_lock_to_history and not explicit_anchor else None
+    forced_topic_hint = (
+        history_topic_hint if should_lock_to_history and not explicit_topic_hint else None
+    )
+
     definition_query = _definition_rewrite_candidate(original_query)
     if definition_query:
-        anchored_definition_query = _enforce_rewrite_anchor(original_query, definition_query)
+        anchored_definition_query = _enforce_rewrite_anchor_with_lock(
+            original_query,
+            definition_query,
+            forced_anchor=forced_anchor,
+            forced_topic_hint=forced_topic_hint,
+        )
+        suffixes: list[str] = []
+        if rewrite_context_text:
+            suffixes.append("memory")
+        if forced_anchor:
+            suffixes.append("domain-lock")
+        if forced_topic_hint:
+            suffixes.append("topic-lock")
         if anchored_definition_query != definition_query:
-            return anchored_definition_query, "query-rewrite-definition-intent-anchor"
-        return definition_query, "query-rewrite-definition-intent"
+            suffixes.append("anchor")
+        status = "query-rewrite-definition-intent"
+        if suffixes:
+            status = f"{status}-{'-'.join(suffixes)}"
+        if anchored_definition_query != definition_query:
+            return anchored_definition_query, status
+        return definition_query, status
 
     rewrite_model = settings.rag_query_rewrite_model or settings.llm_model
-    rewrite_messages = [
+    rewrite_messages: list[dict[str, str]] = [
         {"role": "system", "content": RAG_QUERY_REWRITE_SYSTEM_INSTRUCTIONS},
-        {"role": "user", "content": original_query},
     ]
+    if rewrite_context_text:
+        rewrite_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Contexte recent de la conversation (a utiliser pour conserver le sujet si la question est ambigue):\n"
+                    f"{rewrite_context_text}"
+                ),
+            }
+        )
+
+    continuity_lock: list[str] = []
+    if forced_anchor:
+        continuity_lock.append(f"domaine a conserver: {forced_anchor}")
+    if forced_topic_hint:
+        continuity_lock.append(f"mot-cle thematique a conserver: {forced_topic_hint}")
+    if continuity_lock:
+        rewrite_messages.append(
+            {
+                "role": "user",
+                "content": "Contrainte de continuite: " + " ; ".join(continuity_lock),
+            }
+        )
+
+    rewrite_messages.append({"role": "user", "content": original_query})
     kwargs: dict[str, Any] = {
         "temperature": settings.rag_query_rewrite_temperature,
         "top_p": 1.0,
@@ -842,10 +1042,21 @@ async def _rewrite_query_for_rag(
         rewritten_content = _extract_completion_text(getattr(completion.choices[0], "message", None))
 
     rewritten_query, status = _extract_rewritten_query(rewritten_content, original_query)
-    anchored_query = _enforce_rewrite_anchor(original_query, rewritten_query)
+    anchored_query = _enforce_rewrite_anchor_with_lock(
+        original_query,
+        rewritten_query,
+        forced_anchor=forced_anchor,
+        forced_topic_hint=forced_topic_hint,
+    )
     if anchored_query != rewritten_query:
         rewritten_query = anchored_query
         status = f"{status}-anchor"
+    if rewrite_context_text:
+        status = f"{status}-memory"
+    if forced_anchor:
+        status = f"{status}-domain-lock"
+    if forced_topic_hint:
+        status = f"{status}-topic-lock"
     return rewritten_query, status
 
 
@@ -1000,7 +1211,8 @@ async def _prepare_messages_with_rag(
         return messages, [], None, " | ".join(rag_notes)
     retrieval_query, query_rewrite_status = await _rewrite_query_for_rag(
         original_query,
-        rewrite_enabled_override,
+        messages=messages,
+        rewrite_enabled_override=rewrite_enabled_override,
     )
     _emit_rewrite_trace(
         query_rewrite_status or "query-rewrite-disabled",
