@@ -271,6 +271,9 @@ RAG_SYSTEM_INSTRUCTIONS = (
     "N'invente ni faits, ni articles, ni sanctions.\n"
     "Regle speciale: si la question porte sur homosexualite/acte contre nature et que present,\n"
     "cite explicitement l'Article 319 (Loi n 66-16 du 1er fevrier 1966).\n"
+    "Format de sortie obligatoire: texte brut uniquement.\n"
+    "N'utilise jamais de markdown ni de caracteres de balisage (` ``` ** __ # > [ ] ( ) ).\n"
+    "N'ajoute pas de puces markdown; ecris des phrases claires sur des lignes simples.\n"
 )
 
 RAG_NO_CONTEXT_RESPONSE = (
@@ -278,6 +281,7 @@ RAG_NO_CONTEXT_RESPONSE = (
     "Aucun contexte documentaire fiable n'est disponible pour cette question.\n"
     "Reponds honnetement que l'information n'est pas disponible dans la base actuelle,\n"
     "sans inventer de contenu juridique, puis recommande de verifier le texte officiel.\n"
+    "Format de sortie obligatoire: texte brut uniquement, sans markdown ni caracteres de balisage.\n"
 )
 
 DEFINITION_FOCUS_INSTRUCTIONS = (
@@ -305,6 +309,7 @@ ACT_GENERATION_INSTRUCTIONS = (
     "- Toujours terminer par la mention suivante:\n"
     "  'Ce document est un modele genere automatiquement et doit etre verifie par un professionnel du droit avant utilisation.'\n"
     "- Reponse uniquement en francais.\n"
+    "- Format de sortie obligatoire: texte brut uniquement, sans markdown ni caracteres de balisage.\n"
 )
 
 ARTICLE_319_SPECIAL_INSTRUCTIONS = (
