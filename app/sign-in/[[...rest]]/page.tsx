@@ -25,7 +25,8 @@ export default function SignInPage() {
           <div className="mt-6 flex justify-center">
             <SignIn
               appearance={clerkAppearance}
-              forceRedirectUrl="/"
+              forceRedirectUrl="/?new=1"
+              fallbackRedirectUrl="/?new=1"
               path="/sign-in"
               routing="path"
               signUpUrl="/sign-up"

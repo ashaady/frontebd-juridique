@@ -9,6 +9,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
   const rawQuestion = resolvedSearchParams.q;
   const rawAct = resolvedSearchParams.act;
   const rawTemplate = resolvedSearchParams.template;
+  const rawNewSession = resolvedSearchParams.new;
   const initialQuestion =
     typeof rawQuestion === "string" ? rawQuestion : Array.isArray(rawQuestion) ? rawQuestion[0] ?? "" : "";
   const autoOpenActGenerator =
@@ -19,12 +20,17 @@ export default async function HomePage({ searchParams }: HomePageProps) {
       : Array.isArray(rawTemplate)
         ? rawTemplate[0] ?? ""
         : "";
+  const initialStartNewSession =
+    typeof rawNewSession === "string"
+      ? ["1", "true", "yes"].includes(rawNewSession.toLowerCase())
+      : false;
 
   return (
     <ChatWorkspace
       autoOpenActGenerator={autoOpenActGenerator}
       initialQuestion={initialQuestion}
       initialActTemplateId={initialActTemplateId}
+      initialStartNewSession={initialStartNewSession}
     />
   );
 }
