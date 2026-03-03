@@ -58,7 +58,28 @@ Notes:
 - Backend also stores user profile context (`email`, `username`, `display_name`) in `workspace_users`.
 - Backend stores chat Q/A samples in `workspace_guest_qa_logs` for both guest and signed-in users.
   For signed-in users, each row also includes `user_id`, `user_email`, `user_name`, `user_username`.
+- For a clear signed-in audit view (name/email/question/answer), query `workspace_signed_user_qa_logs`.
 - If Supabase is unreachable, backend falls back to local JSON storage.
+
+### Backfill Clerk users to Supabase
+
+If users already registered in Clerk before this sync logic was added, run:
+
+```bash
+python backend/scripts/backfill_clerk_users_to_supabase.py
+```
+
+Requirements:
+- `CLERK_SECRET_KEY` in env
+- `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in env
+
+Useful options:
+
+```bash
+python backend/scripts/backfill_clerk_users_to_supabase.py --dry-run
+python backend/scripts/backfill_clerk_users_to_supabase.py --max-users 500
+python backend/scripts/backfill_clerk_users_to_supabase.py --limit 100
+```
 
 ## 2) Install and run
 

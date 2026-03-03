@@ -111,6 +111,9 @@ create index if not exists workspace_guest_qa_logs_created_idx
 create index if not exists workspace_guest_qa_logs_user_created_idx
   on public.workspace_guest_qa_logs (user_id, created_at desc);
 
+create index if not exists workspace_guest_qa_logs_auth_created_idx
+  on public.workspace_guest_qa_logs (auth_mode, created_at desc);
+
 create or replace view public.workspace_user_history as
 select
   u.user_id,
@@ -130,3 +133,41 @@ group by
   u.display_name,
   u.first_seen_at,
   u.last_seen_at;
+
+create or replace view public.workspace_signed_user_qa_logs as
+select
+  q.id as log_id,
+  q.created_at,
+  q.auth_mode,
+  q.user_id,
+  coalesce(nullif(q.user_name, ''), u.display_name, '') as full_name,
+  split_part(coalesce(nullif(q.user_name, ''), u.display_name, ''), ' ', 1) as first_name,
+  nullif(
+    trim(
+      regexp_replace(
+        coalesce(nullif(q.user_name, ''), u.display_name, ''),
+        '^\S+\s*',
+        ''
+      )
+    ),
+    ''
+  ) as last_name,
+  coalesce(nullif(q.user_email, ''), u.email, '') as email,
+  coalesce(nullif(q.user_username, ''), u.clerk_username, '') as username,
+  q.question,
+  q.answer,
+  q.rag_note,
+  q.finish_reason,
+  q.rag_source_count,
+  q.provider,
+  q.model,
+  q.metadata
+from public.workspace_guest_qa_logs q
+left join public.workspace_users u on u.user_id = q.user_id
+where
+  (
+    q.user_id is not null
+    and btrim(q.user_id) <> ''
+  )
+  or lower(coalesce(q.auth_mode, '')) in ('signed-in', 'authenticated');
+Je

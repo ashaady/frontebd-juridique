@@ -61,6 +61,15 @@ def _workspace_register_user_context(request: Request, user_id: str) -> None:
     )
 
 
+@router.post("/users/register")
+async def workspace_register_user(request: Request):
+    user_id = _workspace_user_id(request)
+    _workspace_register_user_context(request, user_id)
+    if user_id == "anonymous":
+        return {"status": "ignored", "registered": False}
+    return {"status": "ok", "registered": True, "user_id": user_id}
+
+
 @router.get("/consultations")
 async def workspace_get_consultations(request: Request):
     user_id = _workspace_user_id(request)

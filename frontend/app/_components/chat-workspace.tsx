@@ -1577,6 +1577,7 @@ export function ChatWorkspace({
   const signInModalTriggerRef = useRef<HTMLButtonElement | null>(null);
   const actGenerationProgressResetTimerRef = useRef<number | null>(null);
   const hasRestoredSessionFromHistoryRef = useRef(false);
+  const initialTemplateHydratedRef = useRef(false);
 
   const backendBaseUrl = useMemo(() => {
     const raw = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
@@ -1830,6 +1831,24 @@ export function ChatWorkspace({
     setActType(nextTemplate.type);
     setActValues(buildInitialActFormValues(nextTemplate));
   }, [actTemplateMap, actType, initialActTemplateId, resolveActTemplate]);
+
+  useEffect(() => {
+    initialTemplateHydratedRef.current = false;
+  }, [initialActTemplateId]);
+
+  useEffect(() => {
+    const requestedTemplateId = String(initialActTemplateId ?? "").trim();
+    if (!requestedTemplateId || initialTemplateHydratedRef.current) {
+      return;
+    }
+    const template = actTemplateMap.get(requestedTemplateId);
+    if (!template) {
+      return;
+    }
+    setActType(template.type);
+    setActValues(buildInitialActFormValues(template));
+    initialTemplateHydratedRef.current = true;
+  }, [actTemplateMap, initialActTemplateId]);
   const requiredActFields = useMemo(
     () => activeActTemplate.fields.filter((field) => Boolean(field.required)),
     [activeActTemplate.fields]
