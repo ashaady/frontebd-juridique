@@ -50,15 +50,16 @@ SUPABASE_NOTES_TABLE=workspace_notes
 SUPABASE_FILES_TABLE=workspace_files
 SUPABASE_TEMPLATES_TABLE=workspace_templates
 SUPABASE_GUEST_QA_LOGS_TABLE=workspace_guest_qa_logs
+SUPABASE_SIGNED_USER_QA_LOGS_TABLE=workspace_signed_user_qa_logs
 SUPABASE_TIMEOUT_SEC=8
 ```
 
 Notes:
 - Backend automatically scopes workspace data by `X-User-Id` header.
 - Backend also stores user profile context (`email`, `username`, `display_name`) in `workspace_users`.
-- Backend stores chat Q/A samples in `workspace_guest_qa_logs` for both guest and signed-in users.
-  For signed-in users, each row also includes `user_id`, `user_email`, `user_name`, `user_username`.
-- For a clear signed-in audit view (name/email/question/answer), query `workspace_signed_user_qa_logs`.
+- Backend stores guest chat Q/A samples in `workspace_guest_qa_logs`.
+- Backend stores signed-in chat Q/A samples in `workspace_signed_user_qa_logs`.
+- For enriched signed-in audit rows (name/email joined with `workspace_users`), query `workspace_signed_user_qa_logs_enriched`.
 - If Supabase is unreachable, backend falls back to local JSON storage.
 
 ### Backfill Clerk users to Supabase

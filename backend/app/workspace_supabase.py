@@ -76,6 +76,7 @@ class SupabaseWorkspaceConfig:
     files_table: str
     templates_table: str
     guest_qa_logs_table: str
+    signed_user_qa_logs_table: str
     timeout_sec: float
 
 
@@ -118,6 +119,10 @@ class SupabaseWorkspaceStore:
                 os.getenv("SUPABASE_GUEST_QA_LOGS_TABLE"),
                 "workspace_guest_qa_logs",
             ),
+            signed_user_qa_logs_table=_parse_non_empty(
+                os.getenv("SUPABASE_SIGNED_USER_QA_LOGS_TABLE"),
+                "workspace_signed_user_qa_logs",
+            ),
             timeout_sec=_parse_positive_float(
                 os.getenv("SUPABASE_TIMEOUT_SEC", "8"),
                 8.0,
@@ -140,6 +145,7 @@ class SupabaseWorkspaceStore:
             "files_table": self._config.files_table,
             "templates_table": self._config.templates_table,
             "guest_qa_logs_table": self._config.guest_qa_logs_table,
+            "signed_user_qa_logs_table": self._config.signed_user_qa_logs_table,
             "timeout_sec": self._config.timeout_sec,
         }
 
@@ -171,6 +177,7 @@ class SupabaseWorkspaceStore:
     def append_guest_qa_log(self, *, record: dict[str, Any]) -> bool:
         raw_auth_mode = record.get("auth_mode")
         auth_mode = str(raw_auth_mode).strip() if raw_auth_mode is not None else ""
+        auth_mode_lower = auth_mode.lower()
         raw_user_id = record.get("user_id")
         user_id = str(raw_user_id).strip() if raw_user_id is not None else ""
         raw_user_email = record.get("user_email")
@@ -179,11 +186,18 @@ class SupabaseWorkspaceStore:
         user_name = str(raw_user_name).strip() if raw_user_name is not None else ""
         raw_user_username = record.get("user_username")
         user_username = str(raw_user_username).strip() if raw_user_username is not None else ""
+        is_signed_user = bool(user_id) or auth_mode_lower in {"signed-in", "authenticated"}
+        target_table = (
+            self._config.signed_user_qa_logs_table
+            if is_signed_user
+            else self._config.guest_qa_logs_table
+        )
+        normalized_auth_mode = auth_mode or ("signed-in" if is_signed_user else "guest")
         payload = [
             {
                 "created_at": _safe_iso(record.get("created_at")),
-                "auth_mode": auth_mode,
-                "user_id": user_id or None,
+                "auth_mode": normalized_auth_mode,
+                "user_id": user_id if is_signed_user else None,
                 "user_email": user_email or None,
                 "user_name": user_name or None,
                 "user_username": user_username or None,
@@ -200,7 +214,7 @@ class SupabaseWorkspaceStore:
         ]
         self._request_json(
             method="POST",
-            table=self._config.guest_qa_logs_table,
+            table=target_table,
             payload=payload,
             prefer="return=minimal",
         )

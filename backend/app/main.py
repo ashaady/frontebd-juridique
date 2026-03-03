@@ -78,9 +78,7 @@ def _sse(event: str, data: dict) -> str:
 
 def _should_capture_chat_sample(request: Request) -> bool:
     auth_mode = _chat_auth_mode(request)
-    if auth_mode in {"signed-in", "authenticated"}:
-        return False
-    return True
+    return auth_mode in _CHAT_CAPTURE_MODES
 
 
 def _persist_chat_qa_sample(

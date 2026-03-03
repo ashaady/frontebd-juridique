@@ -2187,14 +2187,16 @@ export function ChatWorkspace({
 
     const controller = new AbortController();
     abortRef.current = controller;
+    const resolvedUserId = String(userId ?? user?.id ?? "").trim();
+    const resolvedAuthMode = resolvedUserId || isSignedIn ? "signed-in" : "guest";
 
     try {
       const response = await fetch(`${backendBaseUrl}/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Client-Auth-Mode": isSignedIn ? "signed-in" : "guest",
-          ...(userId ? { "X-User-Id": userId } : {}),
+          "X-Client-Auth-Mode": resolvedAuthMode,
+          ...(resolvedUserId ? { "X-User-Id": resolvedUserId } : {}),
           ...(user?.primaryEmailAddress?.emailAddress
             ? { "X-User-Email": user.primaryEmailAddress.emailAddress }
             : {}),
@@ -2367,7 +2369,17 @@ export function ChatWorkspace({
       abortRef.current = null;
       setIsSending(false);
     }
-  }, [backendBaseUrl, isSending]);
+  }, [
+    backendBaseUrl,
+    isSending,
+    isSignedIn,
+    userId,
+    user?.id,
+    user?.primaryEmailAddress?.emailAddress,
+    user?.fullName,
+    user?.firstName,
+    user?.username,
+  ]);
 
   const pendingDashboardQuestion = initialQuestion.trim();
 
@@ -3182,13 +3194,15 @@ export function ChatWorkspace({
         conversationForPrompt,
         trimmedUserMessage
       );
+      const resolvedUserId = String(userId ?? user?.id ?? "").trim();
+      const resolvedAuthMode = resolvedUserId || isSignedIn ? "signed-in" : "guest";
       try {
         const response = await fetch(`${backendBaseUrl}/chat`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-Client-Auth-Mode": isSignedIn ? "signed-in" : "guest",
-            ...(userId ? { "X-User-Id": userId } : {}),
+            "X-Client-Auth-Mode": resolvedAuthMode,
+            ...(resolvedUserId ? { "X-User-Id": resolvedUserId } : {}),
             ...(user?.primaryEmailAddress?.emailAddress
               ? { "X-User-Email": user.primaryEmailAddress.emailAddress }
               : {}),
@@ -3363,6 +3377,13 @@ export function ChatWorkspace({
       popupChatMessages,
       pushUiMessage,
       requireSignedIn,
+      isSignedIn,
+      userId,
+      user?.id,
+      user?.primaryEmailAddress?.emailAddress,
+      user?.fullName,
+      user?.firstName,
+      user?.username,
     ]
   );
 
