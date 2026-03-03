@@ -36,7 +36,14 @@ export default function RootLayout({
         style={{ backgroundColor: "#112117", color: "#e5e7eb", opacity: 0 }}
         suppressHydrationWarning
       >
-        <ClerkProvider appearance={clerkAppearance} publishableKey={publishableKey}>
+        <ClerkProvider
+          appearance={clerkAppearance}
+          publishableKey={publishableKey}
+          signInForceRedirectUrl="/?new=1"
+          signInFallbackRedirectUrl="/?new=1"
+          signUpForceRedirectUrl="/?new=1"
+          signUpFallbackRedirectUrl="/?new=1"
+        >
           <WorkspaceUserSync />
           <Script id="tailwind-config" strategy="beforeInteractive">{`
           window.tailwind = window.tailwind || {};
