@@ -1,5 +1,5 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 
 const hasClerkKeys = Boolean(
   process.env.CLERK_SECRET_KEY && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
@@ -7,9 +7,22 @@ const hasClerkKeys = Boolean(
 
 const withClerkContextMiddleware = clerkMiddleware();
 
-const passthroughMiddleware = (_request: NextRequest) => NextResponse.next();
+function isNextDataRequest(request: NextRequest): boolean {
+  const urlPath = new URL(request.url).pathname;
+  const isDataPath = /^\/_next\/data\/[^/]+\/.+\.json$/.test(urlPath);
+  const isDataHeader = request.headers.get("x-nextjs-data") === "1";
+  return isDataPath || isDataHeader;
+}
 
-export default hasClerkKeys ? withClerkContextMiddleware : passthroughMiddleware;
+export default function middleware(request: NextRequest, event: NextFetchEvent) {
+  if (isNextDataRequest(request)) {
+    return NextResponse.next();
+  }
+  if (!hasClerkKeys) {
+    return NextResponse.next();
+  }
+  return withClerkContextMiddleware(request, event);
+}
 
 export const config = {
   matcher: [
