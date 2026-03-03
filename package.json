@@ -9,7 +9,7 @@
     "react-dom": "^19.0.0"
   },
   "scripts": {
-    "vercel-build": "npm --prefix frontend install --include=dev --no-audit --no-fund && npm --prefix frontend run build && node scripts/vercel-sync-next-output.mjs",
+    "vercel-build": "npm --prefix frontend install --no-audit --no-fund && npm --prefix frontend run build && node scripts/vercel-sync-next-output.mjs",
     "build": "npm run vercel-build"
   }
 }
