@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { SignUp } from "@clerk/nextjs";
-import { clerkAppearance } from "../_lib/clerk-theme";
+import { clerkAppearance } from "../../_lib/clerk-theme";
 
 export default function SignUpPage() {
   return (
