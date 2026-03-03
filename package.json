@@ -1,6 +1,13 @@
 {
   "name": "chatbot-juridique-monorepo",
   "private": true,
+  "dependencies": {
+    "@clerk/nextjs": "^6.39.0",
+    "jspdf": "^4.2.0",
+    "next": "^15.5.12",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
   "scripts": {
     "vercel-build": "npm --prefix frontend install --no-audit --no-fund && npm --prefix frontend run build && node scripts/vercel-sync-next-output.mjs",
     "build": "npm run vercel-build"
