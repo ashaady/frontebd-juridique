@@ -8,6 +8,7 @@
     "dev:fast": "node ./scripts/ensure-port-free.mjs 3001 && next dev -p 3001",
     "dev:fresh": "node ./scripts/ensure-port-free.mjs 3001 && npm run clean && next dev -p 3001",
     "build": "next build",
+    "vercel-build": "next build",
     "build:fresh": "npm run clean && next build",
     "start": "npm run build && next start -p 3001",
     "start:fast": "next start -p 3001",
