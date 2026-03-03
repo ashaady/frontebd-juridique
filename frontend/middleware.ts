@@ -5,8 +5,6 @@ const hasClerkKeys = Boolean(
   process.env.CLERK_SECRET_KEY && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 );
 
-const withClerkContextMiddleware = clerkMiddleware();
-
 function isNextDataRequest(request: NextRequest): boolean {
   const urlPath = new URL(request.url).pathname;
   const isDataPath = /^\/_next\/data\/[^/]+\/.+\.json$/.test(urlPath);
@@ -21,6 +19,7 @@ export default function middleware(request: NextRequest, event: NextFetchEvent) 
   if (!hasClerkKeys) {
     return NextResponse.next();
   }
+  const withClerkContextMiddleware = clerkMiddleware();
   return withClerkContextMiddleware(request, event);
 }
 
