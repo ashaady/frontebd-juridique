@@ -56,7 +56,7 @@ def _chat_auth_mode(request: Request) -> str:
         return mode
     if _chat_user_id(request):
         return "signed-in"
-    return ""
+    return "guest"
 
 
 def _sse(event: str, data: dict) -> str:
@@ -65,7 +65,7 @@ def _sse(event: str, data: dict) -> str:
 
 
 def _should_capture_chat_sample(request: Request) -> bool:
-    return bool(_chat_auth_mode(request))
+    return True
 
 
 def _persist_chat_qa_sample(
@@ -107,6 +107,9 @@ def _persist_chat_qa_sample(
             "path": str(request.url.path),
             "method": str(request.method),
             "auth_mode": auth_mode,
+            "origin": (request.headers.get("origin") or "").strip(),
+            "referer": (request.headers.get("referer") or "").strip(),
+            "user_agent": (request.headers.get("user-agent") or "").strip(),
         },
     }
 
