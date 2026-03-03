@@ -1,5 +1,7 @@
 {
   "framework": "nextjs",
+  "rootDirectory": ".",
+  "outputDirectory": ".next",
   "installCommand": "npm install --no-audit --no-fund",
   "buildCommand": "npm run vercel-build"
 }

@@ -1,6 +1,9 @@
 {
   "name": "chatbot-juridique-monorepo",
   "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "next": "^15.5.12",
     "react": "^19.0.0",
