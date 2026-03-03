@@ -1,0 +1,8 @@
+{
+  "name": "chatbot-juridique-monorepo",
+  "private": true,
+  "scripts": {
+    "vercel-build": "npm --prefix frontend install --no-audit --no-fund && npm --prefix frontend run build",
+    "build": "npm run vercel-build"
+  }
+}
