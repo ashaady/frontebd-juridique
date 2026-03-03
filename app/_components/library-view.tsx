@@ -583,6 +583,35 @@ function normalizePromptForDetection(value: string): string {
     .toLowerCase();
 }
 
+function toRequestedTemplateName(prompt: string): string {
+  const raw = String(prompt ?? "").trim();
+  if (!raw) {
+    return "Modele personnalise";
+  }
+  const quotedMatch = raw.match(/["“«](.+?)["”»]/);
+  let candidate = (quotedMatch?.[1] ?? raw).trim();
+  candidate = candidate.replace(/\s+/g, " ");
+  candidate = candidate.replace(
+    /^(?:stp\s+|svp\s+)?(?:cree|cr[eé]e|genere|g[eé]n[eé]re|fais|fabrique)\s+(?:moi\s+)?|^(?:donne(?:-|\s)?moi|je\s+veux|j['’]ai\s+besoin\s+de)\s+/i,
+    ""
+  );
+  candidate = candidate.replace(
+    /^(?:un|une|le|la|les|des)\s+(?:modele|mod[eè]le|template)\s+(?:de|d['’])\s*/i,
+    ""
+  );
+  candidate = candidate.replace(
+    /^(?:un|une|le|la|les|des)\s+/i,
+    ""
+  );
+  candidate = candidate.replace(/[.:;,\-–—\s]+$/g, "").trim();
+  if (!candidate) {
+    return "Modele personnalise";
+  }
+  const normalized =
+    candidate.charAt(0).toUpperCase() + candidate.slice(1);
+  return normalized.slice(0, 96);
+}
+
 function buildFallbackTemplateFromPrompt(prompt: string): CustomDocumentTemplateRecord {
   const lowered = normalizePromptForDetection(prompt);
 
@@ -1619,7 +1648,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     }
     markRecentTemplate(template.id);
     setIsMobileLeftPanelOpen(false);
-    router.push(`/chat?act=1&template=${encodeURIComponent(template.id)}`);
+    router.push(`/chat?act=1&new=1&template=${encodeURIComponent(template.id)}`);
   };
 
   const handleGenerateTemplateWithAi = useCallback(async () => {
@@ -1635,11 +1664,16 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       return;
     }
 
+    const requestedTemplateName = toRequestedTemplateName(prompt);
+
     const persistTemplate = async (
       template: CustomDocumentTemplateRecord,
       noticeMessage: string = ""
     ) => {
-      const readyTemplate = ensureTemplateReadiness(template);
+      const readyTemplate = ensureTemplateReadiness({
+        ...template,
+        name: requestedTemplateName,
+      });
       setTemplateGenerationProgress((previous) => Math.max(previous, 88));
       setCustomTemplates((previous) => [
         readyTemplate,
@@ -1671,6 +1705,8 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       setTemplateGenerationError("");
       if (persistedRemotely && noticeMessage.trim().length > 0) {
         setTemplateGenerationNotice(noticeMessage);
+      } else if (persistedRemotely) {
+        setTemplateGenerationNotice(`Modele "${readyTemplate.name}" cree et selectionne.`);
       }
     };
 
@@ -1711,6 +1747,15 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "X-Client-Auth-Mode": isSignedIn ? "signed-in" : "guest",
+            ...(userId ? { "X-User-Id": userId } : {}),
+            ...(user?.primaryEmailAddress?.emailAddress
+              ? { "X-User-Email": user.primaryEmailAddress.emailAddress }
+              : {}),
+            ...(user?.fullName || user?.firstName
+              ? { "X-User-Name": user.fullName ?? user.firstName ?? "" }
+              : {}),
+            ...(user?.username ? { "X-User-Username": user.username } : {}),
           },
           body: JSON.stringify({
             messages: [{ role: "user", content: generationPrompt }],
@@ -2532,29 +2577,37 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                     const isFavorite = favoriteModelIds.includes(template.id);
                     return (
                       <article
-                        className={`rounded-xl border p-3 transition-colors ${
+                        className={`rounded-xl border p-3 transition-colors cursor-pointer ${
                           isSelected
                             ? "border-[#49DE80]/50 bg-[#1f3527]"
                             : "border-slate-800 bg-[#1a2e22] hover:border-[#49DE80]/40"
                         }`}
                         key={template.id}
+                        onClick={() => setSelectedModelId(template.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setSelectedModelId(template.id);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <button
-                            className="text-left flex-1 min-w-0"
-                            onClick={() => setSelectedModelId(template.id)}
-                            type="button"
-                          >
+                          <div className="text-left flex-1 min-w-0">
                             <h4 className="font-bold text-slate-100 truncate">{template.name}</h4>
                             <p className="text-[11px] text-slate-400 mt-0.5 truncate">{template.domain}</p>
-                          </button>
+                          </div>
                           <button
                             className={`p-1 rounded-md border transition-colors ${
                               isFavorite
                                 ? "text-amber-300 border-amber-400/40 bg-amber-500/10"
                                 : "text-slate-500 border-slate-700 hover:text-amber-300 hover:border-amber-400/30"
                             }`}
-                            onClick={() => toggleFavoriteModel(template.id)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleFavoriteModel(template.id);
+                            }}
                             title={isFavorite ? "Retirer des favoris" : "Ajouter aux favoris"}
                             type="button"
                           >
@@ -2570,6 +2623,49 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                             {template.complexity}
                           </span>
                         </div>
+                        {isSelected ? (
+                          <div className="mt-3 rounded-lg border border-[#49DE80]/30 bg-[#112117] p-3 space-y-3">
+                            <p className="text-xs text-slate-300 leading-relaxed">{template.description}</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {template.legalRefs.slice(0, 4).map((ref) => (
+                                <span
+                                  className="text-[10px] font-semibold px-2 py-1 rounded-full bg-[#254632] text-[#49DE80] border border-[#49DE80]/30"
+                                  key={`${template.id}-inline-ref-${ref}`}
+                                >
+                                  {ref}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="text-[11px] text-slate-400">
+                              <span className="text-[#49DE80] font-semibold">{template.requiredFields.length}</span>{" "}
+                              champs obligatoires ·{" "}
+                              <span className="text-slate-200 font-semibold">{template.optionalFields.length}</span>{" "}
+                              champs optionnels
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                className="px-3 py-1.5 rounded-lg bg-[#49DE80] text-[#112117] font-bold text-xs hover:bg-[#49DE80]/90 transition-colors"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openTemplateInChat(template);
+                                }}
+                                type="button"
+                              >
+                                Utiliser ce document
+                              </button>
+                              <button
+                                className="px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 text-xs hover:bg-white/5 transition-colors"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleFavoriteModel(template.id);
+                                }}
+                                type="button"
+                              >
+                                {isFavorite ? "Retirer favori" : "Ajouter favori"}
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
                       </article>
                     );
                   })}
@@ -2581,91 +2677,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                   </div>
                 ) : null}
 
-                {selectedTemplate ? (
-                  <div className="rounded-2xl border border-slate-800 bg-[#1a2e22] p-6 space-y-6">
-                    <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-                      <div>
-                        <h3 className="text-2xl font-bold text-slate-100">{selectedTemplate.name}</h3>
-                        <p className="text-slate-400 mt-1">{selectedTemplate.description}</p>
-                        <div className="flex flex-wrap gap-2 mt-3">
-                          {selectedTemplate.legalRefs.map((ref) => (
-                            <span
-                              className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#254632] text-[#49DE80] border border-[#49DE80]/30"
-                              key={`${selectedTemplate.id}-ref-${ref}`}
-                            >
-                              {ref}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          className="px-4 py-2 rounded-lg bg-[#49DE80] text-[#112117] font-bold text-sm hover:bg-[#49DE80]/90 transition-colors"
-                          onClick={() => openTemplateInChat(selectedTemplate)}
-                          type="button"
-                        >
-                          Utiliser ce document
-                        </button>
-                        <button
-                          className="px-4 py-2 rounded-lg border border-slate-700 text-slate-200 text-sm hover:bg-white/5 transition-colors"
-                          onClick={() => toggleFavoriteModel(selectedTemplate.id)}
-                          type="button"
-                        >
-                          {favoriteModelIds.includes(selectedTemplate.id) ? "Retirer favori" : "Ajouter favori"}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                      <div className="rounded-xl border border-slate-800 bg-[#112117] p-4">
-                        <h4 className="text-sm font-bold text-slate-200 mb-3">Champs obligatoires</h4>
-                        <ul className="space-y-2">
-                          {selectedTemplate.requiredFields.map((field) => (
-                            <li className="text-sm text-slate-300 flex items-start gap-2" key={`${selectedTemplate.id}-req-${field}`}>
-                              <span className="material-symbols-outlined text-[16px] text-[#49DE80] mt-0.5">check_circle</span>
-                              <span>{field}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-
-                      <div className="rounded-xl border border-slate-800 bg-[#112117] p-4">
-                        <h4 className="text-sm font-bold text-slate-200 mb-3">Champs optionnels</h4>
-                        {selectedTemplate.optionalFields.length === 0 ? (
-                          <p className="text-sm text-slate-500">Aucun champ optionnel.</p>
-                        ) : (
-                          <ul className="space-y-2">
-                            {selectedTemplate.optionalFields.map((field) => (
-                              <li className="text-sm text-slate-300 flex items-start gap-2" key={`${selectedTemplate.id}-opt-${field}`}>
-                                <span className="material-symbols-outlined text-[16px] text-slate-500 mt-0.5">radio_button_unchecked</span>
-                                <span>{field}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-slate-800 bg-[#112117] p-4">
-                      <h4 className="text-sm font-bold text-slate-200 mb-3">Structure du document</h4>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                        {selectedTemplate.sections.map((sectionName) => (
-                          <div className="text-sm text-slate-300 px-3 py-2 rounded-lg bg-[#1a2e22]" key={`${selectedTemplate.id}-section-${sectionName}`}>
-                            {sectionName}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-amber-700/40 bg-amber-950/20 p-4">
-                      <h4 className="text-sm font-bold text-amber-300 mb-2">Avertissement juridique</h4>
-                      <p className="text-sm text-amber-100/90">{selectedTemplate.warning}</p>
-                      <p className="text-xs text-amber-200/70 mt-2">
-                        Ce modele doit etre adapte a votre situation et valide par un professionnel du droit.
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
+                {selectedTemplate ? null : null}
               </section>
             </div>
           ) : null}

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Script from "next/script";
 import { ClerkProvider } from "@clerk/nextjs";
 import { clerkAppearance } from "./_lib/clerk-theme";
+import { WorkspaceUserSync } from "./_components/workspace-user-sync";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -36,6 +37,7 @@ export default function RootLayout({
         suppressHydrationWarning
       >
         <ClerkProvider appearance={clerkAppearance} publishableKey={publishableKey}>
+          <WorkspaceUserSync />
           <Script id="tailwind-config" strategy="beforeInteractive">{`
           window.tailwind = window.tailwind || {};
           window.tailwind.config = {

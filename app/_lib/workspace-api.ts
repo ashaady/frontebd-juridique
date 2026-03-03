@@ -36,6 +36,12 @@ type TemplateListResponse = {
   items: CustomDocumentTemplateRecord[];
 };
 
+type WorkspaceUserRegisterResponse = {
+  status?: string;
+  registered?: boolean;
+  user_id?: string;
+};
+
 type UploadFilesResponse = {
   items: WorkspaceFileRecord[];
   uploaded?: Array<{
@@ -149,6 +155,16 @@ export function setWorkspaceUserContext(context?: WorkspaceUserContext | null): 
 
 export function setWorkspaceUserId(userId?: string | null): void {
   setWorkspaceUserContext({ userId });
+}
+
+export async function registerWorkspaceUserApi(): Promise<boolean> {
+  if (!workspaceUserId) {
+    return false;
+  }
+  const remote = await requestJson<WorkspaceUserRegisterResponse>("/workspace/users/register", {
+    method: "POST",
+  });
+  return remote?.registered === true;
 }
 
 function backendBaseUrl(): string {
