@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { SignIn } from "@clerk/nextjs";
-import { clerkAppearance } from "../_lib/clerk-theme";
+import { clerkAppearance } from "../../_lib/clerk-theme";
 
 export default function SignInPage() {
   return (
