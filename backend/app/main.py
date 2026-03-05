@@ -547,9 +547,16 @@ RAG_SYSTEM_INSTRUCTIONS = (
     "A la place, formule prudemment 'base legale non explicite dans le contexte fourni'.\n"
     "Quand au moins 3 sources sont fournies, synthetise au moins 3 sources distinctes.\n"
     "Si moins de 3 sources sont disponibles, dis-le explicitement et reponds avec ce qui est disponible.\n"
+    "Pour les questions de responsabilite/sanctions (ex: 'il risque quoi'), reponds dans cet ordre:\n"
+    "1) qualification et explication juridique des faits,\n"
+    "2) base(s) legale(s) applicable(s),\n"
+    "3) sanctions/peines explicites (emprisonnement, amende, etc.) uniquement si presentes dans le contexte.\n"
+    "Ne commence pas directement par les peines sans exposer d'abord la qualification des faits.\n"
     "Tu peux faire un raisonnement juridique simple en t'appuyant sur ton entrainement interne\n"
     "uniquement pour relier des elements deja compatibles avec les sources recuperees.\n"
     "N'invente ni faits, ni articles, ni sanctions.\n"
+    "Si la question demande les peines/sanctions (ex: 'il risque quoi'), et que le contexte contient des peines,\n"
+    "indique explicitement la duree d'emprisonnement et/ou le montant d'amende avec la base legale citee.\n"
     "Regle speciale: si la question porte sur homosexualite/acte contre nature et que present,\n"
     "cite explicitement l'Article 319 (Loi n 66-16 du 1er fevrier 1966).\n"
     "Format de sortie obligatoire: texte brut uniquement.\n"
@@ -631,6 +638,10 @@ RAG_QUERY_REWRITE_SYSTEM_INSTRUCTIONS = (
     "- Gere les variantes lexicales et petites fautes de frappe de l'utilisateur.\n"
     "- Si l'utilisateur ecrit un libelle de code, ajoute aussi le synonyme de domaine, "
     "et inversement (ex: 'code penal' <-> 'droit penal').\n"
+    "- Si la question vise les sanctions/peines, ajoute les termes: "
+    "'sanctions penales', 'peines', 'amende', 'emprisonnement'.\n"
+    "- Si la question concerne des denrees/aliments/viande, ajoute aussi: "
+    "'code de l hygiene', 'protection du consommateur', 'inspection veterinaire'.\n"
     "- Exemples d'equivalence a conserver dans `query`: "
     "'code penal'/'droit penal', 'code du travail'/'droit du travail', "
     "'code de la famille'/'droit de la famille'.\n"
@@ -755,6 +766,20 @@ def _is_definition_question(query: str) -> bool:
 _REWRITE_DOMAIN_ANCHORS: list[tuple[tuple[str, ...], str]] = [
     (
         (
+            "viande",
+            "aliment",
+            "alimentaire",
+            "denree",
+            "boucher",
+            "hygiene",
+            "consommation",
+            "insalubre",
+            "impropre",
+        ),
+        "code de l hygiene senegal protection du consommateur code penal senegal",
+    ),
+    (
+        (
             "travail",
             "licenciement",
             "salaire",
@@ -795,6 +820,35 @@ _REWRITE_DOMAIN_ANCHORS: list[tuple[tuple[str, ...], str]] = [
 ]
 
 _REWRITE_TOPIC_HINTS: list[tuple[tuple[str, ...], str]] = [
+    (
+        (
+            "risque",
+            "risquent",
+            "encourt",
+            "peine",
+            "peines",
+            "sanction",
+            "sanctions",
+            "amende",
+            "emprisonnement",
+            "puni",
+            "punissable",
+        ),
+        "sanctions penales peines amende emprisonnement",
+    ),
+    (
+        (
+            "viande",
+            "aliment",
+            "alimentaire",
+            "denree",
+            "boucher",
+            "hygiene",
+            "consommation",
+            "impropre",
+        ),
+        "hygiene alimentaire inspection veterinaire sante publique",
+    ),
     (("conge", "conges", "conges payes"), "chapitre conges"),
     (("licenciement", "rupture"), "rupture contrat"),
     (("indemnite", "dommages et interets"), "indemnites"),
@@ -837,6 +891,7 @@ def _enforce_rewrite_anchor_with_lock(
     if not rewritten:
         return rewritten
 
+    max_tokens = 55
     original_norm = _strip_accents(original_query).lower()
     rewritten_norm = _strip_accents(rewritten).lower()
 
@@ -858,8 +913,28 @@ def _enforce_rewrite_anchor_with_lock(
             rewritten = _normalize_spaces(f"{rewritten} {topic_hint}")
 
     tokens = [token for token in rewritten.split(" ") if token]
-    if len(tokens) > 55:
-        rewritten = " ".join(tokens[:55])
+    if len(tokens) > max_tokens:
+        # Keep mandatory anchor/topic terms even when clipping long factual prompts.
+        suffix_tokens: list[str] = []
+        if anchor:
+            suffix_tokens.extend([token for token in anchor.split(" ") if token])
+        if topic_hint:
+            suffix_tokens.extend([token for token in topic_hint.split(" ") if token])
+
+        if suffix_tokens:
+            dedup_suffix: list[str] = []
+            seen_suffix: set[str] = set()
+            for token in suffix_tokens:
+                key = _strip_accents(token).lower()
+                if key in seen_suffix:
+                    continue
+                seen_suffix.add(key)
+                dedup_suffix.append(token)
+            suffix_tokens = dedup_suffix[:max_tokens]
+            base_budget = max(0, max_tokens - len(suffix_tokens))
+            rewritten = " ".join(tokens[:base_budget] + suffix_tokens)
+        else:
+            rewritten = " ".join(tokens[:max_tokens])
     return rewritten
 
 

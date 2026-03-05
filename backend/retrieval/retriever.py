@@ -83,6 +83,76 @@ _LEGAL_DOMAIN_RE = re.compile(
 
 ArticleRef = tuple[str, bool]
 
+_DIRECT_ARTICLE_PREFIX_ALLOWLIST = {
+    "L",
+    "R",
+    "D",
+    "A",
+    "P",
+    "C",
+    "LO",
+    "LP",
+}
+_DIRECT_ARTICLE_PREFIX_BLOCKLIST = {
+    "CE",
+    "DE",
+    "DU",
+    "LE",
+    "LA",
+    "LES",
+    "DES",
+    "UN",
+    "UNE",
+    "AU",
+    "AUX",
+    "ET",
+    "EN",
+    "PAR",
+    "SUR",
+    "POUR",
+}
+_DOMAIN_FILTER_STOP_TOKENS = {
+    "article",
+    "articles",
+    "code",
+    "codes",
+    "droit",
+    "droits",
+    "penal",
+    "penale",
+    "penales",
+    "civil",
+    "commercial",
+    "senegal",
+    "ohada",
+    "question",
+    "risque",
+    "risquent",
+    "quoi",
+    "quel",
+    "quels",
+    "quelle",
+    "quelles",
+    "comment",
+    "avec",
+    "sans",
+    "dans",
+    "pour",
+    "contre",
+    "entre",
+}
+_FOOD_SAFETY_QUERY_MARKERS = (
+    "viande",
+    "aliment",
+    "alimentaire",
+    "denree",
+    "boucher",
+    "hygiene",
+    "consommation",
+    "insalubre",
+    "impropre",
+)
+
 DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "travail": (
         "droit du travail",
@@ -190,11 +260,39 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "pollution",
         "assainissement",
     ),
+    "hygiene_consommation": (
+        "code de l hygiene",
+        "hygiene",
+        "inspection veterinaire",
+        "produits carnes",
+        "viande",
+        "denree alimentaire",
+        "protection du consommateur",
+        "consommation",
+    ),
 }
 
 
 def _normalize_article_number(value: str) -> str:
     return re.sub(r"\s+", "", value).upper()
+
+
+def _normalize_article_prefix(value: str) -> str:
+    return re.sub(r"[^A-Za-z]", "", value).upper()
+
+
+def _is_valid_direct_article_prefix(prefix: str, *, has_explicit_separator: bool) -> bool:
+    normalized = _normalize_article_prefix(prefix)
+    if not normalized:
+        return False
+    if normalized in _DIRECT_ARTICLE_PREFIX_BLOCKLIST:
+        return False
+    if normalized not in _DIRECT_ARTICLE_PREFIX_ALLOWLIST:
+        return False
+    if len(normalized) >= 2 and not has_explicit_separator:
+        # Reject weak patterns like "ce 4 mars" while keeping "L 39" and "R 41".
+        return False
+    return True
 
 
 def _normalize_match_text(value: str) -> str:
@@ -282,6 +380,39 @@ def _is_domain_specific_path(top_folder: str) -> bool:
     )
 
 
+def _extract_query_content_tokens(query: str) -> set[str]:
+    normalized = _normalize_match_text(query)
+    if not normalized:
+        return set()
+    tokens: set[str] = set()
+    for token in normalized.split():
+        if len(token) < 4:
+            continue
+        if token in _DOMAIN_FILTER_STOP_TOKENS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _chunk_query_overlap(chunk: RetrievedChunk, query_tokens: set[str]) -> int:
+    if not query_tokens:
+        return 0
+    haystack = _normalize_match_text(
+        " ".join(
+            [
+                chunk.relative_path or "",
+                chunk.source_path or "",
+                chunk.article_hint or "",
+                chunk.text[:900],
+            ]
+        )
+    )
+    if not haystack:
+        return 0
+    haystack_tokens = set(haystack.split())
+    return len(query_tokens.intersection(haystack_tokens))
+
+
 def _extract_query_article_refs(query: str) -> tuple[set[str], set[str]]:
     prefixed_refs: set[str] = set()
     plain_refs: set[str] = set()
@@ -302,8 +433,15 @@ def _extract_query_article_refs(query: str) -> tuple[set[str], set[str]]:
         prefix_raw = match.group("prefix")
         if not number_raw or not prefix_raw:
             continue
+        separator = query[match.start("prefix") + len(prefix_raw) : match.start("number")]
+        has_explicit_separator = "." in separator or "-" in separator
+        if not _is_valid_direct_article_prefix(
+            prefix_raw,
+            has_explicit_separator=has_explicit_separator,
+        ):
+            continue
         number = _normalize_article_number(number_raw)
-        prefix = re.sub(r"[^A-Za-z]", "", prefix_raw).upper()
+        prefix = _normalize_article_prefix(prefix_raw)
         if prefix:
             prefixed_refs.add(f"{prefix}.{number}")
     return prefixed_refs, plain_refs
@@ -335,8 +473,15 @@ def _extract_query_article_refs_ordered(query: str) -> list[ArticleRef]:
         prefix_raw = match.group("prefix")
         if not number_raw or not prefix_raw:
             continue
+        separator = query[match.start("prefix") + len(prefix_raw) : match.start("number")]
+        has_explicit_separator = "." in separator or "-" in separator
+        if not _is_valid_direct_article_prefix(
+            prefix_raw,
+            has_explicit_separator=has_explicit_separator,
+        ):
+            continue
         number = _normalize_article_number(number_raw)
-        prefix = re.sub(r"[^A-Za-z]", "", prefix_raw).upper()
+        prefix = _normalize_article_prefix(prefix_raw)
         if not prefix:
             continue
         ref = (f"{prefix}.{number}", True)
@@ -588,6 +733,11 @@ def filter_candidates_by_query_domains(
         query_domain_set.add("procedure_penale")
     if "procedure_penale" in query_domain_set:
         query_domain_set.add("penal")
+    normalized_query = _normalize_match_text(query)
+    if "penal" in query_domain_set and any(
+        marker in normalized_query for marker in _FOOD_SAFETY_QUERY_MARKERS
+    ):
+        query_domain_set.add("hygiene_consommation")
     in_domain: list[RetrievedChunk] = []
     neutral: list[RetrievedChunk] = []
     out_domain: list[RetrievedChunk] = []
@@ -609,12 +759,34 @@ def filter_candidates_by_query_domains(
     in_domain_count = len(in_domain)
     allowed_neutral = neutral[:neutral_fallback_max] if neutral_fallback_max > 0 else []
     filtered = in_domain + allowed_neutral
+
+    # Keep a few strong lexical matches even when domain labels do not overlap
+    # (e.g. hygiene/consumption texts relevant to a penal question).
+    query_tokens = _extract_query_content_tokens(query)
+    lexical_fallback_max = max(neutral_fallback_max, min(4, max(2, top_k // 4)))
+    lexical_candidates: list[tuple[int, float, int, RetrievedChunk]] = []
+    if query_tokens and lexical_fallback_max > 0:
+        for idx, chunk in enumerate(out_domain):
+            overlap = _chunk_query_overlap(chunk, query_tokens)
+            if overlap >= 2:
+                lexical_candidates.append((overlap, chunk.score, -idx, chunk))
+        lexical_candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        seen_ids = {chunk.chunk_id for chunk in filtered}
+        added_lexical = 0
+        for _, _, _, chunk in lexical_candidates:
+            if len(filtered) >= top_k:
+                break
+            if chunk.chunk_id in seen_ids:
+                continue
+            filtered.append(chunk)
+            seen_ids.add(chunk.chunk_id)
+            added_lexical += 1
+            if added_lexical >= lexical_fallback_max:
+                break
     if filtered:
         return filtered, True, query_domains, in_domain_count
 
-    # Robust fallback: if domain inference is too strict, keep top-ranked candidates
-    # instead of returning an empty set (which harms answer quality).
-    return candidate_list[:top_k], True, query_domains, in_domain_count
+    return [], True, query_domains, in_domain_count
 
 
 def select_chunks_adaptive(
@@ -641,6 +813,7 @@ def select_chunks_adaptive(
     candidate_list = list(candidates)
     if not candidate_list:
         return [], max(0.0, min_score_threshold), 0, 0
+    target_min_effective = min(target_max, max(target_min, min(3, len(candidate_list))))
 
     threshold = max(0.0, min_score_threshold)
     floor = max(0.0, min(threshold_floor, threshold))
@@ -655,19 +828,19 @@ def select_chunks_adaptive(
 
     selected = _apply_threshold(threshold)
 
-    while len(selected) < target_min and threshold > floor + 1e-9:
+    while len(selected) < target_min_effective and threshold > floor + 1e-9:
         threshold = max(floor, threshold - threshold_step)
         iterations += 1
         selected = _apply_threshold(threshold)
-        if len(selected) >= target_min:
+        if len(selected) >= target_min_effective:
             break
 
-    if len(selected) < target_min and neutral_fallback_max > 0:
+    if len(selected) < target_min_effective:
         selected_ids = {chunk.chunk_id for chunk in selected}
         # If adaptive threshold still leaves too few chunks, backfill from ranked
         # in-domain candidates regardless of score before consuming neutral fallback.
         for chunk in candidate_list:
-            if len(selected) >= target_min or len(selected) >= target_max:
+            if len(selected) >= target_min_effective or len(selected) >= target_max:
                 break
             if chunk.chunk_id in selected_ids:
                 continue
@@ -675,7 +848,7 @@ def select_chunks_adaptive(
                 selected.append(replace(chunk, rank=len(selected) + 1))
                 selected_ids.add(chunk.chunk_id)
 
-    if len(selected) < target_min and neutral_fallback_max > 0:
+    if len(selected) < target_min_effective and neutral_fallback_max > 0:
         selected_ids = {chunk.chunk_id for chunk in selected}
         neutral_candidates = [
             chunk
@@ -683,7 +856,7 @@ def select_chunks_adaptive(
             if not infer_chunk_domains(chunk) and chunk.chunk_id not in selected_ids
         ]
         for chunk in neutral_candidates:
-            if neutral_added >= neutral_fallback_max or len(selected) >= target_min:
+            if neutral_added >= neutral_fallback_max or len(selected) >= target_min_effective:
                 break
             selected.append(replace(chunk, rank=len(selected) + 1))
             selected_ids.add(chunk.chunk_id)
