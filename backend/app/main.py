@@ -371,7 +371,19 @@ def _sanitize_citations_against_sources(
         if updated_answer != before:
             changed = True
 
-    updated_answer = re.sub(r"\s{2,}", " ", updated_answer).replace(" .", ".").strip()
+    normalized_lines: list[str] = []
+    previous_empty = False
+    for raw_line in updated_answer.splitlines():
+        line = re.sub(r"[ \t]{2,}", " ", raw_line).replace(" .", ".").strip()
+        if not line:
+            if previous_empty:
+                continue
+            normalized_lines.append("")
+            previous_empty = True
+            continue
+        previous_empty = False
+        normalized_lines.append(line)
+    updated_answer = "\n".join(normalized_lines).strip()
     if updated_answer != answer:
         changed = True
 
@@ -652,7 +664,6 @@ RAG_QUERY_REWRITE_SYSTEM_INSTRUCTIONS = (
     "- Si la question est une demande de definition simple (ex: 'c quoi ...', 'definition ...', "
     "'exemple ...'), retourne une requete courte de type 'definition ...' sans sur-enrichissement.\n"
     "- N'ajoute aucune explication, aucun markdown, aucun commentaire.\n"
-    "- Maximum 55 mots.\n"
 )
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -891,7 +902,6 @@ def _enforce_rewrite_anchor_with_lock(
     if not rewritten:
         return rewritten
 
-    max_tokens = 55
     original_norm = _strip_accents(original_query).lower()
     rewritten_norm = _strip_accents(rewritten).lower()
 
@@ -911,30 +921,6 @@ def _enforce_rewrite_anchor_with_lock(
         topic_norm = _strip_accents(topic_hint).lower()
         if topic_norm not in rewritten_norm:
             rewritten = _normalize_spaces(f"{rewritten} {topic_hint}")
-
-    tokens = [token for token in rewritten.split(" ") if token]
-    if len(tokens) > max_tokens:
-        # Keep mandatory anchor/topic terms even when clipping long factual prompts.
-        suffix_tokens: list[str] = []
-        if anchor:
-            suffix_tokens.extend([token for token in anchor.split(" ") if token])
-        if topic_hint:
-            suffix_tokens.extend([token for token in topic_hint.split(" ") if token])
-
-        if suffix_tokens:
-            dedup_suffix: list[str] = []
-            seen_suffix: set[str] = set()
-            for token in suffix_tokens:
-                key = _strip_accents(token).lower()
-                if key in seen_suffix:
-                    continue
-                seen_suffix.add(key)
-                dedup_suffix.append(token)
-            suffix_tokens = dedup_suffix[:max_tokens]
-            base_budget = max(0, max_tokens - len(suffix_tokens))
-            rewritten = " ".join(tokens[:base_budget] + suffix_tokens)
-        else:
-            rewritten = " ".join(tokens[:max_tokens])
     return rewritten
 
 
