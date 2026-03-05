@@ -196,6 +196,7 @@ _RAG_NOTE_LIKE_RE = re.compile(
     r"(?:query-rewrite-|domains=|confidence=|threshold_start=|selected_chunks=|citation_target=|act-generation-mode|citation-underuse)",
     re.IGNORECASE,
 )
+_SOURCE_PAGE_TRAIL_RE = re.compile(r"\s*\((?:p|pp)\.\s*[^)]*\)\s*$", re.IGNORECASE)
 
 
 def _distinct_source_citations(answer: str) -> set[int]:
@@ -219,16 +220,86 @@ def _append_rag_note(base_note: str | None, suffix: str) -> str:
 
 def _check_citation_underuse(
     answer: str,
-    rag_source_count: int,
+    rag_sources: list[dict[str, Any]],
     rag_note: str | None,
 ) -> tuple[str | None, bool]:
-    if rag_source_count < settings.rag_min_source_citations:
+    if len(rag_sources) < settings.rag_min_source_citations:
         return rag_note, False
-    distinct_citations = _distinct_source_citations(answer)
-    if len(distinct_citations) >= settings.rag_min_source_citations:
+    distinct_mentions = _distinct_direct_source_mentions(answer, rag_sources)
+    if len(distinct_mentions) >= settings.rag_min_source_citations:
         return rag_note, False
     updated_note = _append_rag_note(rag_note, "citation-underuse")
     return updated_note, True
+
+
+def _source_mention_labels(source: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    article_hint = str(source.get("article_hint") or "").strip()
+    citation = str(source.get("citation") or "").strip()
+    relative_path = str(source.get("relative_path") or "").strip()
+    source_path = str(source.get("source_path") or "").strip()
+
+    if article_hint:
+        labels.append(article_hint)
+    if citation:
+        labels.append(citation)
+        citation_without_page = _SOURCE_PAGE_TRAIL_RE.sub("", citation).strip()
+        if citation_without_page and citation_without_page != citation:
+            labels.append(citation_without_page)
+    for path_value in (relative_path, source_path):
+        if not path_value:
+            continue
+        labels.append(path_value)
+        normalized_path = path_value.replace("\\", "/")
+        file_name = normalized_path.rsplit("/", 1)[-1].strip()
+        if file_name:
+            labels.append(file_name)
+            stem = re.sub(r"\.[a-z0-9]{1,6}$", "", file_name, flags=re.IGNORECASE).strip()
+            if stem and stem != file_name:
+                labels.append(stem)
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for value in labels:
+        normalized = _normalize_for_citation_match(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        dedup.append(value)
+    return dedup
+
+
+def _distinct_direct_source_mentions(answer: str, rag_sources: list[dict[str, Any]]) -> set[int]:
+    answer_tokens = _tokenize_for_citation_match(answer)
+    answer_normalized = _normalize_for_citation_match(answer)
+    if not answer_tokens or not answer_normalized:
+        return set()
+
+    mentions: set[int] = set()
+    for index, source in enumerate(rag_sources, start=1):
+        if not isinstance(source, dict):
+            continue
+        try:
+            rank = int(source.get("rank"))
+        except (TypeError, ValueError):
+            rank = index
+
+        labels = _source_mention_labels(source)
+        for label in labels:
+            normalized_label = _normalize_for_citation_match(label)
+            if not normalized_label:
+                continue
+            if len(normalized_label) >= 8 and normalized_label in answer_normalized:
+                mentions.add(rank)
+                break
+            label_tokens = _tokenize_for_citation_match(label)
+            if not label_tokens:
+                continue
+            overlap = len(label_tokens.intersection(answer_tokens))
+            required_overlap = 2 if len(label_tokens) >= 2 else 1
+            if overlap >= required_overlap:
+                mentions.add(rank)
+                break
+    return mentions
 
 
 def _public_rag_sources(rag_sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -541,7 +612,9 @@ RAG_SYSTEM_INSTRUCTIONS = (
     "Si une telle question apparait, refuse poliment en recentrant vers le droit senegalais.\n"
     "Ne mentionne jamais le niveau de confiance interne (LOW, MEDIUM, HIGH) dans la reponse.\n"
     "Si tu cites un article ou une loi, ecris-le explicitement (ex: Article 55) dans la reponse.\n"
-    "Toute affirmation juridique substantielle doit etre rattachee a au moins une [source X] du contexte.\n"
+    "Toute affirmation juridique substantielle doit etre rattachee a une source du contexte,\n"
+    "en mentionnant directement le nom du texte/loi/code/document (pas de tag numerique).\n"
+    "N'utilise jamais le format [source X] dans la reponse.\n"
     "N'associe jamais un numero d'article a un contenu qui n'apparait pas clairement dans la source citee.\n"
     "Si l'article exact n'est pas explicite dans le contexte, n'ecris pas son numero.\n"
     "A la place, formule prudemment 'base legale non explicite dans le contexte fourni'.\n"
@@ -564,7 +637,7 @@ RAG_NO_CONTEXT_RESPONSE = (
     "Si une telle question apparait, refuse poliment en recentrant vers le droit senegalais.\n"
     "Le contexte documentaire exploitable est insuffisant pour citer des articles de facon fiable.\n"
     "Fournis quand meme une reponse utile, claire et prudente a partir des principes juridiques generaux.\n"
-    "N'invente ni numero d'article, ni sanction, ni citation [source X].\n"
+    "N'invente ni numero d'article, ni sanction, ni citation de source.\n"
     "Si un point depend d'un texte precis non present, indique: 'base legale non explicite dans le contexte'.\n"
     "Format de sortie obligatoire: texte brut uniquement, sans markdown ni caracteres de balisage.\n"
 )
@@ -609,7 +682,7 @@ ARTICLE_319_SPECIAL_INSTRUCTIONS = (
     "Reponse: ...\n"
     "Base legale citee: ...\n"
     "Peines: ...\n"
-    "Sources: [source X]\n"
+    "Sources: mention directe des textes cites\n"
 )
 
 RAG_RETRIEVAL_OVERFETCH_FACTOR = 4
@@ -2002,15 +2075,6 @@ async def chat(payload: ChatRequest, request: Request):
         answer, answer_sanitized = _sanitize_generated_answer(answer)
         if answer_sanitized:
             rag_note = _append_rag_note(rag_note, "answer-sanitized")
-        answer, rag_sources, citations_sanitized = _sanitize_citations_against_sources(
-            answer,
-            rag_sources,
-        )
-        if citations_sanitized:
-            rag_note = _append_rag_note(rag_note, "citation-sanitized")
-        answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(answer)
-        if article_mentions_sanitized:
-            rag_note = _append_rag_note(rag_note, "article-mention-sanitized")
 
     if is_act_generation_mode and (not answer or _is_rag_note_like_text(answer)):
         fallback_payload = {
@@ -2028,7 +2092,7 @@ async def chat(payload: ChatRequest, request: Request):
         rag_note = _append_rag_note(rag_note, "act-empty-fallback")
     rag_note, citation_underuse = _check_citation_underuse(
         answer=answer,
-        rag_source_count=len(rag_sources),
+        rag_sources=rag_sources,
         rag_note=rag_note,
     )
 
@@ -2185,27 +2249,13 @@ async def chat_stream(payload: ChatRequest, request: Request):
                         sanitized_answer, answer_sanitized = _sanitize_generated_answer(current_answer)
                         if answer_sanitized:
                             yield _sse("replace", {"text": sanitized_answer})
-                        sanitized_answer, final_sources, citations_sanitized = _sanitize_citations_against_sources(
-                            sanitized_answer,
-                            rag_sources,
-                        )
-                        if citations_sanitized:
-                            yield _sse("replace", {"text": sanitized_answer})
-                        sanitized_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(
-                            sanitized_answer
-                        )
-                        if article_mentions_sanitized:
-                            yield _sse("replace", {"text": sanitized_answer})
+                        final_sources = rag_sources
                         final_rag_note = _append_rag_note(stream_rag_note, "loop-guard-stop")
                         if answer_sanitized:
                             final_rag_note = _append_rag_note(final_rag_note, "answer-sanitized")
-                        if citations_sanitized:
-                            final_rag_note = _append_rag_note(final_rag_note, "citation-sanitized")
-                        if article_mentions_sanitized:
-                            final_rag_note = _append_rag_note(final_rag_note, "article-mention-sanitized")
                         final_rag_note, citation_underuse = _check_citation_underuse(
                             answer=sanitized_answer,
-                            rag_source_count=len(final_sources),
+                            rag_sources=final_sources,
                             rag_note=final_rag_note,
                         )
                         done_payload: dict[str, Any] = {"finish_reason": "loop_guard_stop"}
@@ -2230,22 +2280,10 @@ async def chat_stream(payload: ChatRequest, request: Request):
                     if answer_sanitized:
                         yield _sse("replace", {"text": final_answer})
                         stream_rag_note = _append_rag_note(stream_rag_note, "answer-sanitized")
-                    final_answer, final_sources, citations_sanitized = _sanitize_citations_against_sources(
-                        final_answer,
-                        rag_sources,
-                    )
-                    if citations_sanitized:
-                        yield _sse("replace", {"text": final_answer})
-                        stream_rag_note = _append_rag_note(stream_rag_note, "citation-sanitized")
-                    final_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(
-                        final_answer
-                    )
-                    if article_mentions_sanitized:
-                        yield _sse("replace", {"text": final_answer})
-                        stream_rag_note = _append_rag_note(stream_rag_note, "article-mention-sanitized")
+                    final_sources = rag_sources
                     final_rag_note, citation_underuse = _check_citation_underuse(
                         answer=final_answer,
-                        rag_source_count=len(final_sources),
+                        rag_sources=final_sources,
                         rag_note=stream_rag_note,
                     )
                     done_payload: dict[str, Any] = {"finish_reason": choice.finish_reason}
@@ -2269,20 +2307,10 @@ async def chat_stream(payload: ChatRequest, request: Request):
             if answer_sanitized:
                 yield _sse("replace", {"text": final_answer})
                 stream_rag_note = _append_rag_note(stream_rag_note, "answer-sanitized")
-            final_answer, final_sources, citations_sanitized = _sanitize_citations_against_sources(
-                final_answer,
-                rag_sources,
-            )
-            if citations_sanitized:
-                yield _sse("replace", {"text": final_answer})
-                stream_rag_note = _append_rag_note(stream_rag_note, "citation-sanitized")
-            final_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(final_answer)
-            if article_mentions_sanitized:
-                yield _sse("replace", {"text": final_answer})
-                stream_rag_note = _append_rag_note(stream_rag_note, "article-mention-sanitized")
+            final_sources = rag_sources
             final_rag_note, citation_underuse = _check_citation_underuse(
                 answer=final_answer,
-                rag_source_count=len(final_sources),
+                rag_sources=final_sources,
                 rag_note=stream_rag_note,
             )
             done_payload = {"finish_reason": "stop"}
