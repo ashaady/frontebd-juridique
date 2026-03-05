@@ -1576,7 +1576,6 @@ export function ChatWorkspace({
   const libraryDocumentsCacheRef = useRef<LibraryDocumentRecord[]>([]);
   const signInModalTriggerRef = useRef<HTMLButtonElement | null>(null);
   const actGenerationProgressResetTimerRef = useRef<number | null>(null);
-  const hasRestoredSessionFromHistoryRef = useRef(false);
   const initialTemplateHydratedRef = useRef(false);
 
   const backendBaseUrl = useMemo(() => {
@@ -2792,51 +2791,6 @@ export function ChatWorkspace({
     }
     window.localStorage.setItem(ACTIVE_CHAT_SESSION_STORAGE_KEY, activeSessionId);
   }, [activeSessionId]);
-
-  useEffect(() => {
-    if (!isAuthLoaded || !isSignedIn) {
-      return;
-    }
-    if (hasRestoredSessionFromHistoryRef.current) {
-      return;
-    }
-    if (sessionHistory.length === 0) {
-      return;
-    }
-    if (turns.length > 0 || pendingDashboardQuestion.length > 0 || initialStartNewSession) {
-      hasRestoredSessionFromHistoryRef.current = true;
-      return;
-    }
-    if (isSending) {
-      return;
-    }
-
-    let targetSession: ConsultationRecord | null = null;
-    if (typeof window !== "undefined") {
-      const savedId = window.localStorage.getItem(ACTIVE_CHAT_SESSION_STORAGE_KEY) ?? "";
-      if (savedId) {
-        targetSession = sessionHistory.find((session) => session.id === savedId) ?? null;
-      }
-    }
-    if (!targetSession) {
-      targetSession = sessionHistory[0] ?? null;
-    }
-    if (!targetSession) {
-      return;
-    }
-
-    hasRestoredSessionFromHistoryRef.current = true;
-    handleOpenHistorySession(targetSession);
-  }, [
-    handleOpenHistorySession,
-    initialStartNewSession,
-    isAuthLoaded,
-    isSending,
-    isSignedIn,
-    pendingDashboardQuestion.length,
-    sessionHistory,
-    turns.length,
-  ]);
 
   const handleClearHistory = useCallback(async () => {
     if (sessionHistory.length === 0) {
