@@ -1033,7 +1033,10 @@ function extractArticleBadge(source: RagSource, index: number): string {
       return `${match[0]} - COCC`;
     }
   }
-  return "Reference juridique";
+  if (typeof source.rank === "number") {
+    return `Source ${source.rank}`;
+  }
+  return `Source ${index + 1}`;
 }
 
 function buildCitationCards(sources: RagSource[]): CitationCard[] {
@@ -1084,98 +1087,21 @@ function sourceUsageKey(source: RagSource, index: number): string {
   return `doc:${path}|citation:${citation}|pages:${pageStart}-${pageEnd}|rank:${rank}`;
 }
 
-function normalizeCitationText(value: string): string {
-  return normalizeForMatch(value).replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function sourceMentionCandidates(source: RagSource): string[] {
-  const values: string[] = [];
-  const citation = (source.citation ?? "").trim();
-  const relativePath = (source.relative_path ?? "").trim();
-  const sourcePath = (source.source_path ?? "").trim();
-  const articleHint = (source.article_hint ?? "").trim();
-  if (articleHint) {
-    values.push(articleHint);
-  }
-  if (citation) {
-    values.push(citation);
-    values.push(citation.replace(/\s*\((?:p|pp)\.\s*[^)]*\)\s*$/i, "").trim());
-  }
-  for (const pathValue of [relativePath, sourcePath]) {
-    if (!pathValue) {
-      continue;
-    }
-    values.push(pathValue);
-    const normalizedPath = pathValue.replace(/\\/g, "/");
-    const fileName = normalizedPath.split("/").pop()?.trim() ?? "";
-    if (fileName) {
-      values.push(fileName);
-      values.push(fileName.replace(/\.[a-z0-9]{1,6}$/i, "").trim());
-    }
-  }
-  const dedup = new Set<string>();
-  for (const value of values) {
-    const normalized = normalizeCitationText(value);
-    if (!normalized) {
-      continue;
-    }
-    dedup.add(normalized);
-  }
-  return Array.from(dedup);
-}
-
 function selectSourcesUsedForResponse(answer: string, sources: RagSource[]): RagSource[] {
   if (sources.length === 0) {
     return [];
   }
   const citedRanks = extractCitedSourceRanks(answer);
-  if (citedRanks.size > 0) {
-    const dedup = new Map<string, RagSource>();
-    for (const [index, source] of sources.entries()) {
-      const rank = typeof source.rank === "number" && source.rank > 0 ? source.rank : index + 1;
-      if (!citedRanks.has(rank)) {
-        continue;
-      }
-      dedup.set(sourceUsageKey(source, index), source);
-    }
-    return Array.from(dedup.values()).sort((a, b) => {
-      const rankA = typeof a.rank === "number" && a.rank > 0 ? a.rank : Number.MAX_SAFE_INTEGER;
-      const rankB = typeof b.rank === "number" && b.rank > 0 ? b.rank : Number.MAX_SAFE_INTEGER;
-      return rankA - rankB;
-    });
+  if (citedRanks.size === 0) {
+    return [];
   }
-  const normalizedAnswer = normalizeCitationText(answer);
-  if (!normalizedAnswer) {
-    return sources.slice(0, 3);
-  }
-  const answerTokens = new Set(normalizedAnswer.split(" ").filter((token) => token.length > 0));
   const dedup = new Map<string, RagSource>();
   for (const [index, source] of sources.entries()) {
-    const candidates = sourceMentionCandidates(source);
-    let mentioned = false;
-    for (const candidate of candidates) {
-      if (candidate.length >= 8 && normalizedAnswer.includes(candidate)) {
-        mentioned = true;
-        break;
-      }
-      const tokens = candidate.split(" ").filter((token) => token.length >= 4);
-      if (tokens.length === 0) {
-        continue;
-      }
-      const overlap = tokens.filter((token) => answerTokens.has(token)).length;
-      const required = tokens.length >= 2 ? 2 : 1;
-      if (overlap >= required) {
-        mentioned = true;
-        break;
-      }
-    }
-    if (!mentioned) {
+    const rank = typeof source.rank === "number" && source.rank > 0 ? source.rank : index + 1;
+    if (!citedRanks.has(rank)) {
       continue;
     }
     dedup.set(sourceUsageKey(source, index), source);
-  }
-  if (dedup.size === 0) {
-    return sources.slice(0, 3);
   }
   return Array.from(dedup.values()).sort((a, b) => {
     const rankA = typeof a.rank === "number" && a.rank > 0 ? a.rank : Number.MAX_SAFE_INTEGER;

@@ -1364,7 +1364,7 @@ def format_retrieval_context(
         snippet = chunk.text.strip()
         if not snippet:
             continue
-        header = f"Source: {chunk.citation()}\n"
+        header = f"[source {chunk.rank}] {chunk.citation()}\n"
         if max_chars > 0:
             remaining = max_chars - used_chars
             if remaining <= 0:
