@@ -957,6 +957,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   const [modelSearch, setModelSearch] = useState("");
   const [selectedModelDomain, setSelectedModelDomain] = useState<string>("Tous");
   const [selectedModelComplexity, setSelectedModelComplexity] = useState<string>("Tous");
+  const [selectedTemplateCategory, setSelectedTemplateCategory] = useState<string>("Tous");
   const [favoriteModelIds, setFavoriteModelIds] = useState<string[]>([]);
   const [recentModelIds, setRecentModelIds] = useState<string[]>([]);
   const [customTemplates, setCustomTemplates] = useState<CustomDocumentTemplateRecord[]>([]);
@@ -969,6 +970,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState(false);
   const [isMobileSearchPanelOpen, setIsMobileSearchPanelOpen] = useState(false);
+  const [isMobileAiStudioOpen, setIsMobileAiStudioOpen] = useState(false);
   const templateProgressResetTimerRef = useRef<number | null>(null);
   const hasAppliedExpertisePresetRef = useRef(false);
 
@@ -1044,6 +1046,12 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     signInModalTriggerRef.current?.click();
     return false;
   }, [isAuthLoaded, isSignedIn]);
+
+  useEffect(() => {
+    if (!isDocumentsPage && isMobileAiStudioOpen) {
+      setIsMobileAiStudioOpen(false);
+    }
+  }, [isDocumentsPage, isMobileAiStudioOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1519,6 +1527,25 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     [groupedTemplates]
   );
 
+  const templateCategoryOptions = useMemo(() => {
+    const unique = Array.from(new Set(compactTemplates.map((template) => template.category).filter(Boolean)));
+    return ["Tous", ...unique.sort((a, b) => a.localeCompare(b, "fr"))];
+  }, [compactTemplates]);
+
+  useEffect(() => {
+    if (templateCategoryOptions.includes(selectedTemplateCategory)) {
+      return;
+    }
+    setSelectedTemplateCategory("Tous");
+  }, [selectedTemplateCategory, templateCategoryOptions]);
+
+  const displayedTemplates = useMemo(() => {
+    if (selectedTemplateCategory === "Tous") {
+      return compactTemplates;
+    }
+    return compactTemplates.filter((template) => template.category === selectedTemplateCategory);
+  }, [compactTemplates, selectedTemplateCategory]);
+
   useEffect(() => {
     if (selectedModelId && availableTemplates.some((template) => template.id === selectedModelId)) {
       return;
@@ -1627,15 +1654,6 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     }
     const url = buildLibraryViewUrl(doc.id);
     window.open(url, "_blank", "noopener,noreferrer");
-  };
-
-  const toggleFavoriteModel = (templateId: string) => {
-    setFavoriteModelIds((previous) => {
-      if (previous.includes(templateId)) {
-        return previous.filter((id) => id !== templateId);
-      }
-      return [templateId, ...previous].slice(0, 20);
-    });
   };
 
   const markRecentTemplate = (templateId: string) => {
@@ -1846,6 +1864,109 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
       }, 900);
     }
   }, [backendBaseUrl, isGeneratingTemplate, newTemplatePrompt, requireSignedIn]);
+
+  const aiStudioPanelContent = (
+    <>
+      <div className="p-5 flex-1 overflow-y-auto flex flex-col gap-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <span className="material-symbols-outlined text-[#49DE80] text-[18px]">auto_awesome</span>
+            AI Legal Studio
+          </h2>
+          <span className="px-2 py-0.5 rounded-full bg-emerald-900 text-[#49DE80] text-[10px] font-bold border border-emerald-500/30">
+            BETA
+          </span>
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+            Creer un modele par IA
+          </label>
+          <div className="relative group">
+            <textarea
+              className="w-full h-40 bg-[#0c1811] border border-[#2c3d33] rounded-xl p-4 text-sm text-slate-200 focus:ring-1 focus:ring-[#49DE80] focus:border-[#49DE80] resize-none transition-all placeholder-slate-600"
+              onChange={(event) => setNewTemplatePrompt(event.target.value)}
+              placeholder='Ex: "Cree un contrat de prestation de service informatique conforme au droit senegalais"'
+              value={newTemplatePrompt}
+            ></textarea>
+            <div className="absolute bottom-3 right-3 flex gap-2">
+              <button
+                className="p-1.5 rounded-lg bg-[#122118] border border-[#2c3d33] text-slate-400 hover:text-white hover:border-[#49DE80] transition-all"
+                title="Ajouter contexte"
+                type="button"
+              >
+                <span className="material-symbols-outlined text-[18px]">attach_file</span>
+              </button>
+              <button
+                className="p-1.5 rounded-lg bg-[#49DE80] text-[#0c1811] hover:bg-emerald-400 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-60"
+                disabled={isGeneratingTemplate}
+                onClick={() => void handleGenerateTemplateWithAi()}
+                title="Generer"
+                type="button"
+              >
+                <span className="material-symbols-outlined text-[18px]">
+                  {isGeneratingTemplate ? "hourglass_top" : "send"}
+                </span>
+              </button>
+            </div>
+          </div>
+          {templateGenerationError ? (
+            <p className="text-xs text-rose-300">{templateGenerationError}</p>
+          ) : null}
+          {templateGenerationNotice ? (
+            <p className="text-xs text-emerald-300">{templateGenerationNotice}</p>
+          ) : null}
+        </div>
+
+        <div className="bg-[#0c1811] rounded-xl p-4 border border-[#2c3d33] space-y-3">
+          <div className="flex justify-between items-center text-xs">
+            <span className="font-semibold text-slate-300">Generating clauses...</span>
+            <span className="text-[#49DE80] font-mono">
+              {Math.max(0, Math.min(100, Math.round(templateGenerationProgress || (isGeneratingTemplate ? 72 : 0))))}%
+            </span>
+          </div>
+          <div className="h-1 rounded-full bg-slate-800 overflow-hidden">
+            <div
+              className="h-full bg-[#49DE80] transition-all duration-300"
+              style={{
+                width: `${Math.max(2, Math.min(100, templateGenerationProgress || (isGeneratingTemplate ? 72 : 4)))}%`,
+              }}
+            />
+          </div>
+          <div className="text-[10px] text-slate-500 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#49DE80] animate-pulse"></span>
+            Cross-referencing OHADA articles...
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-4 border-t border-[#2c3d33]">
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-1">
+            <span className="material-symbols-outlined text-[14px] text-amber-400">bolt</span>
+            Quick Prompts
+          </label>
+          <div className="space-y-2">
+            {(displayedTemplates.length > 0 ? displayedTemplates : compactTemplates).slice(0, 3).map((template) => (
+              <button
+                className="w-full text-left p-3 rounded-xl bg-[#122118] border border-[#2c3d33] hover:border-[#49DE80] hover:bg-[#254632]/20 transition-all group"
+                key={`quick-right-rail-${template.id}`}
+                onClick={() => setNewTemplatePrompt(`Draft a ${template.name} compliant with Senegalese law.`)}
+                type="button"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="material-symbols-outlined text-[16px] text-slate-500 group-hover:text-[#49DE80]">gavel</span>
+                  <span className="text-xs font-bold text-slate-300 group-hover:text-white">{template.name}</span>
+                </div>
+                <p className="text-[10px] text-slate-500 line-clamp-1 group-hover:text-slate-400">{template.description}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="p-4 bg-[#0c1811] border-t border-[#2c3d33] text-[10px] text-slate-600 text-center leading-tight">
+        AI generated content is for reference only. Consult a qualified lawyer before signing.
+      </div>
+    </>
+  );
 
   return (
     <div className="min-h-screen lg:h-screen flex flex-col overflow-x-hidden lg:overflow-hidden bg-[#112117] text-slate-100">
@@ -2120,14 +2241,20 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
         </aside>
 
         <main className="flex-1 min-w-0 overflow-y-auto flex flex-col">
-          <div className="max-w-7xl mx-auto w-full p-4 sm:p-6 md:p-10 lg:p-12 space-y-8">
+          <div
+            className={`${
+              isDocumentsPage
+                ? "w-full pl-4 sm:pl-6 md:pl-8 lg:pl-10 pr-0 py-4 sm:py-6 md:py-8"
+                : "max-w-7xl mx-auto w-full p-4 sm:p-6 md:p-10 lg:p-12"
+            } space-y-8`}
+          >
           <div className="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-5">
             <div>
               <h2 className="text-3xl sm:text-4xl font-bold tracking-tight">{title}</h2>
               <p className="text-slate-400 mt-2">Consultez et telechargez les PDF juridiques classes par domaine.</p>
             </div>
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full xl:w-auto">
-              <div className="relative group">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full xl:w-auto">
+                <div className="relative group">
                 <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
                   search
                 </span>
@@ -2146,10 +2273,14 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
                   value={isDocumentsPage ? modelSearch : searchTerm}
                 />
               </div>
-              <div className="flex gap-2 bg-[#1a2e22] p-1 rounded-lg border border-slate-800 self-end sm:self-auto">
-                <button
-                  className={`p-2 rounded ${viewMode === "list" ? "bg-[#254632] text-[#49DE80]" : "text-slate-400 hover:text-slate-200"}`}
-                  onClick={() => setViewMode("list")}
+                <div
+                  className={`${
+                    isDocumentsPage ? "hidden sm:flex" : "flex"
+                  } gap-2 bg-[#1a2e22] p-1 rounded-lg border border-slate-800 self-end sm:self-auto`}
+                >
+                  <button
+                    className={`p-2 rounded ${viewMode === "list" ? "bg-[#254632] text-[#49DE80]" : "text-slate-400 hover:text-slate-200"}`}
+                    onClick={() => setViewMode("list")}
                   type="button"
                 >
                   <span className="material-symbols-outlined block">view_list</span>
@@ -2431,254 +2562,123 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
           ) : null}
 
           {isDocumentsPage ? (
-            <div className="grid grid-cols-1 xl:grid-cols-[340px_1fr] gap-8">
-              <aside className="bg-[#1a2e22] rounded-2xl border border-slate-800 p-6 space-y-6 h-fit">
-                <div className="space-y-2">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Recherche modele</h3>
-                  <div className="relative">
-                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">
-                      search
-                    </span>
-                    <input
-                      className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#112117] border border-slate-800 text-sm text-slate-100 placeholder:text-slate-500 focus:ring-1 focus:ring-[#49DE80] focus:border-[#49DE80]"
-                      onChange={(event) => setModelSearch(event.target.value)}
-                      placeholder="Bail, plainte, OHADA..."
-                      type="text"
-                      value={modelSearch}
-                    />
-                  </div>
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-8 xl:gap-0">
+              <section className="space-y-6 xl:pr-8">
+                <div className="xl:hidden flex justify-end">
+                  <button
+                    className="inline-flex items-center gap-2 rounded-lg bg-[#49DE80] px-3 py-2 text-xs font-bold text-[#112117] hover:bg-[#3fd273] transition-colors"
+                    onClick={() => setIsMobileAiStudioOpen(true)}
+                    type="button"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
+                    Generation de document
+                  </button>
                 </div>
-
-                <div className="space-y-2">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Domaine</h3>
-                  <div className="xl:hidden flex flex-wrap gap-2">
-                    {modelDomains.map((domain) => {
-                      const isActive = selectedModelDomain === domain;
+                <div className="rounded-xl border border-slate-800 bg-[#1a2e22] p-3">
+                  <div className="sm:hidden">
+                    <label className="space-y-1.5 block">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Categorie</span>
+                      <select
+                        className="w-full rounded-xl border border-slate-800 bg-[#112117] px-3 py-2 text-sm text-slate-100 focus:border-[#49DE80] focus:ring-1 focus:ring-[#49DE80]"
+                        onChange={(event) => setSelectedTemplateCategory(event.target.value)}
+                        value={selectedTemplateCategory}
+                      >
+                        {templateCategoryOptions.map((category) => (
+                          <option key={`mobile-template-category-filter-${category}`} value={category}>
+                            {category}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="hidden sm:flex flex-wrap gap-2">
+                    {templateCategoryOptions.map((category) => {
+                      const isActive = selectedTemplateCategory === category;
                       return (
                         <button
-                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                          className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${
                             isActive
                               ? "border-[#49DE80]/50 bg-[#49DE80]/15 text-[#49DE80]"
                               : "border-slate-700 bg-[#112117] text-slate-300 hover:border-[#49DE80]/40"
                           }`}
-                          key={domain}
-                          onClick={() => setSelectedModelDomain(domain)}
+                          key={`template-category-filter-${category}`}
+                          onClick={() => setSelectedTemplateCategory(category)}
                           type="button"
                         >
-                          {domain}
+                          {category}
                         </button>
                       );
                     })}
                   </div>
-                  <select
-                    className="hidden xl:block w-full py-2.5 px-3 rounded-xl bg-[#112117] border border-slate-800 text-sm text-slate-100 focus:ring-1 focus:ring-[#49DE80] focus:border-[#49DE80]"
-                    onChange={(event) => setSelectedModelDomain(event.target.value)}
-                    value={selectedModelDomain}
-                  >
-                    {modelDomains.map((domain) => (
-                      <option key={domain} value={domain}>
-                        {domain}
-                      </option>
-                    ))}
-                  </select>
                 </div>
-
-                <div className="space-y-2">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Complexite</h3>
-                  <div className="grid grid-cols-2 gap-2">
-                    {modelComplexities.map((level) => (
-                      <button
-                        className={`py-2 px-2 rounded-lg text-xs font-semibold border transition-colors ${
-                          selectedModelComplexity === level
-                            ? "bg-[#254632] text-[#49DE80] border-[#49DE80]/30"
-                            : "bg-[#112117] text-slate-300 border-slate-800 hover:border-[#49DE80]/40"
-                        }`}
-                        key={level}
-                        onClick={() => setSelectedModelComplexity(level)}
-                        type="button"
-                      >
-                        {level}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-slate-800 bg-[#112117] p-4 space-y-3">
-                  <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">
-                    Creer un modele par IA
-                  </p>
-                  <textarea
-                    className="w-full rounded-lg bg-[#0d1a12] border border-slate-800 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:ring-1 focus:ring-[#49DE80] focus:border-[#49DE80] min-h-[90px]"
-                    onChange={(event) => setNewTemplatePrompt(event.target.value)}
-                    placeholder='Ex: "Cree un contrat de prestation de service informatique conforme au droit senegalais"'
-                    value={newTemplatePrompt}
-                  ></textarea>
-                  {templateGenerationError ? (
-                    <p className="text-xs text-rose-300">{templateGenerationError}</p>
-                  ) : null}
-                  {templateGenerationNotice ? (
-                    <p className="text-xs text-emerald-300">{templateGenerationNotice}</p>
-                  ) : null}
-                  {isGeneratingTemplate || templateGenerationProgress > 0 ? (
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[11px] text-slate-400">
-                        <span>{isGeneratingTemplate ? "Generation du modele..." : "Generation terminee"}</span>
-                        <span>{Math.max(0, Math.min(100, Math.round(templateGenerationProgress)))}%</span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                        <div
-                          className="h-full bg-[#49DE80] transition-all duration-300 ease-out"
-                          style={{
-                            width: `${Math.max(2, Math.min(100, templateGenerationProgress))}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                  <button
-                    className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-[#49DE80] px-3 py-2 text-sm font-bold text-[#112117] hover:bg-[#3fd273] transition-colors disabled:opacity-60"
-                    disabled={isGeneratingTemplate}
-                    onClick={() => void handleGenerateTemplateWithAi()}
-                    type="button"
-                  >
-                    <span className="material-symbols-outlined text-sm">
-                      {isGeneratingTemplate ? "hourglass_top" : "auto_awesome"}
-                    </span>
-                    {isGeneratingTemplate ? "Generation en cours..." : "Generer le modele"}
-                  </button>
-                </div>
-
-                <div className="rounded-xl border border-slate-800 bg-[#112117] p-4">
-                  <p className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-2">Historique modeles utilises</p>
-                  {recentTemplates.length === 0 ? (
-                    <p className="text-xs text-slate-500">Aucun modele utilise recemment.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {recentTemplates.map((template) => (
-                        <button
-                          className="w-full text-left px-2 py-2 rounded-lg hover:bg-white/5 transition-colors"
-                          key={`recent-${template.id}`}
-                          onClick={() => setSelectedModelId(template.id)}
-                          type="button"
-                        >
-                          <p className="text-sm text-slate-200 truncate">{template.name}</p>
-                          <p className="text-[11px] text-slate-500">{template.domain}</p>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </aside>
-
-              <section className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-                  {compactTemplates.map((template) => {
-                    const isSelected = selectedTemplate?.id === template.id;
-                    const isFavorite = favoriteModelIds.includes(template.id);
+                <div className="flex flex-col gap-3">
+                  {displayedTemplates.map((template) => {
                     return (
                       <article
-                        className={`rounded-xl border p-3 transition-colors cursor-pointer ${
-                          isSelected
-                            ? "border-[#49DE80]/50 bg-[#1f3527]"
-                            : "border-slate-800 bg-[#1a2e22] hover:border-[#49DE80]/40"
-                        }`}
+                        className="w-full rounded-xl border border-slate-800 bg-[#1a2e22] hover:border-[#49DE80]/40 p-3 transition-colors"
                         key={template.id}
-                        onClick={() => setSelectedModelId(template.id)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            setSelectedModelId(template.id);
-                          }
-                        }}
-                        role="button"
-                        tabIndex={0}
                       >
-                        <div className="flex items-start justify-between gap-2">
+                        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                           <div className="text-left flex-1 min-w-0">
                             <h4 className="font-bold text-slate-100 truncate">{template.name}</h4>
                             <p className="text-[11px] text-slate-400 mt-0.5 truncate">{template.domain}</p>
+                            <p className="text-xs text-slate-300 mt-2 line-clamp-2">{template.description}</p>
                           </div>
-                          <button
-                            className={`p-1 rounded-md border transition-colors ${
-                              isFavorite
-                                ? "text-amber-300 border-amber-400/40 bg-amber-500/10"
-                                : "text-slate-500 border-slate-700 hover:text-amber-300 hover:border-amber-400/30"
-                            }`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggleFavoriteModel(template.id);
-                            }}
-                            title={isFavorite ? "Retirer des favoris" : "Ajouter aux favoris"}
-                            type="button"
-                          >
-                            <span className="material-symbols-outlined text-[18px]">star</span>
-                          </button>
-                        </div>
-                        <p className="text-xs text-slate-300 mt-2 line-clamp-3">{template.description}</p>
-                        <div className="flex items-center justify-between mt-3 gap-2">
-                          <span className="text-[10px] font-bold uppercase px-2 py-1 rounded-full bg-slate-800 text-slate-200 border border-slate-700 truncate">
-                            {template.category}
-                          </span>
-                          <span className="text-[10px] font-bold uppercase px-2 py-1 rounded-full bg-[#254632] text-[#49DE80]">
-                            {template.complexity}
-                          </span>
-                        </div>
-                        {isSelected ? (
-                          <div className="mt-3 rounded-lg border border-[#49DE80]/30 bg-[#112117] p-3 space-y-3">
-                            <p className="text-xs text-slate-300 leading-relaxed">{template.description}</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {template.legalRefs.slice(0, 4).map((ref) => (
-                                <span
-                                  className="text-[10px] font-semibold px-2 py-1 rounded-full bg-[#254632] text-[#49DE80] border border-[#49DE80]/30"
-                                  key={`${template.id}-inline-ref-${ref}`}
-                                >
-                                  {ref}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="text-[11px] text-slate-400">
-                              <span className="text-[#49DE80] font-semibold">{template.requiredFields.length}</span>{" "}
-                              champs obligatoires ·{" "}
-                              <span className="text-slate-200 font-semibold">{template.optionalFields.length}</span>{" "}
-                              champs optionnels
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                              <button
-                                className="px-3 py-1.5 rounded-lg bg-[#49DE80] text-[#112117] font-bold text-xs hover:bg-[#49DE80]/90 transition-colors"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  openTemplateInChat(template);
-                                }}
-                                type="button"
-                              >
-                                Utiliser ce document
-                              </button>
-                              <button
-                                className="px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 text-xs hover:bg-white/5 transition-colors"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  toggleFavoriteModel(template.id);
-                                }}
-                                type="button"
-                              >
-                                {isFavorite ? "Retirer favori" : "Ajouter favori"}
-                              </button>
-                            </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[10px] font-bold uppercase px-2 py-1 rounded-full bg-slate-800 text-slate-200 border border-slate-700 truncate">
+                              {template.category}
+                            </span>
+                            <span className="text-[10px] font-bold uppercase px-2 py-1 rounded-full bg-[#254632] text-[#49DE80]">
+                              {template.complexity}
+                            </span>
+                            <button
+                              className="px-3 py-1.5 rounded-lg bg-[#49DE80] text-[#112117] font-bold text-xs hover:bg-[#49DE80]/90 transition-colors"
+                              onClick={() => openTemplateInChat(template)}
+                              type="button"
+                            >
+                              Utiliser
+                            </button>
                           </div>
-                        ) : null}
+                        </div>
                       </article>
                     );
                   })}
                 </div>
 
-                {filteredTemplates.length === 0 ? (
+                {displayedTemplates.length === 0 ? (
                   <div className="rounded-2xl border border-slate-800 bg-[#1a2e22] p-6 text-sm text-slate-400">
                     Aucun modele ne correspond a votre recherche.
                   </div>
                 ) : null}
-
-                {selectedTemplate ? null : null}
               </section>
+
+              <aside className="hidden xl:block w-full xl:w-80 xl:justify-self-end bg-[#1a2e22] border border-[#2c3d33] xl:border-y-0 xl:border-r-0 xl:border-l shadow-2xl rounded-2xl xl:rounded-none xl:min-h-[calc(100vh-64px)] xl:sticky xl:top-0">
+                {aiStudioPanelContent}
+              </aside>
+
+              {isMobileAiStudioOpen ? (
+                <>
+                  <button
+                    aria-label="Fermer AI Legal Studio"
+                    className="xl:hidden fixed inset-0 z-40 bg-black/55 backdrop-blur-[1px]"
+                    onClick={() => setIsMobileAiStudioOpen(false)}
+                    type="button"
+                  />
+                  <div className="xl:hidden fixed inset-x-3 top-16 bottom-3 z-50">
+                    <div className="relative h-full bg-[#1a2e22] border border-[#2c3d33] shadow-2xl rounded-2xl overflow-hidden flex flex-col">
+                      <button
+                        aria-label="Fermer"
+                        className="absolute top-2 right-2 z-10 size-8 rounded-lg border border-[#2c3d33] bg-[#122118] text-slate-300"
+                        onClick={() => setIsMobileAiStudioOpen(false)}
+                        type="button"
+                      >
+                        <span className="material-symbols-outlined text-base">close</span>
+                      </button>
+                      {aiStudioPanelContent}
+                    </div>
+                  </div>
+                </>
+              ) : null}
             </div>
           ) : null}
 
