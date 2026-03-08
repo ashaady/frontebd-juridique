@@ -89,6 +89,14 @@ export default function RootLayout({
             body.style.opacity = "1";
           })();
           `}</Script>
+          {/* Google Analytics */}
+          <Script async src="https://www.googletagmanager.com/gtag/js?id=G-WRRQPD54DG" />
+          <Script id="google-analytics">{`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'G-WRRQPD54DG');
+          `}</Script>
           {children}
         </ClerkProvider>
       </body>

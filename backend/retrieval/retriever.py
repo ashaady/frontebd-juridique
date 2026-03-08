@@ -128,6 +128,22 @@ _DOMAIN_FILTER_STOP_TOKENS = {
     "question",
     "risque",
     "risquent",
+    "encourt",
+    "encourent",
+    "applicable",
+    "applicables",
+    "sanction",
+    "sanctions",
+    "peine",
+    "peines",
+    "amende",
+    "amendes",
+    "emprisonnement",
+    "prison",
+    "definition",
+    "definir",
+    "definit",
+    "notion",
     "quoi",
     "quel",
     "quels",
@@ -141,6 +157,13 @@ _DOMAIN_FILTER_STOP_TOKENS = {
     "contre",
     "entre",
 }
+_SHORT_LEGAL_QUERY_TOKENS = {
+    "vol",
+    "viol",
+    "dol",
+    "opj",
+    "vih",
+}
 _FOOD_SAFETY_QUERY_MARKERS = (
     "viande",
     "aliment",
@@ -151,6 +174,53 @@ _FOOD_SAFETY_QUERY_MARKERS = (
     "consommation",
     "insalubre",
     "impropre",
+)
+
+_LIGHT_STEM_SUFFIXES = (
+    "ements",
+    "ement",
+    "ations",
+    "ation",
+    "itions",
+    "ition",
+    "ments",
+    "ment",
+    "euses",
+    "euse",
+    "eaux",
+    "eau",
+    "aires",
+    "aire",
+    "eurs",
+    "eur",
+    "trices",
+    "trice",
+    "tions",
+    "tion",
+    "ances",
+    "ance",
+    "ences",
+    "ence",
+    "ismes",
+    "isme",
+    "istes",
+    "iste",
+    "ables",
+    "able",
+    "ibles",
+    "ible",
+    "iques",
+    "ique",
+    "ives",
+    "ive",
+    "ifs",
+    "if",
+    "ees",
+    "ee",
+    "es",
+    "er",
+    "e",
+    "s",
 )
 
 DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -185,8 +255,15 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "crime",
         "delit",
         "contravention",
-        "peine",
-        "sanction penale",
+        "terrorisme",
+        "homicide",
+        "vol aggrave",
+        "vol qualifie",
+        "vol simple",
+        "escroquerie",
+        "harcelement sexuel",
+        "stupefiants",
+        "trafic de drogue",
     ),
     "electoral": (
         "code electoral",
@@ -270,6 +347,124 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "protection du consommateur",
         "consommation",
     ),
+    "bancaire_regional": (
+        "bceao",
+        "umoa",
+        "uemoa",
+        "cedeo",
+        "cedeao",
+        "etablissement de credit",
+        "activite bancaire",
+        "services de paiement",
+    ),
+}
+
+CHUNK_DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
+    # Path/metadata-oriented signals only. Keep this stricter than DOMAIN_KEYWORDS
+    # to avoid cross-domain drift from generic legal words inside chunk text.
+    "travail": (
+        "code du travail",
+        "droit du travail",
+        "inspection du travail",
+        "contrat de travail",
+    ),
+    "procedure_penale": (
+        "code de procedure penal",
+        "procedure penale",
+        "garde a vue",
+        "officier de police judiciaire",
+        "opj",
+    ),
+    "penal": (
+        "code penal",
+        "droit penal",
+        "code des drogues",
+        "cybercriminalite",
+        "harcelement sexuel",
+        "escroquerie",
+        "homicide",
+        "terrorisme",
+        "vol aggrave",
+        "vol qualifie",
+    ),
+    "electoral": (
+        "code electoral",
+        "election",
+        "liste electorale",
+    ),
+    "fiscal": (
+        "code general des impots",
+        "code des douanes",
+        "douane",
+        "fiscal",
+    ),
+    "civil_commercial": (
+        "code des obligations civiles et commerciales",
+        "code des obligations",
+        "obligations civiles et commerciales",
+        "procedure civile",
+        "cpc",
+        "contrat commercial",
+    ),
+    "famille": (
+        "code de la famille",
+        "droit de la famille",
+        "mariage",
+        "divorce",
+        "filiation",
+        "succession",
+    ),
+    "notariat": (
+        "notariat",
+        "notaire",
+        "acte notarie",
+    ),
+    "ohada": (
+        "ohada",
+        "acte uniforme",
+        "auscgie",
+        "ccja",
+    ),
+    "foncier": (
+        "regime foncier",
+        "propriete fonciere",
+        "foncier",
+    ),
+    "route": (
+        "code de la route",
+        "circulation routiere",
+        "permis de conduire",
+    ),
+    "presse": (
+        "code de la presse",
+        "organe de presse",
+        "journaliste",
+    ),
+    "environnement": (
+        "code de l environnement",
+        "code de l'environnement",
+        "environnement",
+        "forestier",
+        "minier",
+    ),
+    "hygiene_consommation": (
+        "code de l hygiene",
+        "code de l'hygiene",
+        "inspection veterinaire",
+        "protection du consommateur",
+        "produits carnes",
+        "denree alimentaire",
+        "viande",
+    ),
+    "bancaire_regional": (
+        "bceao",
+        "uemoa",
+        "umoa",
+        "cedeao",
+        "etablissement de credit",
+        "activite bancaire",
+        "services de paiement",
+    ),
 }
 
 
@@ -305,7 +500,25 @@ def _normalize_match_text(value: str) -> str:
 
 def _tokenize_for_bm25(value: str) -> list[str]:
     normalized = _normalize_match_text(value)
-    return [token for token in normalized.split() if len(token) >= 2]
+    tokens: list[str] = []
+    for token in normalized.split():
+        if len(token) < 2:
+            continue
+        tokens.append(token)
+        stem = _light_stem(token)
+        if stem != token:
+            tokens.append(stem)
+    return tokens
+
+
+def _light_stem(token: str) -> str:
+    t = token
+    for suffix in _LIGHT_STEM_SUFFIXES:
+        if len(t) - len(suffix) >= 4 and t.endswith(suffix):
+            t = t[: -len(suffix)]
+            break
+    t = t.rstrip("aeiouy")
+    return t if len(t) >= 4 else token
 
 def _extract_legal_domain_terms(query: str) -> tuple[list[str], set[str]]:
     terms: list[str] = []
@@ -324,13 +537,30 @@ def _extract_legal_domain_terms(query: str) -> tuple[list[str], set[str]]:
     return terms, tokens
 
 
-def _compute_domain_scores(normalized_text: str) -> dict[str, int]:
+def _compute_domain_scores(
+    normalized_text: str,
+    *,
+    keyword_map: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, int]:
+    if not normalized_text:
+        return {}
+    active_keyword_map: Mapping[str, Sequence[str]] = keyword_map or DOMAIN_KEYWORDS
+    tokens = normalized_text.split()
+    token_set = set(tokens)
+    padded_text = f" {normalized_text} "
     scores: dict[str, int] = {}
-    for domain, keywords in DOMAIN_KEYWORDS.items():
+    for domain, keywords in active_keyword_map.items():
         score = 0
         for keyword in keywords:
-            if keyword in normalized_text:
-                score += max(1, len(keyword.split()))
+            keyword_norm = _normalize_match_text(keyword)
+            if not keyword_norm:
+                continue
+            if " " in keyword_norm:
+                if f" {keyword_norm} " in padded_text:
+                    score += max(1, len(keyword_norm.split()))
+            else:
+                if keyword_norm in token_set:
+                    score += 1
         if score > 0:
             scores[domain] = score
     return scores
@@ -351,11 +581,60 @@ def detect_query_domains(query: str) -> list[str]:
 
 
 def infer_chunk_domains(chunk: RetrievedChunk) -> set[str]:
-    source_text = _normalize_match_text(f"{chunk.relative_path or ''} {chunk.source_path or ''}")
-    if not source_text:
+    top_folder = _normalize_match_text(_chunk_top_folder(chunk))
+    if top_folder.startswith("bceao") or top_folder.startswith("uemoa") or top_folder.startswith("cedeao"):
+        return {"bancaire_regional"}
+
+    # 1) Path-only classification first: most stable signal.
+    path_text = _normalize_match_text(
+        " ".join(
+            [
+                chunk.relative_path or "",
+                chunk.source_path or "",
+            ]
+        )
+    )
+    if path_text:
+        scores = _compute_domain_scores(path_text, keyword_map=CHUNK_DOMAIN_KEYWORDS)
+        if scores:
+            best = max(scores.values())
+            threshold = max(1, best - 1)
+            return {domain for domain, score in scores.items() if score >= threshold}
+        # If the folder already carries a specific legal corpus identity (Code/Loi/...),
+        # do not infer domains from chunk body text to avoid cross-domain pollution.
+        top_folder_raw = _chunk_top_folder(chunk)
+        if _is_domain_specific_path(top_folder_raw) and not _is_jurisprudence_path(top_folder_raw):
+            return set()
+
+    # 2) Metadata fallback (article hints/headings) with stricter threshold.
+    source_text = _normalize_match_text(
+        " ".join(
+            [
+                chunk.article_hint or "",
+            ]
+        )
+    )
+    if source_text:
+        scores = _compute_domain_scores(source_text, keyword_map=CHUNK_DOMAIN_KEYWORDS)
+        if scores:
+            best = max(scores.values())
+            threshold = max(2, best - 1)
+            return {domain for domain, score in scores.items() if score >= threshold}
+        top_folder_raw = _chunk_top_folder(chunk)
+        if _is_domain_specific_path(top_folder_raw) and not _is_jurisprudence_path(top_folder_raw):
+            return set()
+
+    # 3) Text fallback only as last resort when path+metadata are empty.
+    # Keep it strict to avoid cross-domain pollution from generic legal terms.
+    text_excerpt = _normalize_match_text((chunk.text or "")[:700])
+    if not text_excerpt:
         return set()
-    scores = _compute_domain_scores(source_text)
-    return {domain for domain, score in scores.items() if score > 0}
+    scores = _compute_domain_scores(text_excerpt, keyword_map=CHUNK_DOMAIN_KEYWORDS)
+    if not scores:
+        return set()
+    best = max(scores.values())
+    threshold = max(3, best - 1)
+    return {domain for domain, score in scores.items() if score >= threshold}
 
 
 def _chunk_top_folder(chunk: RetrievedChunk) -> str:
@@ -377,6 +656,31 @@ def _is_domain_specific_path(top_folder: str) -> bool:
         or normalized.startswith("pdfs ")
         or normalized.startswith("regime ")
         or normalized.startswith("notariat")
+        or normalized.startswith("bceao")
+        or normalized.startswith("uemoa")
+        or normalized.startswith("cedeao")
+        or normalized.startswith("cour supreme")
+    )
+
+
+def _is_jurisprudence_path(top_folder: str) -> bool:
+    normalized = _normalize_match_text(top_folder)
+    return normalized.startswith("cour supreme")
+
+
+def _query_prefers_jurisprudence(query: str) -> bool:
+    normalized = _normalize_match_text(query)
+    return any(
+        marker in normalized
+        for marker in (
+            "jurisprudence",
+            "arret",
+            "arrets",
+            "cour supreme",
+            "cassation",
+            "decision",
+            "decisions",
+        )
     )
 
 
@@ -386,11 +690,17 @@ def _extract_query_content_tokens(query: str) -> set[str]:
         return set()
     tokens: set[str] = set()
     for token in normalized.split():
-        if len(token) < 4:
+        if len(token) < 4 and token not in _SHORT_LEGAL_QUERY_TOKENS:
             continue
         if token in _DOMAIN_FILTER_STOP_TOKENS:
             continue
         tokens.add(token)
+        stem = _light_stem(token)
+        tokens.add(stem)
+        if len(token) >= 6:
+            tokens.add(token[:6])
+        if len(stem) >= 6:
+            tokens.add(stem[:6])
     return tokens
 
 
@@ -409,7 +719,15 @@ def _chunk_query_overlap(chunk: RetrievedChunk, query_tokens: set[str]) -> int:
     )
     if not haystack:
         return 0
-    haystack_tokens = set(haystack.split())
+    haystack_tokens: set[str] = set()
+    for token in haystack.split():
+        haystack_tokens.add(token)
+        stem = _light_stem(token)
+        haystack_tokens.add(stem)
+        if len(token) >= 6:
+            haystack_tokens.add(token[:6])
+        if len(stem) >= 6:
+            haystack_tokens.add(stem[:6])
     return len(query_tokens.intersection(haystack_tokens))
 
 
@@ -560,10 +878,25 @@ def rerank_article_aware(
     prefixed_refs, plain_refs = _extract_query_article_refs(query)
     prefixed_numbers = {ref.split(".", maxsplit=1)[1] for ref in prefixed_refs}
     legal_domain_terms, legal_domain_tokens = _extract_legal_domain_terms(query)
+    query_content_tokens = _extract_query_content_tokens(query)
     if not prefixed_refs and not plain_refs and not legal_domain_terms:
+        scored_plain: list[tuple[float, int, RetrievedChunk]] = []
+        for idx, chunk in enumerate(candidate_list):
+            bonus = 0.0
+            if query_content_tokens:
+                overlap = _chunk_query_overlap(chunk, query_content_tokens)
+                if overlap > 0:
+                    bonus += min(0.34, overlap * 0.11)
+                    if len(query_content_tokens) >= 2 and overlap >= 2:
+                        bonus += 0.10
+                else:
+                    bonus -= 0.18
+            scored_plain.append((chunk.score + bonus, -idx, chunk))
+        scored_plain.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [
-            replace(chunk, rank=rank) for rank, chunk in enumerate(candidate_list[:top_k], start=1)
-        ], False
+            replace(chunk, rank=rank)
+            for rank, (_, _, chunk) in enumerate(scored_plain[:top_k], start=1)
+        ], bool(query_content_tokens)
 
     scored: list[tuple[float, float, int, RetrievedChunk]] = []
     for idx, chunk in enumerate(candidate_list):
@@ -599,7 +932,14 @@ def rerank_article_aware(
 
         if legal_domain_terms:
             source_text = _normalize_match_text(
-                f"{chunk.relative_path or ''} {chunk.source_path or ''}"
+                " ".join(
+                    [
+                        chunk.relative_path or "",
+                        chunk.source_path or "",
+                        chunk.article_hint or "",
+                        (chunk.text or "")[:700],
+                    ]
+                )
             )
             domain_match = any(term in source_text for term in legal_domain_terms)
             if domain_match:
@@ -611,6 +951,15 @@ def rerank_article_aware(
                     bonus += min(0.15, token_overlap * 0.05)
                 else:
                     bonus -= 0.30
+
+        if query_content_tokens:
+            overlap = _chunk_query_overlap(chunk, query_content_tokens)
+            if overlap > 0:
+                bonus += min(0.34, overlap * 0.11)
+                if len(query_content_tokens) >= 2 and overlap >= 2:
+                    bonus += 0.10
+            else:
+                bonus -= 0.18
 
         final_score = chunk.score + bonus
         scored.append((final_score, bonus, -idx, chunk))
@@ -738,6 +1087,18 @@ def filter_candidates_by_query_domains(
         marker in normalized_query for marker in _FOOD_SAFETY_QUERY_MARKERS
     ):
         query_domain_set.add("hygiene_consommation")
+    if "penal" in query_domain_set and any(
+        marker in normalized_query
+        for marker in (
+            "terrorisme",
+            "financement du terrorisme",
+            "blanchiment",
+            "lbc",
+            "capitaux",
+            "proliferation",
+        )
+    ):
+        query_domain_set.add("bancaire_regional")
     in_domain: list[RetrievedChunk] = []
     neutral: list[RetrievedChunk] = []
     out_domain: list[RetrievedChunk] = []
@@ -757,16 +1118,28 @@ def filter_candidates_by_query_domains(
             out_domain.append(chunk)
 
     in_domain_count = len(in_domain)
+    if in_domain_count == 0:
+        # If domain tags are too weak for this query/index mix, avoid hard-pruning.
+        # Keep recall and let later ranking/thresholding decide.
+        return candidate_list, True, query_domains, 0
+
     allowed_neutral = neutral[:neutral_fallback_max] if neutral_fallback_max > 0 else []
     filtered = in_domain + allowed_neutral
 
     # Keep a few strong lexical matches even when domain labels do not overlap
     # (e.g. hygiene/consumption texts relevant to a penal question).
     query_tokens = _extract_query_content_tokens(query)
-    lexical_fallback_max = max(neutral_fallback_max, min(4, max(2, top_k // 4)))
+    lexical_fallback_max = (
+        0
+        if neutral_fallback_max <= 0
+        else max(neutral_fallback_max, min(4, max(2, top_k // 4)))
+    )
+    should_add_lexical_fallback = len(filtered) < max(20, top_k // 2)
     lexical_candidates: list[tuple[int, float, int, RetrievedChunk]] = []
-    if query_tokens and lexical_fallback_max > 0:
-        for idx, chunk in enumerate(out_domain):
+    if should_add_lexical_fallback and query_tokens and lexical_fallback_max > 0:
+        # Only use neutral chunks for lexical fallback.
+        # Do not re-introduce chunks already tagged as out-of-domain.
+        for idx, chunk in enumerate(neutral):
             overlap = _chunk_query_overlap(chunk, query_tokens)
             if overlap >= 2:
                 lexical_candidates.append((overlap, chunk.score, -idx, chunk))
@@ -1174,6 +1547,9 @@ class FaissRetriever:
         *,
         refs: Sequence[ArticleRef] | None = None,
         per_ref_limit: int = 2,
+        allowed_domains: Sequence[str] | None = None,
+        strict_domain: bool = False,
+        allow_neutral_when_filtered: bool = True,
     ) -> dict[ArticleRef, list[RetrievedChunk]]:
         if per_ref_limit < 1:
             raise ValueError("per_ref_limit must be >= 1")
@@ -1190,6 +1566,22 @@ class FaissRetriever:
 
         ordered_refs = list(refs) if refs is not None else _extract_query_article_refs_ordered(query)
         legal_domain_terms, legal_domain_tokens = _extract_legal_domain_terms(query)
+        normalized_query = _normalize_match_text(query)
+        query_wants_jurisprudence = _query_prefers_jurisprudence(query)
+        query_mentions_penal = ("code penal" in normalized_query) or ("droit penal" in normalized_query)
+        query_mentions_procedure_penale = (
+            ("procedure penal" in normalized_query)
+            or ("code de procedure penal" in normalized_query)
+            or ("code procedure penal" in normalized_query)
+            or ("cpp" in normalized_query)
+            or ("pourvoi" in normalized_query)
+            or ("appel" in normalized_query)
+        )
+        allowed_domain_set = {str(domain or "").strip().lower() for domain in (allowed_domains or ()) if str(domain or "").strip()}
+        if "penal" in allowed_domain_set:
+            allowed_domain_set.add("procedure_penale")
+        if "procedure_penale" in allowed_domain_set:
+            allowed_domain_set.add("penal")
         if not ordered_refs:
             return {}
 
@@ -1211,10 +1603,31 @@ class FaissRetriever:
             for ref in ordered_refs:
                 article_ref, prefixed = ref
                 if _matches_article_ref_in_text(haystack, article_ref, prefixed):
+                    if allowed_domain_set:
+                        candidate_chunk = self._chunk_from_meta(idx=idx, score=0.0, rank=0)
+                        chunk_domains = {domain.strip().lower() for domain in infer_chunk_domains(candidate_chunk)}
+                        if strict_domain:
+                            if not chunk_domains.intersection(allowed_domain_set):
+                                continue
+                        else:
+                            domain_match = bool(chunk_domains.intersection(allowed_domain_set))
+                            if not domain_match:
+                                if chunk_domains:
+                                    continue
+                                if not allow_neutral_when_filtered:
+                                    continue
+
                     score = self._score_index_for_query(idx=idx, query_vector=query_vector)
                     if legal_domain_terms:
                         source_text = _normalize_match_text(
-                            f"{meta.get('relative_path') or ''} {meta.get('source_path') or ''}"
+                            " ".join(
+                                [
+                                    str(meta.get("relative_path") or ""),
+                                    str(meta.get("source_path") or ""),
+                                    str(meta.get("article_hint") or ""),
+                                    str(meta.get("text") or "")[:700],
+                                ]
+                            )
                         )
                         if any(term in source_text for term in legal_domain_terms):
                             score += 0.35
@@ -1228,6 +1641,38 @@ class FaissRetriever:
                                 score += 0.06
                             else:
                                 score -= 0.25
+
+                    relative_path = str(meta.get("relative_path") or "")
+                    source_path = str(meta.get("source_path") or "")
+                    source_locator = _normalize_match_text(f"{relative_path} {source_path}")
+                    top_folder = relative_path.split("/", 1)[0] if "/" in relative_path else relative_path
+                    is_jurisprudence = _is_jurisprudence_path(top_folder)
+                    if is_jurisprudence and not query_wants_jurisprudence:
+                        score -= 0.35
+                    elif (not is_jurisprudence) and query_wants_jurisprudence:
+                        score -= 0.05
+                    else:
+                        score += 0.05
+
+                    if ("code penal" in normalized_query or "droit penal" in normalized_query):
+                        if "droit penal" in source_locator or "code penal" in source_locator:
+                            score += 0.95
+                        elif "procedure penal" in source_locator:
+                            if query_mentions_procedure_penale:
+                                score += 0.45
+                            else:
+                                score -= 0.35
+                    elif query_mentions_procedure_penale:
+                        if "procedure penal" in source_locator or "code de procedure penal" in source_locator:
+                            score += 0.9
+                        elif "droit penal" in source_locator or "code penal" in source_locator:
+                            score += 0.18
+
+                    if query_mentions_penal and not query_mentions_procedure_penale:
+                        if "droit penal" in source_locator or "code penal" in source_locator:
+                            score += 0.25
+                        elif "procedure penal" in source_locator:
+                            score -= 0.25
                     matched[ref].append((score, idx))
 
         results: dict[ArticleRef, list[RetrievedChunk]] = {}
@@ -1528,16 +1973,61 @@ def _as_optional_int(value: Any) -> int | None:
 def format_retrieval_context(
     chunks: Sequence[RetrievedChunk],
     max_chars: int,
+    focus_terms: Sequence[str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     context_parts: list[str] = []
     used_sources: list[dict[str, Any]] = []
     used_chars = 0
+    normalized_focus_terms: list[str] = []
+    for raw_term in focus_terms or ():
+        term = _normalize_match_text(str(raw_term or ""))
+        if len(term) < 4:
+            continue
+        if term in normalized_focus_terms:
+            continue
+        normalized_focus_terms.append(term)
+    # Keep room for multiple sources: one oversized chunk should not consume the full context.
+    if max_chars > 0 and chunks:
+        per_source_budget = (max_chars // max(1, len(chunks))) - 160
+        max_snippet_chars_per_source = max(450, min(1200, per_source_budget))
+    else:
+        max_snippet_chars_per_source = 1400
 
     for chunk in chunks:
         snippet = chunk.text.strip()
         if not snippet:
             continue
-        header = f"[source {chunk.rank}] {chunk.citation()}\n"
+        if len(snippet) > max_snippet_chars_per_source:
+            best_start = 0
+            if normalized_focus_terms:
+                normalized_snippet = _normalize_match_text(snippet)
+                best_pos: int | None = None
+                for term in normalized_focus_terms:
+                    idx = normalized_snippet.find(term)
+                    if idx < 0:
+                        continue
+                    if best_pos is None or idx < best_pos:
+                        best_pos = idx
+                if best_pos is not None:
+                    best_start = max(0, best_pos - (max_snippet_chars_per_source // 4))
+            clipped = snippet[best_start : best_start + max_snippet_chars_per_source]
+            snippet = clipped.rstrip()
+            if best_start > 0:
+                snippet = f"... {snippet}"
+            if len(snippet) >= max_snippet_chars_per_source:
+                snippet = snippet[: max_snippet_chars_per_source - 3].rstrip() + "..."
+        source_label_raw = (chunk.relative_path or chunk.source_path or "unknown-source").replace("\\", "/")
+        source_label = source_label_raw.split("/")[-1] or source_label_raw
+        if isinstance(chunk.page_start, int) and isinstance(chunk.page_end, int):
+            if chunk.page_start == chunk.page_end:
+                page_ref = f" (p. {chunk.page_start})"
+            else:
+                page_ref = f" (pp. {chunk.page_start}-{chunk.page_end})"
+        elif isinstance(chunk.page_start, int):
+            page_ref = f" (p. {chunk.page_start})"
+        else:
+            page_ref = ""
+        header = f"Source {chunk.rank}: {source_label}{page_ref}\n"
         if max_chars > 0:
             remaining = max_chars - used_chars
             if remaining <= 0:
@@ -1547,7 +2037,9 @@ def format_retrieval_context(
                 if context_parts:
                     break
                 snippet = ""
-            elif len(snippet) > max_snippet_chars:
+            else:
+                max_snippet_chars = min(max_snippet_chars, max_snippet_chars_per_source)
+            if len(snippet) > max_snippet_chars:
                 if max_snippet_chars <= 3:
                     snippet = snippet[:max_snippet_chars]
                 else:

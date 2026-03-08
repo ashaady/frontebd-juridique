@@ -181,7 +181,11 @@ def _extract_completion_text(message: Any) -> str:
     return "".join(parts).strip()
 
 
-_SOURCE_CITATION_RE = re.compile(r"\[source\s+(\d+)\]", re.IGNORECASE)
+_SOURCE_CITATION_RE = re.compile(
+    r"(?:\[\s*source\s+(\d+)\s*\]|\bsource\s+(\d+)\b)",
+    re.IGNORECASE,
+)
+_DIRECT_SOURCE_MENTION_RE = re.compile(r"\bsource\s*:\s*([^\n]{8,220})", re.IGNORECASE)
 _ARTICLE_MENTION_RE = re.compile(
     r"\b(?:l['’]\s*)?(?:article|art\.?)\s*(?:[a-z]\s*)?\d+[a-z]?(?:-\d+)?\b",
     re.IGNORECASE,
@@ -196,12 +200,13 @@ _RAG_NOTE_LIKE_RE = re.compile(
     r"(?:query-rewrite-|domains=|confidence=|threshold_start=|selected_chunks=|citation_target=|act-generation-mode|citation-underuse)",
     re.IGNORECASE,
 )
+_MARKDOWN_EMPHASIS_RE = re.compile(r"(\*\*|__|\*|_)([^*_]+?)\1")
 
 
 def _distinct_source_citations(answer: str) -> set[int]:
     citations: set[int] = set()
     for match in _SOURCE_CITATION_RE.finditer(answer):
-        value = match.group(1)
+        value = match.group(1) or match.group(2)
         try:
             citations.add(int(value))
         except (TypeError, ValueError):
@@ -225,7 +230,12 @@ def _check_citation_underuse(
     if rag_source_count < settings.rag_min_source_citations:
         return rag_note, False
     distinct_citations = _distinct_source_citations(answer)
-    if len(distinct_citations) >= settings.rag_min_source_citations:
+    direct_mentions = {
+        re.sub(r"\s+", " ", match.group(1).strip().lower())
+        for match in _DIRECT_SOURCE_MENTION_RE.finditer(answer or "")
+        if isinstance(match.group(1), str) and match.group(1).strip()
+    }
+    if (len(distinct_citations) + len(direct_mentions)) >= settings.rag_min_source_citations:
         return rag_note, False
     updated_note = _append_rag_note(rag_note, "citation-underuse")
     return updated_note, True
@@ -295,6 +305,168 @@ def _tokenize_for_citation_match(text: str) -> set[str]:
     return {token for token in tokens if token not in _CITATION_MATCH_STOPWORDS}
 
 
+def _extract_numeric_tokens_for_citation(text: str) -> set[str]:
+    values: set[str] = set()
+    for raw in re.findall(r"\b\d[\d\s\.,]*\b", text):
+        digits = re.sub(r"\D+", "", raw)
+        if not digits:
+            continue
+        values.add(digits)
+    return values
+
+
+def _source_rank_citation_map(rag_sources: list[dict[str, Any]]) -> dict[int, str]:
+    rank_map: dict[int, str] = {}
+    for source in rag_sources:
+        if not isinstance(source, dict):
+            continue
+        try:
+            rank = int(source.get("rank"))
+        except (TypeError, ValueError):
+            continue
+        label = str(
+            source.get("citation")
+            or source.get("relative_path")
+            or source.get("source_path")
+            or f"source {rank}"
+        ).strip()
+        if not label:
+            continue
+        label = re.sub(r"\s+", " ", label).strip()
+        rank_map[rank] = label
+    return rank_map
+
+
+def _replace_source_markers_with_direct_citations(
+    answer: str,
+    rank_to_citation: dict[int, str],
+) -> tuple[str, bool]:
+    updated = answer
+    changed = False
+
+    for rank, citation in sorted(rank_to_citation.items(), key=lambda item: item[0], reverse=True):
+        marker_re = re.compile(
+            rf"(?:\[\s*source\s+{rank}\s*\]|\bsource\s+{rank}\b)",
+            re.IGNORECASE,
+        )
+        replacement = f"Source: {citation}"
+        new_updated = marker_re.sub(replacement, updated)
+        if new_updated != updated:
+            updated = new_updated
+            changed = True
+
+    # Remove unresolved source placeholders.
+    new_updated = re.sub(r"\[\s*source\s+\d+\s*\]", "", updated, flags=re.IGNORECASE)
+    new_updated = re.sub(r"\bsource\s+\d+\b", "", new_updated, flags=re.IGNORECASE)
+    if new_updated != updated:
+        updated = new_updated
+        changed = True
+    return updated, changed
+
+
+_ARTICLE_REFERENCE_CAPTURE_RE = re.compile(
+    r"\b(?:article|art\.?)\s*([0-9]+(?:\s*(?:bis|ter|quater))?)\b",
+    re.IGNORECASE,
+)
+_NUMERIC_RANGE_RE = re.compile(
+    r"\b(\d[\d\s\.,]*)\s*(?:a|à|-|au)\s*(\d[\d\s\.,]*)\b",
+    re.IGNORECASE,
+)
+_SANCTION_NUMERIC_LINE_RE = re.compile(
+    r"\b(?:peine|peines|amende|amendes|emprisonnement|puni|punie|punis)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_numeric_token(token: str) -> str:
+    return re.sub(r"\D+", "", token or "")
+
+
+def _extract_article_keys(text: str) -> set[str]:
+    keys: set[str] = set()
+    for match in _ARTICLE_REFERENCE_CAPTURE_RE.finditer(text or ""):
+        key = re.sub(r"\s+", " ", (match.group(1) or "").strip().lower())
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _extract_numeric_ranges(text: str) -> set[tuple[str, str]]:
+    ranges: set[tuple[str, str]] = set()
+    for match in _NUMERIC_RANGE_RE.finditer(text or ""):
+        left = _normalize_numeric_token(match.group(1))
+        right = _normalize_numeric_token(match.group(2))
+        if left and right:
+            ranges.add((left, right))
+    return ranges
+
+
+def _sanitize_conflicting_article_ranges(
+    answer: str,
+    rag_sources: list[dict[str, Any]],
+) -> tuple[str, bool]:
+    if not answer.strip():
+        return answer, False
+
+    source_meta: list[tuple[set[str], set[tuple[str, str]]]] = []
+    for source in rag_sources:
+        if not isinstance(source, dict):
+            continue
+        excerpt = str(source.get("excerpt") or "").strip()
+        if not excerpt:
+            excerpt = str(source.get("citation") or "").strip()
+        if not excerpt:
+            continue
+        article_keys = _extract_article_keys(excerpt)
+        range_pairs = _extract_numeric_ranges(excerpt)
+        if not article_keys or not range_pairs:
+            continue
+        source_meta.append((article_keys, range_pairs))
+
+    if not source_meta:
+        return answer, False
+
+    changed = False
+    sanitized_lines: list[str] = []
+    for raw_line in answer.splitlines():
+        line = raw_line.strip()
+        if not line:
+            sanitized_lines.append(raw_line)
+            continue
+        if not _SANCTION_NUMERIC_LINE_RE.search(line):
+            sanitized_lines.append(raw_line)
+            continue
+
+        line_article_keys = _extract_article_keys(line)
+        line_ranges = _extract_numeric_ranges(line)
+        if not line_article_keys or not line_ranges:
+            sanitized_lines.append(raw_line)
+            continue
+
+        candidate_sources = [
+            ranges
+            for article_keys, ranges in source_meta
+            if line_article_keys.intersection(article_keys)
+        ]
+        if not candidate_sources:
+            sanitized_lines.append(raw_line)
+            continue
+        if any(line_ranges.issubset(ranges) for ranges in candidate_sources):
+            sanitized_lines.append(raw_line)
+            continue
+
+        article_label = sorted(line_article_keys)[0]
+        replacement = (
+            f"Pour l'article {article_label}, les peines chiffrees varient selon la version du texte "
+            "presente dans les sources; verifier le document applicable cite."
+        )
+        sanitized_lines.append(replacement)
+        changed = True
+
+    sanitized = "\n".join(sanitized_lines).strip()
+    return sanitized if sanitized else answer, changed
+
+
 def _sanitize_citations_against_sources(
     answer: str,
     rag_sources: list[dict[str, Any]],
@@ -359,17 +531,32 @@ def _sanitize_citations_against_sources(
             overlap = len(claim_tokens.intersection(source_tokens)) / max(1, len(claim_tokens))
             if overlap < min_overlap_ratio:
                 bad_ranks.add(rank)
+                continue
+            claim_numbers = _extract_numeric_tokens_for_citation(claim_text)
+            if claim_numbers:
+                source_numbers = _extract_numeric_tokens_for_citation(
+                    source_text_by_rank.get(rank, "")
+                )
+                if source_numbers and claim_numbers.isdisjoint(source_numbers):
+                    bad_ranks.add(rank)
 
     for rank in sorted(bad_ranks):
         before = updated_answer
         updated_answer = re.sub(
-            rf"\[source\s+{rank}\]",
+            rf"(?:\[\s*source\s+{rank}\s*\]|\bsource\s+{rank}\b)",
             "",
             updated_answer,
             flags=re.IGNORECASE,
         )
         if updated_answer != before:
             changed = True
+
+    rank_to_citation = _source_rank_citation_map(filtered_sources)
+    updated_answer, replaced_markers = _replace_source_markers_with_direct_citations(
+        updated_answer,
+        rank_to_citation,
+    )
+    changed = changed or replaced_markers
 
     normalized_lines: list[str] = []
     previous_empty = False
@@ -387,18 +574,9 @@ def _sanitize_citations_against_sources(
     if updated_answer != answer:
         changed = True
 
-    kept_citations = _distinct_source_citations(updated_answer)
-    if kept_citations:
-        kept_sources = []
-        for source in filtered_sources:
-            try:
-                rank = int(source.get("rank"))
-            except (TypeError, ValueError):
-                continue
-            if rank in kept_citations:
-                kept_sources.append(source)
-    else:
-        kept_sources = []
+    # Preserve retrieved sources to keep RAG observability even when inline
+    # citation markers are converted/removed.
+    kept_sources = filtered_sources
 
     if len(kept_sources) != len(rag_sources):
         changed = True
@@ -439,6 +617,33 @@ def _strip_programming_artifacts(text: str) -> tuple[str, bool]:
             continue
         kept_lines.append(line)
     return "\n".join(kept_lines), changed
+
+
+def _strip_markdown_artifacts(text: str) -> tuple[str, bool]:
+    changed = False
+    cleaned = text
+
+    def _replace_emphasis(match: re.Match[str]) -> str:
+        nonlocal changed
+        changed = True
+        return (match.group(2) or "").strip()
+
+    cleaned = _MARKDOWN_EMPHASIS_RE.sub(_replace_emphasis, cleaned)
+
+    normalized_lines: list[str] = []
+    for raw_line in cleaned.splitlines():
+        line = raw_line
+        new_line = re.sub(r"^\s{0,3}#{1,6}\s*", "", line)
+        if new_line != line:
+            changed = True
+            line = new_line
+        new_line = re.sub(r"^\s*[-*+]\s+", "", line)
+        if new_line != line:
+            changed = True
+            line = new_line
+        normalized_lines.append(line)
+    cleaned = "\n".join(normalized_lines)
+    return cleaned, changed
 
 
 def _compress_repeated_lines(text: str, max_occurrences: int = 2) -> tuple[str, bool]:
@@ -504,6 +709,9 @@ def _sanitize_generated_answer(answer: str) -> tuple[str, bool]:
     cleaned, removed_code = _strip_programming_artifacts(cleaned)
     changed = changed or removed_code
 
+    cleaned, removed_markdown = _strip_markdown_artifacts(cleaned)
+    changed = changed or removed_markdown
+
     cleaned, compressed = _compress_repeated_lines(cleaned, max_occurrences=2)
     changed = changed or compressed
 
@@ -553,11 +761,18 @@ RAG_SYSTEM_INSTRUCTIONS = (
     "Si une telle question apparait, refuse poliment en recentrant vers le droit senegalais.\n"
     "Ne mentionne jamais le niveau de confiance interne (LOW, MEDIUM, HIGH) dans la reponse.\n"
     "Si tu cites un article ou une loi, ecris-le explicitement (ex: Article 55) dans la reponse.\n"
-    "Toute affirmation juridique substantielle doit etre rattachee a au moins une [source X] du contexte.\n"
+    "Toute affirmation juridique substantielle doit etre rattachee a une source documentaire explicite du contexte.\n"
+    "N'utilise jamais les placeholders [source X] ni 'source 1' dans la reponse finale.\n"
+    "Cite directement le document et la page, format conseille: 'Source: <citation du document>'.\n"
     "N'associe jamais un numero d'article a un contenu qui n'apparait pas clairement dans la source citee.\n"
     "Si l'article exact n'est pas explicite dans le contexte, n'ecris pas son numero.\n"
     "A la place, formule prudemment 'base legale non explicite dans le contexte fourni'.\n"
+    "Si plusieurs versions d'un meme article apparaissent dans le contexte, ne fusionne jamais les chiffres.\n"
+    "Indique explicitement qu'il existe plusieurs versions et distingue chaque version avec sa source.\n"
     "Quand au moins 3 sources sont fournies, synthetise au moins 3 sources distinctes.\n"
+    "Si possible, ces sources doivent provenir d'au moins 2 documents differents (pas seulement plusieurs extraits du meme fichier).\n"
+    "Si un texte general (code) et un texte special (loi speciale/decret) sont tous deux presents et pertinents,\n"
+    "cite explicitement les deux et explique leur articulation.\n"
     "Si moins de 3 sources sont disponibles, dis-le explicitement et reponds avec ce qui est disponible.\n"
     "Pour les questions de responsabilite/sanctions (ex: 'il risque quoi'), reponds dans cet ordre:\n"
     "1) qualification et explication juridique des faits,\n"
@@ -569,10 +784,8 @@ RAG_SYSTEM_INSTRUCTIONS = (
     "N'invente ni faits, ni articles, ni sanctions.\n"
     "Si la question demande les peines/sanctions (ex: 'il risque quoi'), et que le contexte contient des peines,\n"
     "indique explicitement la duree d'emprisonnement et/ou le montant d'amende avec la base legale citee.\n"
-    "Regle speciale: si la question porte sur homosexualite/acte contre nature et que present,\n"
-    "cite explicitement l'Article 319 (Loi n 66-16 du 1er fevrier 1966).\n"
     "Format de sortie obligatoire: texte brut uniquement.\n"
-    "N'utilise jamais de markdown ni de caracteres de balisage (` ``` ** __ # > [ ] ( ) ).\n"
+    "N'utilise jamais de markdown ni de caracteres de balisage (` ``` ** __ # > ).\n"
     "N'ajoute pas de puces markdown; ecris des phrases claires sur des lignes simples.\n"
 )
 
@@ -583,7 +796,7 @@ RAG_NO_CONTEXT_RESPONSE = (
     "Si une telle question apparait, refuse poliment en recentrant vers le droit senegalais.\n"
     "Le contexte documentaire exploitable est insuffisant pour citer des articles de facon fiable.\n"
     "Fournis quand meme une reponse utile, claire et prudente a partir des principes juridiques generaux.\n"
-    "N'invente ni numero d'article, ni sanction, ni citation [source X].\n"
+    "N'invente ni numero d'article, ni sanction, ni placeholder de citation.\n"
     "Si un point depend d'un texte precis non present, indique: 'base legale non explicite dans le contexte'.\n"
     "Format de sortie obligatoire: texte brut uniquement, sans markdown ni caracteres de balisage.\n"
 )
@@ -616,54 +829,45 @@ ACT_GENERATION_INSTRUCTIONS = (
     "- Format de sortie obligatoire: texte brut uniquement, sans markdown ni caracteres de balisage.\n"
 )
 
-ARTICLE_319_SPECIAL_INSTRUCTIONS = (
-    "Instruction obligatoire pour cette question:\n"
-    "- Repondre explicitement en citant l'Article 319 (Loi n 66-16 du 1er fevrier 1966).\n"
-    "- Indiquer la peine pour 'acte impudique ou contre nature avec un individu de son sexe': "
-    "emprisonnement de 1 a 5 ans et amende de 100.000 a 1.500.000 francs.\n"
-    "- Indiquer que si l'acte est commis avec un mineur de 21 ans, le maximum de la peine est prononce.\n"
-    "- Si le texte exact n'est pas present dans le CONTEXTE RAG, ecrire explicitement que "
-    "l'information est non trouvee dans le contexte.\n"
-    "- Format de reponse obligatoire:\n"
-    "Reponse: ...\n"
-    "Base legale citee: ...\n"
-    "Peines: ...\n"
-    "Sources: [source X]\n"
-)
-
-RAG_RETRIEVAL_OVERFETCH_FACTOR = 4
+RAG_RETRIEVAL_OVERFETCH_FACTOR = 8
 
 RAG_QUERY_REWRITE_SYSTEM_INSTRUCTIONS = (
-    "Tu es un assistant de reformulation pour la recherche documentaire juridique.\n"
-    "Objectif: transformer la question utilisateur en requete RAG precise, en francais, "
-    "sans changer l'intention.\n"
-    "Regles:\n"
-    "- La requete finale doit etre STRICTEMENT en francais.\n"
-    "- N'utilise pas d'anglais, sauf sigle officiel ou nom propre.\n"
-    "- Determine d'abord le domaine juridique principal de la question.\n"
-    "- Ajoute obligatoirement une ancre de domaine explicite a la requete.\n"
-    "- Exemples d'ancres: 'code du travail senegal', 'code de la famille senegal', "
-    "'code penal senegal', 'code de procedure civile senegal', "
-    "'code general des impots senegal', 'ohada acte uniforme'.\n"
-    "- Si la question vise un sous-theme, ajoute aussi un mot-cle thematique utile "
-    "(ex: 'chapitre conges', 'rupture contrat', 'indemnite de conges').\n"
-    "- Gere les variantes lexicales et petites fautes de frappe de l'utilisateur.\n"
-    "- Si l'utilisateur ecrit un libelle de code, ajoute aussi le synonyme de domaine, "
-    "et inversement (ex: 'code penal' <-> 'droit penal').\n"
-    "- Si la question vise les sanctions/peines, ajoute les termes: "
-    "'sanctions penales', 'peines', 'amende', 'emprisonnement'.\n"
-    "- Si la question concerne des denrees/aliments/viande, ajoute aussi: "
-    "'code de l hygiene', 'protection du consommateur', 'inspection veterinaire'.\n"
-    "- Exemples d'equivalence a conserver dans `query`: "
-    "'code penal'/'droit penal', 'code du travail'/'droit du travail', "
-    "'code de la famille'/'droit de la famille'.\n"
-    "- N'ajoute jamais des domaines hors sujet (ex: ne pas ajouter 'ohada' pour une question travail).\n"
-    "- Retourne uniquement un JSON valide sur une seule ligne.\n"
+    "Tu es un expert de reformulation pour la recherche documentaire juridique "
+    "(droit senegalais et OHADA).\n"
+    "Mission: transformer la question utilisateur en requete RAG juridiquement exploitable, "
+    "plus precise, plus complete et plus discriminante, sans changer l'intention.\n"
+    "Contraintes absolues:\n"
+    "- La sortie finale doit etre STRICTEMENT en francais (sauf sigles officiels / noms propres).\n"
+    "- Ne reponds pas a la question de fond: tu ne fais QUE reformuler pour la recherche.\n"
+    "- Ne fabrique jamais un numero d'article ou une reference legale absente de la question.\n"
+    "- Ne rajoute pas de domaine hors sujet.\n"
+    "Strategie de reformulation:\n"
+    "- Identifier le domaine principal (penal, travail, famille, fiscal, commercial, procedure, OHADA, etc.).\n"
+    "- Ajouter une ancre de domaine explicite pertinente "
+    "(ex: 'code penal senegal', 'code du travail senegal', 'code de la famille senegal', "
+    "'code de procedure penale senegal', 'code de procedure civile senegal', "
+    "'code general des impots senegal', 'ohada acte uniforme').\n"
+    "- Conserver tous les faits utiles de la question (qualificatifs, circonstances, acteurs, temporalite, contexte).\n"
+    "- Corriger les fautes evidentes et normaliser les variantes lexicales "
+    "(ex: 'code penal' <-> 'droit penal').\n"
+    "- Enrichir avec synonymes juridiques strictement utiles a la recherche documentaire.\n"
+    "- Si la question vise les peines/sanctions, inclure explicitement les axes de recherche: "
+    "'sanctions penales', 'peines', 'amende', 'emprisonnement', "
+    "'circonstances aggravantes', 'elements constitutifs' quand pertinent.\n"
+    "- Si une infraction precise est citee (ex: vol aggrave, escroquerie, harcelement sexuel), "
+    "la conserver telle quelle et la placer au debut de la requete.\n"
+    "- Si la question est une definition simple, produire une requete juridique claire de type "
+    "'definition + notion + base legale potentielle', sans bruit inutile.\n"
+    "Style attendu pour `query`:\n"
+    "- Rediger `query` comme UNE phrase juridique complete et naturelle (pas une liste).\n"
+    "- La phrase doit conserver les faits utiles et expliciter clairement l'objet juridique de la recherche.\n"
+    "- Interdit: enchainement brut de mots-cles separes par virgules, points-virgules, slashs ou tags.\n"
+    "- AUCUNE limite stricte de mots: tu peux produire une reformulation juridique complete si necessaire.\n"
+    "- La requete doit rester utile a la recherche (pas de bavardage, pas de meta-commentaire).\n"
+    "Format de sortie (obligatoire):\n"
+    "- Retourner UNIQUEMENT un JSON valide sur une seule ligne.\n"
     "- Format exact: {\"query\":\"...\"}\n"
-    "- La valeur `query` doit contenir la question reformulee + l'ancre domaine + mot-cle utile.\n"
-    "- Si la question est une demande de definition simple (ex: 'c quoi ...', 'definition ...', "
-    "'exemple ...'), retourne une requete courte de type 'definition ...' sans sur-enrichissement.\n"
-    "- N'ajoute aucune explication, aucun markdown, aucun commentaire.\n"
+    "- Aucune explication, aucun markdown, aucun commentaire avant/apres le JSON.\n"
 )
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -698,6 +902,13 @@ _SMALL_TALK_EXACT = {
 
 _REWRITE_MEMORY_MAX_MESSAGES = 6
 _REWRITE_MEMORY_MAX_LINE_CHARS = 160
+_REWRITE_KEYWORD_LIST_SEPARATORS = (",", ";", "/", "|")
+_REWRITE_SENTENCE_VERB_RE = re.compile(
+    r"\b(?:est|sont|etre|constitue|constituent|concerne|concernent|prevoit|prevoient|"
+    r"definit|definissent|qualifie|qualifient|regit|regissent|sanctionne|sanctionnent|"
+    r"puni|punie|punis|punies|encourt|encourent|peut|peuvent|doit|doivent|vise|visent)\b",
+    re.IGNORECASE,
+)
 _REWRITE_FOLLOWUP_PREFIXES = (
     "et ",
     "et pour",
@@ -725,6 +936,22 @@ _REWRITE_FOLLOWUP_MARKERS = {
     "meme",
     "même",
 }
+
+_REWRITE_SANCTION_GUARD_PHRASES = (
+    "sanctions penales",
+    "sanction penale",
+    "peines applicables",
+    "peine applicable",
+    "peines encourues",
+    "peine encourue",
+    "amendes",
+    "amende",
+    "emprisonnement",
+    "sanctions",
+    "sanction",
+    "peines",
+    "peine",
+)
 
 
 def _strip_accents(value: str) -> str:
@@ -830,40 +1057,24 @@ _REWRITE_DOMAIN_ANCHORS: list[tuple[tuple[str, ...], str]] = [
     ),
 ]
 
-_REWRITE_TOPIC_HINTS: list[tuple[tuple[str, ...], str]] = [
-    (
-        (
-            "risque",
-            "risquent",
-            "encourt",
-            "peine",
-            "peines",
-            "sanction",
-            "sanctions",
-            "amende",
-            "emprisonnement",
-            "puni",
-            "punissable",
-        ),
-        "sanctions penales peines amende emprisonnement",
-    ),
-    (
-        (
-            "viande",
-            "aliment",
-            "alimentaire",
-            "denree",
-            "boucher",
-            "hygiene",
-            "consommation",
-            "impropre",
-        ),
-        "hygiene alimentaire inspection veterinaire sante publique",
-    ),
-    (("conge", "conges", "conges payes"), "chapitre conges"),
-    (("licenciement", "rupture"), "rupture contrat"),
-    (("indemnite", "dommages et interets"), "indemnites"),
-]
+_REWRITE_ANCHOR_BY_DETECTED_DOMAIN: dict[str, str] = {
+    "travail": "code du travail senegal",
+    "famille": "code de la famille senegal",
+    "penal": "code penal senegal",
+    "procedure_penale": "code de procedure penale senegal",
+    "fiscal": "code general des impots senegal",
+    "civil_commercial": "code des obligations civiles et commerciales senegal",
+    "ohada": "ohada acte uniforme",
+    "foncier": "regime foncier senegal",
+    "route": "code de la route senegal",
+    "presse": "code de la presse senegal",
+    "environnement": "code de l environnement senegal",
+    "hygiene_consommation": "code de l hygiene senegal protection du consommateur",
+    "notariat": "deontologie notariat senegal",
+    "electoral": "code electoral senegal",
+}
+
+_REWRITE_TOPIC_HINTS: list[tuple[tuple[str, ...], str]] = []
 
 
 def _infer_rewrite_domain_anchor(query: str) -> str | None:
@@ -871,14 +1082,21 @@ def _infer_rewrite_domain_anchor(query: str) -> str | None:
     for keywords, anchor in _REWRITE_DOMAIN_ANCHORS:
         if any(keyword in normalized for keyword in keywords):
             return anchor
+    try:
+        from backend.retrieval.retriever import detect_query_domains
+
+        for domain in detect_query_domains(query):
+            anchor = _REWRITE_ANCHOR_BY_DETECTED_DOMAIN.get(domain)
+            if anchor:
+                return anchor
+    except Exception:
+        return None
     return None
 
 
 def _infer_rewrite_topic_hint(query: str) -> str | None:
-    normalized = _strip_accents(query).lower()
-    for keywords, hint in _REWRITE_TOPIC_HINTS:
-        if any(keyword in normalized for keyword in keywords):
-            return hint
+    # Keep the rewrite pipeline generic (no subject-specific lock).
+    # Domain anchoring remains active via _infer_rewrite_domain_anchor.
     return None
 
 
@@ -922,6 +1140,77 @@ def _enforce_rewrite_anchor_with_lock(
         if topic_norm not in rewritten_norm:
             rewritten = _normalize_spaces(f"{rewritten} {topic_hint}")
     return rewritten
+
+
+def _strip_unrequested_sanction_terms_from_rewrite(
+    original_query: str,
+    rewritten_query: str,
+) -> tuple[str, bool]:
+    rewritten = _normalize_spaces(rewritten_query)
+    if not rewritten:
+        return rewritten_query, False
+    if _query_has_sanction_intent(original_query):
+        return rewritten, False
+
+    original_norm = _normalize_for_query_coverage(original_query)
+    sanitized = rewritten
+    changed = False
+    for phrase in _REWRITE_SANCTION_GUARD_PHRASES:
+        phrase_norm = _normalize_for_query_coverage(phrase)
+        if phrase_norm and phrase_norm in original_norm:
+            continue
+        pattern = r"\b" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b"
+        updated = re.sub(pattern, " ", sanitized, flags=re.IGNORECASE)
+        if updated != sanitized:
+            sanitized = updated
+            changed = True
+
+    sanitized = _normalize_spaces(sanitized)
+    if not sanitized:
+        return rewritten, False
+    return sanitized, changed
+
+
+def _looks_like_keyword_rewrite(text: str) -> bool:
+    normalized = _normalize_spaces(text)
+    if not normalized:
+        return False
+
+    tokens = [token for token in normalized.split(" ") if token]
+    if len(tokens) < 6:
+        return False
+
+    separator_count = sum(normalized.count(sep) for sep in _REWRITE_KEYWORD_LIST_SEPARATORS)
+    has_sentence_punct = any(punct in normalized for punct in (".", "?", "!"))
+    lowered = _strip_accents(normalized).lower()
+    has_verb = bool(_REWRITE_SENTENCE_VERB_RE.search(lowered))
+
+    if separator_count >= 2 and not has_sentence_punct:
+        return True
+    if separator_count >= 1 and not has_verb:
+        return True
+    if not has_verb and not has_sentence_punct and len(tokens) >= 6:
+        return True
+    return False
+
+
+def _ensure_rewrite_sentence_style(original_query: str, rewritten_query: str) -> tuple[str, bool]:
+    rewritten = _normalize_spaces(rewritten_query)
+    if not rewritten:
+        return rewritten_query, False
+    if not _looks_like_keyword_rewrite(rewritten):
+        return rewritten, False
+
+    core = rewritten.strip(" \t\r\n,;:/|")
+    if not core:
+        return rewritten, False
+
+    phrased = _normalize_spaces(
+        f"Rechercher les regles juridiques applicables au Senegal et en OHADA concernant {core}."
+    )
+    if not phrased:
+        return rewritten, False
+    return phrased, True
 
 
 def _is_small_talk_query(query: str) -> bool:
@@ -1156,9 +1445,20 @@ async def _rewrite_query_for_rag(
         status = "query-rewrite-definition-intent"
         if suffixes:
             status = f"{status}-{'-'.join(suffixes)}"
-        if anchored_definition_query != definition_query:
-            return anchored_definition_query, status
-        return definition_query, status
+        final_definition_query = anchored_definition_query
+        sentence_style_query, sentence_style_changed = _ensure_rewrite_sentence_style(
+            original_query,
+            final_definition_query,
+        )
+        if sentence_style_changed:
+            final_definition_query = _enforce_rewrite_anchor_with_lock(
+                original_query,
+                sentence_style_query,
+                forced_anchor=forced_anchor,
+                forced_topic_hint=forced_topic_hint,
+            )
+            status = f"{status}-sentence-style"
+        return final_definition_query, status
 
     rewrite_model = settings.rag_query_rewrite_model or settings.llm_model
     rewrite_messages: list[dict[str, str]] = [
@@ -1218,6 +1518,30 @@ async def _rewrite_query_for_rag(
     if anchored_query != rewritten_query:
         rewritten_query = anchored_query
         status = f"{status}-anchor"
+    rewritten_query, sanction_pruned = _strip_unrequested_sanction_terms_from_rewrite(
+        original_query,
+        rewritten_query,
+    )
+    if sanction_pruned:
+        rewritten_query = _enforce_rewrite_anchor_with_lock(
+            original_query,
+            rewritten_query,
+            forced_anchor=forced_anchor,
+            forced_topic_hint=forced_topic_hint,
+        )
+        status = f"{status}-sanction-pruned"
+    sentence_style_query, sentence_style_changed = _ensure_rewrite_sentence_style(
+        original_query,
+        rewritten_query,
+    )
+    if sentence_style_changed:
+        rewritten_query = _enforce_rewrite_anchor_with_lock(
+            original_query,
+            sentence_style_query,
+            forced_anchor=forced_anchor,
+            forced_topic_hint=forced_topic_hint,
+        )
+        status = f"{status}-sentence-style"
     if rewrite_context_text:
         status = f"{status}-memory"
     if forced_anchor:
@@ -1225,19 +1549,6 @@ async def _rewrite_query_for_rag(
     if forced_topic_hint:
         status = f"{status}-topic-lock"
     return rewritten_query, status
-
-
-def _is_article_319_topic(query: str) -> bool:
-    lowered = query.lower()
-    patterns = [
-        r"\bhomosex",
-        r"contre\s+nature",
-        r"acte\s+impudique",
-        r"\barticle\s*319\b",
-        r"\bart\.?\s*319\b",
-        r"\bmeme\s+sexe\b",
-    ]
-    return any(re.search(pattern, lowered) for pattern in patterns)
 
 
 def _extract_query_for_rag(messages: list[dict[str, Any]]) -> tuple[str | None, str | None]:
@@ -1294,6 +1605,1418 @@ def _merge_unique_chunks(chunks: list[Any]) -> list[Any]:
         seen_ids.add(chunk_id)
         merged.append(chunk)
     return merged
+
+
+_QUERY_COVERAGE_STOPWORDS = {
+    "quel", "quels", "quelle", "quelles", "comment", "pourquoi", "parle", "moi",
+    "sont", "est", "selon", "avec", "sans", "dans", "sur", "pour", "entre",
+    "des", "les", "une", "un", "du", "de", "la", "le", "au", "aux", "en",
+    "droit", "code", "senegal", "ohada", "juridique", "article", "articles",
+    "sanction", "sanctions", "peine", "peines",
+    "applicable", "applicables", "question", "definition",
+    "conditions", "regles", "difference", "distinction",
+    "elements", "constitutifs", "responsabilite",
+}
+_QUERY_SHORT_LEGAL_TOKENS = {
+    "vol",
+    "viol",
+    "dol",
+    "opj",
+    "vih",
+}
+_QUERY_STRONG_TOKEN_STOPWORDS = {
+    "question",
+    "regles",
+    "conditions",
+    "difference",
+    "distinction",
+    "definition",
+    "definit",
+    "definir",
+    "elements",
+    "constitutifs",
+    "applicable",
+    "applicables",
+    "responsabilite",
+    "infractions",
+    "sanctions",
+    "penales",
+    "penale",
+    "peines",
+}
+_QUERY_MANDATORY_TOKEN_STOPWORDS = {
+    "definition",
+    "droit",
+    "code",
+    "senegal",
+    "juridique",
+    "article",
+    "articles",
+    "peine",
+    "peines",
+    "sanction",
+    "sanctions",
+    "penal",
+    "penale",
+    "penales",
+    "applicable",
+    "applicables",
+    "conditions",
+    "regles",
+    "difference",
+    "distinction",
+    "elements",
+    "constitutifs",
+}
+_SPECIALIZED_SOURCE_TAG_PATTERNS: dict[str, tuple[str, ...]] = {
+    "penalty_execution_decree": (
+        "amenagement des sanctions penales",
+        "procedures d execution",
+        "application des peines",
+    ),
+    "cyber_special": (
+        "cybercriminalite",
+        "donnees personnelles",
+    ),
+    "drug_code": (
+        "code des drogues",
+    ),
+    "lbc_ft": (
+        "financement du terrorisme",
+        "blanchiment de capitaux",
+        "proliferation des armes",
+        "lbc ft",
+    ),
+    "regional_guidance": (
+        "bceao/",
+        "manuel",
+        "guide",
+    ),
+}
+_SPECIALIZED_QUERY_ALLOW_MARKERS: dict[str, tuple[str, ...]] = {
+    "penalty_execution_decree": (
+        "amenagement des peines",
+        "amenagement de peine",
+        "execution des peines",
+        "application des peines",
+        "juge de l application des peines",
+        "detenu",
+        "detenus",
+        "penitentiaire",
+        "liberation conditionnelle",
+        "milieu ouvert",
+        "sursis",
+        "probation",
+    ),
+    "cyber_special": (
+        "cyber",
+        "numerique",
+        "informatique",
+        "internet",
+        "reseau",
+        "donnees",
+        "donnees personnelles",
+        "systeme d information",
+    ),
+    "drug_code": (
+        "drogue",
+        "drogues",
+        "stupefiant",
+        "stupefiants",
+        "chanvre",
+        "cannabis",
+        "toxicomane",
+        "toxicomanie",
+    ),
+    "lbc_ft": (
+        "terrorisme",
+        "financement du terrorisme",
+        "blanchiment",
+        "blanchiment de capitaux",
+        "lbc",
+        "ft",
+        "proliferation",
+    ),
+    "regional_guidance": (
+        "bceao",
+        "uemoa",
+        "cedeao",
+        "union economique",
+        "tarif exterieur commun",
+        "libre circulation",
+        "regulation bancaire",
+        "reglementation bancaire",
+        "politique monetaire",
+    ),
+}
+_QUERY_FRAGMENT_STOPWORDS = {
+    "ement",
+    "ements",
+    "ation",
+    "ations",
+    "ition",
+    "itions",
+    "tion",
+    "tions",
+    "ment",
+    "ments",
+    "ance",
+    "ances",
+    "ence",
+    "ences",
+    "lement",
+}
+
+
+def _normalize_for_query_coverage(value: str) -> str:
+    lowered = _strip_accents(value or "").lower()
+    return re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+
+
+def _light_stem_for_query_coverage(token: str) -> str:
+    t = token
+    for suffix in (
+        "ements",
+        "ement",
+        "ations",
+        "ation",
+        "itions",
+        "ition",
+        "ments",
+        "ment",
+        "tions",
+        "tion",
+        "ences",
+        "ence",
+        "ances",
+        "ance",
+        "euses",
+        "euse",
+        "eaux",
+        "eau",
+        "aires",
+        "aire",
+        "elles",
+        "elle",
+        "eurs",
+        "eur",
+        "ives",
+        "ive",
+        "ifs",
+        "if",
+        "ees",
+        "ee",
+        "es",
+        "e",
+        "s",
+    ):
+        if len(t) - len(suffix) >= 4 and t.endswith(suffix):
+            t = t[: -len(suffix)]
+            break
+    t = t.rstrip("aeiouy")
+    if len(t) >= 4:
+        return t
+    return token
+
+
+def _extract_query_focus_tokens(query: str) -> set[str]:
+    normalized = _normalize_for_query_coverage(query)
+    if not normalized:
+        return set()
+    tokens: set[str] = set()
+    for token in normalized.split():
+        if len(token) < 4 and token not in _QUERY_SHORT_LEGAL_TOKENS:
+            continue
+        if token in _QUERY_FRAGMENT_STOPWORDS:
+            continue
+        if token in _QUERY_COVERAGE_STOPWORDS:
+            continue
+        tokens.add(token)
+        stem = _light_stem_for_query_coverage(token)
+        if stem in _QUERY_FRAGMENT_STOPWORDS:
+            stem = token
+        tokens.add(stem)
+        if len(token) >= 6:
+            tokens.add(token[:6])
+        if len(stem) >= 6:
+            tokens.add(stem[:6])
+    return tokens
+
+
+def _extract_query_strong_tokens(query: str) -> set[str]:
+    normalized = _normalize_for_query_coverage(query)
+    if not normalized:
+        return set()
+    strong_tokens: set[str] = set()
+    for token in normalized.split():
+        if len(token) < 6:
+            continue
+        if token in _QUERY_COVERAGE_STOPWORDS or token in _QUERY_STRONG_TOKEN_STOPWORDS:
+            continue
+        strong_tokens.add(token)
+        stem = _light_stem_for_query_coverage(token)
+        if len(stem) >= 6:
+            strong_tokens.add(stem)
+    return strong_tokens
+
+
+def _extract_query_mandatory_terms(query: str) -> list[str]:
+    normalized = _normalize_for_query_coverage(query)
+    if not normalized:
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in normalized.split():
+        if len(token) < 6:
+            continue
+        if token in _QUERY_FRAGMENT_STOPWORDS:
+            continue
+        if token in _QUERY_COVERAGE_STOPWORDS or token in _QUERY_MANDATORY_TOKEN_STOPWORDS:
+            continue
+        term = token
+        if term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+        if len(terms) >= 2:
+            break
+    return terms
+
+
+def _chunk_overlap_with_query_tokens(chunk: Any, tokens: set[str]) -> int:
+    if not tokens:
+        return 0
+    haystack = _normalize_for_query_coverage(
+        " ".join(
+            [
+                str(getattr(chunk, "relative_path", "") or ""),
+                str(getattr(chunk, "source_path", "") or ""),
+                str(getattr(chunk, "article_hint", "") or ""),
+                str(getattr(chunk, "text", "") or "")[:1800],
+            ]
+        )
+    )
+    if not haystack:
+        return 0
+    haystack_tokens: set[str] = set()
+    for token in haystack.split():
+        haystack_tokens.add(token)
+        stem = _light_stem_for_query_coverage(token)
+        haystack_tokens.add(stem)
+        if len(token) >= 6:
+            haystack_tokens.add(token[:6])
+        if len(stem) >= 6:
+            haystack_tokens.add(stem[:6])
+    return len(tokens.intersection(haystack_tokens))
+
+
+def _chunk_matches_mandatory_term(chunk: Any, term: str) -> bool:
+    tokens = {term}
+    stem = _light_stem_for_query_coverage(term)
+    if stem:
+        tokens.add(stem)
+    if len(term) >= 6:
+        tokens.add(term[:6])
+    if len(stem) >= 6:
+        tokens.add(stem[:6])
+    return _chunk_overlap_with_query_tokens(chunk, tokens) >= 1
+
+
+def _compose_query_coverage_input(original_query: str, retrieval_query: str) -> str:
+    original = _normalize_spaces(original_query)
+    rewritten = _normalize_spaces(retrieval_query)
+    if not original:
+        return rewritten
+    if not rewritten or rewritten == original:
+        return original
+    return f"{original} {rewritten}"
+
+
+def _infer_article_refs_from_candidates(
+    candidates: list[Any],
+    *,
+    original_query: str,
+    max_refs: int = 3,
+    scan_limit: int = 80,
+) -> list[tuple[str, bool]]:
+    if not candidates or max_refs < 1:
+        return []
+    query_tokens = _extract_query_focus_tokens(original_query)
+    if len(query_tokens) < 2:
+        return []
+    overlap_required = 2 if len(query_tokens) >= 3 else 1
+    disallowed_tags = {
+        tag
+        for tag in _SPECIALIZED_SOURCE_TAG_PATTERNS
+        if not _query_allows_specialized_tag(original_query, tag)
+    }
+
+    ref_scores: dict[str, float] = {}
+    ref_hits: dict[str, int] = {}
+    for chunk in candidates[:scan_limit]:
+        if _chunk_specialization_tags(chunk).intersection(disallowed_tags):
+            continue
+        overlap = _chunk_overlap_with_query_tokens(chunk, query_tokens)
+        if overlap < overlap_required:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        scan_text = " ".join(
+            [
+                str(getattr(chunk, "article_hint", "") or ""),
+                str(getattr(chunk, "text", "") or "")[:1800],
+            ]
+        )
+        if not scan_text:
+            continue
+        for match in _ARTICLE_REFERENCE_CAPTURE_RE.finditer(scan_text):
+            raw_ref = re.sub(r"\s+", " ", (match.group(1) or "").strip().lower())
+            if not raw_ref:
+                continue
+            number_match = re.match(r"^\d{1,3}", raw_ref)
+            if not number_match:
+                continue
+            number_value = int(number_match.group(0))
+            if number_value < 2 or number_value > 500:
+                continue
+            # For inferred refs (query has no explicit article), low article numbers are
+            # frequently cross-code noise (Article 3, 23, 42, ...). Keep only stronger anchors.
+            if number_value < 50:
+                continue
+            weight = 1.0 + min(2.0, float(overlap))
+            weight += min(1.0, score)
+            if _chunk_has_penal_core_signal(chunk):
+                weight += 0.5
+            ref_scores[raw_ref] = ref_scores.get(raw_ref, 0.0) + weight
+            ref_hits[raw_ref] = ref_hits.get(raw_ref, 0) + 1
+
+    if not ref_scores:
+        return []
+    sorted_refs = sorted(ref_scores.items(), key=lambda item: item[1], reverse=True)
+    top_score = sorted_refs[0][1]
+    selected: list[tuple[str, bool]] = []
+    for ref, score in sorted_refs:
+        if score < max(3.5, top_score * 0.55):
+            continue
+        if ref_hits.get(ref, 0) < 2:
+            continue
+        selected.append((ref, False))
+        if len(selected) >= max_refs:
+            break
+    return selected
+
+
+def _chunk_source_key(chunk: Any) -> str:
+    source = (
+        str(getattr(chunk, "relative_path", "") or "")
+        or str(getattr(chunk, "source_path", "") or "")
+        or str(getattr(chunk, "doc_id", "") or "")
+        or str(getattr(chunk, "chunk_id", "") or "")
+    )
+    return _normalize_for_query_coverage(source)
+
+
+def _chunk_specialization_tags(chunk: Any) -> set[str]:
+    haystack = _normalize_for_query_coverage(
+        " ".join(
+            [
+                str(getattr(chunk, "relative_path", "") or ""),
+                str(getattr(chunk, "source_path", "") or ""),
+                str(getattr(chunk, "doc_id", "") or ""),
+            ]
+        )
+    )
+    if not haystack:
+        return set()
+    tags: set[str] = set()
+    for tag, markers in _SPECIALIZED_SOURCE_TAG_PATTERNS.items():
+        if any(marker in haystack for marker in markers):
+            tags.add(tag)
+    return tags
+
+
+def _query_allows_specialized_tag(query: str, tag: str) -> bool:
+    markers = _SPECIALIZED_QUERY_ALLOW_MARKERS.get(tag, ())
+    if not markers:
+        return False
+    normalized_query = _normalize_for_query_coverage(query)
+    if not normalized_query:
+        return False
+    return any(marker in normalized_query for marker in markers)
+
+
+def _extract_query_anchor_path_tokens(query: str) -> set[str]:
+    normalized_query = _normalize_for_query_coverage(query)
+    if not normalized_query:
+        return set()
+    anchor_candidates = {
+        _normalize_for_query_coverage(anchor)
+        for _, anchor in _REWRITE_DOMAIN_ANCHORS
+    }
+    anchor_candidates.update(
+        _normalize_for_query_coverage(anchor)
+        for anchor in _REWRITE_ANCHOR_BY_DETECTED_DOMAIN.values()
+    )
+    anchor_candidates.discard("")
+    anchor_stopwords = {
+        "code",
+        "droit",
+        "senegal",
+        "ohada",
+        "acte",
+        "uniforme",
+        "general",
+        "protection",
+        "consommateur",
+        "hygiene",
+    }
+    tokens: set[str] = set()
+    for anchor in anchor_candidates:
+        if anchor not in normalized_query:
+            continue
+        for token in anchor.split():
+            if len(token) < 5 or token in anchor_stopwords:
+                continue
+            tokens.add(token)
+            stem = _light_stem_for_query_coverage(token)
+            tokens.add(stem)
+            if len(token) >= 6:
+                tokens.add(token[:6])
+            if len(stem) >= 6:
+                tokens.add(stem[:6])
+    return tokens
+
+
+def _chunk_path_overlap_with_tokens(chunk: Any, tokens: set[str]) -> int:
+    if not tokens:
+        return 0
+    path_text = _normalize_for_query_coverage(
+        " ".join(
+            [
+                str(getattr(chunk, "relative_path", "") or ""),
+                str(getattr(chunk, "source_path", "") or ""),
+            ]
+        )
+    )
+    if not path_text:
+        return 0
+    path_tokens: set[str] = set()
+    for token in path_text.split():
+        path_tokens.add(token)
+        stem = _light_stem_for_query_coverage(token)
+        path_tokens.add(stem)
+        if len(token) >= 6:
+            path_tokens.add(token[:6])
+        if len(stem) >= 6:
+            path_tokens.add(stem[:6])
+    return len(tokens.intersection(path_tokens))
+
+
+def _enforce_query_coverage_diversity(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    retrieval_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+
+    query_tokens = _extract_query_focus_tokens(original_query)
+    if len(query_tokens) < 2:
+        return selected_chunks, False
+
+    source_counts: dict[str, int] = {}
+    for chunk in selected_chunks:
+        key = _chunk_source_key(chunk)
+        source_counts[key] = source_counts.get(key, 0) + 1
+    dominant_source, dominant_count = max(source_counts.items(), key=lambda item: item[1])
+    if dominant_count < max(3, int(len(selected_chunks) * 0.55)):
+        return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    anchor_tokens = _extract_query_anchor_path_tokens(retrieval_query)
+    overlap_min = 1 if len(query_tokens) <= 2 else 2
+
+    def _best_replacement(require_anchor_path_overlap: bool) -> Any | None:
+        replacement_local: Any | None = None
+        replacement_overlap_local = 0
+        replacement_path_overlap_local = 0
+        replacement_score_local = float("-inf")
+        for chunk in ranked_candidates:
+            chunk_id = str(getattr(chunk, "chunk_id", ""))
+            if not chunk_id or chunk_id in selected_ids:
+                continue
+            if _chunk_source_key(chunk) == dominant_source:
+                continue
+            overlap = _chunk_overlap_with_query_tokens(chunk, query_tokens)
+            if overlap < overlap_min:
+                continue
+            score = float(getattr(chunk, "score", 0.0) or 0.0)
+            if score < min_score_guard:
+                continue
+            path_overlap = (
+                _chunk_path_overlap_with_tokens(chunk, anchor_tokens) if anchor_tokens else 0
+            )
+            if require_anchor_path_overlap and anchor_tokens and path_overlap <= 0:
+                continue
+            if (overlap, path_overlap, score) > (
+                replacement_overlap_local,
+                replacement_path_overlap_local,
+                replacement_score_local,
+            ):
+                replacement_local = chunk
+                replacement_overlap_local = overlap
+                replacement_path_overlap_local = path_overlap
+                replacement_score_local = score
+        return replacement_local
+
+    replacement: Any | None = _best_replacement(require_anchor_path_overlap=True)
+    if replacement is None:
+        replacement = _best_replacement(require_anchor_path_overlap=False)
+
+    if replacement is None:
+        return selected_chunks, False
+
+    replace_idx: int | None = None
+    replace_score = float("inf")
+    for idx, chunk in enumerate(selected_chunks):
+        if _chunk_source_key(chunk) != dominant_source:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < replace_score:
+            replace_score = score
+            replace_idx = idx
+    if replace_idx is None:
+        return selected_chunks, False
+
+    updated = list(selected_chunks)
+    updated[replace_idx] = replacement
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _promote_anchor_path_chunk(
+    selected_chunks: list[Any],
+    *,
+    retrieval_query: str,
+    top_k: int,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or len(selected_chunks) < 2 or top_k < 1:
+        return selected_chunks, False
+
+    anchor_tokens = _extract_query_anchor_path_tokens(retrieval_query)
+    if not anchor_tokens:
+        return selected_chunks, False
+
+    best_idx = -1
+    best_key = (-1, float("-inf"))
+    for idx, chunk in enumerate(selected_chunks):
+        path_overlap = _chunk_path_overlap_with_tokens(chunk, anchor_tokens)
+        if path_overlap <= 0:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        key = (path_overlap, score)
+        if key > best_key:
+            best_key = key
+            best_idx = idx
+
+    if best_idx <= 1:
+        return selected_chunks, False
+
+    updated = list(selected_chunks)
+    promoted = updated.pop(best_idx)
+    updated.insert(1, promoted)
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _enforce_anchor_path_coverage(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    retrieval_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+
+    anchor_tokens = _extract_query_anchor_path_tokens(retrieval_query)
+    if not anchor_tokens:
+        return selected_chunks, False
+    query_tokens = _extract_query_focus_tokens(original_query)
+
+    for chunk in selected_chunks:
+        if _chunk_path_overlap_with_tokens(chunk, anchor_tokens) <= 0:
+            continue
+        if not query_tokens:
+            return selected_chunks, False
+        if _chunk_overlap_with_query_tokens(chunk, query_tokens) >= 1:
+            return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    replacement: Any | None = None
+    replacement_focus_overlap = -1
+    replacement_path_overlap = -1
+    replacement_score = float("-inf")
+    for chunk in ranked_candidates:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id or chunk_id in selected_ids:
+            continue
+        path_overlap = _chunk_path_overlap_with_tokens(chunk, anchor_tokens)
+        if path_overlap <= 0:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < min_score_guard:
+            continue
+        focus_overlap = (
+            _chunk_overlap_with_query_tokens(chunk, query_tokens) if query_tokens else 0
+        )
+        key = (focus_overlap, path_overlap, score)
+        best_key = (replacement_focus_overlap, replacement_path_overlap, replacement_score)
+        if key > best_key:
+            replacement = chunk
+            replacement_focus_overlap = focus_overlap
+            replacement_path_overlap = path_overlap
+            replacement_score = score
+
+    if replacement is None:
+        return selected_chunks, False
+
+    replace_idx: int | None = None
+    replace_score = float("inf")
+    for idx, chunk in enumerate(selected_chunks):
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < replace_score:
+            replace_score = score
+            replace_idx = idx
+    if replace_idx is None:
+        return selected_chunks, False
+
+    updated = list(selected_chunks)
+    updated[replace_idx] = replacement
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _enforce_query_focus_coverage(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+
+    query_tokens = _extract_query_focus_tokens(original_query)
+    if len(query_tokens) < 2:
+        return selected_chunks, False
+
+    selected_best_overlap = 0
+    for chunk in selected_chunks:
+        selected_best_overlap = max(
+            selected_best_overlap,
+            _chunk_overlap_with_query_tokens(chunk, query_tokens),
+        )
+    if selected_best_overlap >= 2:
+        return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    candidate: Any | None = None
+    candidate_overlap = 0
+    candidate_score = float("-inf")
+    for chunk in ranked_candidates:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id or chunk_id in selected_ids:
+            continue
+        overlap = _chunk_overlap_with_query_tokens(chunk, query_tokens)
+        if overlap < 2:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < min_score_guard:
+            continue
+        if (overlap, score) > (candidate_overlap, candidate_score):
+            candidate = chunk
+            candidate_overlap = overlap
+            candidate_score = score
+
+    if candidate is None:
+        return selected_chunks, False
+
+    replace_idx: int | None = None
+    replace_score = float("inf")
+    for idx, chunk in enumerate(selected_chunks):
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < replace_score:
+            replace_score = score
+            replace_idx = idx
+    if replace_idx is None:
+        return selected_chunks, False
+
+    updated = list(selected_chunks)
+    updated[replace_idx] = candidate
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _enforce_query_focus_minimum_coverage(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+
+    query_tokens = _extract_query_focus_tokens(original_query)
+    if len(query_tokens) < 2:
+        return selected_chunks, False
+
+    overlap_by_id: dict[str, int] = {}
+
+    def _overlap(chunk: Any) -> int:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id:
+            return 0
+        cached = overlap_by_id.get(chunk_id)
+        if cached is not None:
+            return cached
+        value = _chunk_overlap_with_query_tokens(chunk, query_tokens)
+        overlap_by_id[chunk_id] = value
+        return value
+
+    selected_with_meta: list[tuple[int, int, float, Any]] = []
+    covered = 0
+    coverage_required_overlap = 2 if len(query_tokens) >= 3 else 1
+    for idx, chunk in enumerate(selected_chunks):
+        ov = _overlap(chunk)
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        selected_with_meta.append((idx, ov, score, chunk))
+        if ov >= coverage_required_overlap:
+            covered += 1
+
+    minimum_covered = max(3, int(round(len(selected_chunks) * 0.8)))
+    minimum_covered = min(len(selected_chunks), minimum_covered)
+    if covered >= minimum_covered:
+        return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    replacement_candidates: list[tuple[int, float, Any]] = []
+    for chunk in ranked_candidates:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id or chunk_id in selected_ids:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < min_score_guard:
+            continue
+        ov = _overlap(chunk)
+        if ov < coverage_required_overlap:
+            continue
+        replacement_candidates.append((ov, score, chunk))
+    if not replacement_candidates:
+        return selected_chunks, False
+
+    replacement_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    replace_targets = [
+        (idx, score, chunk)
+        for idx, ov, score, chunk in selected_with_meta
+        if ov < coverage_required_overlap
+    ]
+    replace_targets.sort(key=lambda item: item[1])
+    if not replace_targets:
+        return selected_chunks, False
+
+    updated = list(selected_chunks)
+    replaced = False
+    used_candidate_ids: set[str] = set()
+    target_cursor = 0
+    for ov, score, candidate in replacement_candidates:
+        if covered >= minimum_covered:
+            break
+        while target_cursor < len(replace_targets):
+            replace_idx, _, replace_chunk = replace_targets[target_cursor]
+            target_cursor += 1
+            replace_chunk_id = str(getattr(replace_chunk, "chunk_id", ""))
+            candidate_id = str(getattr(candidate, "chunk_id", ""))
+            if not candidate_id or candidate_id in used_candidate_ids:
+                continue
+            if replace_chunk_id == candidate_id:
+                continue
+            updated[replace_idx] = candidate
+            used_candidate_ids.add(candidate_id)
+            covered += 1
+            replaced = True
+            break
+
+    if not replaced:
+        return selected_chunks, False
+
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _enforce_strong_token_coverage(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+
+    strong_tokens = _extract_query_strong_tokens(original_query)
+    if not strong_tokens:
+        return selected_chunks, False
+
+    selected_with_meta: list[tuple[int, int, float, Any]] = []
+    covered = 0
+    for idx, chunk in enumerate(selected_chunks):
+        overlap = _chunk_overlap_with_query_tokens(chunk, strong_tokens)
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        selected_with_meta.append((idx, overlap, score, chunk))
+        if overlap >= 1:
+            covered += 1
+
+    min_required = 1 if len(strong_tokens) <= 2 else 2
+    min_required = min(len(selected_chunks), min_required)
+    if covered >= min_required:
+        return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    candidates: list[tuple[int, float, Any]] = []
+    for chunk in ranked_candidates:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id or chunk_id in selected_ids:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < min_score_guard:
+            continue
+        overlap = _chunk_overlap_with_query_tokens(chunk, strong_tokens)
+        if overlap < 1:
+            continue
+        candidates.append((overlap, score, chunk))
+    if not candidates:
+        return selected_chunks, False
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    replace_targets = [
+        (idx, score, chunk)
+        for idx, overlap, score, chunk in selected_with_meta
+        if overlap == 0
+    ]
+    replace_targets.sort(key=lambda item: item[1])
+    if not replace_targets:
+        return selected_chunks, False
+
+    updated = list(selected_chunks)
+    replaced = False
+    target_cursor = 0
+    for _, _, candidate in candidates:
+        if covered >= min_required:
+            break
+        if target_cursor >= len(replace_targets):
+            break
+        replace_idx, _, _ = replace_targets[target_cursor]
+        target_cursor += 1
+        updated[replace_idx] = candidate
+        covered += 1
+        replaced = True
+
+    if not replaced:
+        return selected_chunks, False
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _enforce_mandatory_term_coverage(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+
+    mandatory_terms = _extract_query_mandatory_terms(original_query)
+    if not mandatory_terms:
+        return selected_chunks, False
+
+    missing_terms: list[str] = []
+    for term in mandatory_terms:
+        if any(_chunk_matches_mandatory_term(chunk, term) for chunk in selected_chunks):
+            continue
+        missing_terms.append(term)
+    if not missing_terms:
+        return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    updated = list(selected_chunks)
+    changed = False
+
+    for term in missing_terms:
+        candidate: Any | None = None
+        candidate_score = float("-inf")
+        for score_guard in (min_score_guard, 0.0):
+            for chunk in ranked_candidates:
+                chunk_id = str(getattr(chunk, "chunk_id", ""))
+                if not chunk_id or chunk_id in selected_ids:
+                    continue
+                score = float(getattr(chunk, "score", 0.0) or 0.0)
+                if score < score_guard:
+                    continue
+                if not _chunk_matches_mandatory_term(chunk, term):
+                    continue
+                if score > candidate_score:
+                    candidate = chunk
+                    candidate_score = score
+            if candidate is not None:
+                break
+        if candidate is None:
+            continue
+
+        term_counts: dict[str, int] = {key: 0 for key in mandatory_terms}
+        chunk_term_map: list[set[str]] = []
+        for chunk in updated:
+            matched_terms = {key for key in mandatory_terms if _chunk_matches_mandatory_term(chunk, key)}
+            chunk_term_map.append(matched_terms)
+            for matched in matched_terms:
+                term_counts[matched] = term_counts.get(matched, 0) + 1
+
+        replace_idx: int | None = None
+        replace_score = float("inf")
+        for idx, (chunk, matched_terms) in enumerate(zip(updated, chunk_term_map)):
+            if term in matched_terms:
+                continue
+            # Keep unique holders of already-covered mandatory terms.
+            if any(term_counts.get(existing, 0) <= 1 for existing in matched_terms):
+                continue
+            score = float(getattr(chunk, "score", 0.0) or 0.0)
+            if score < replace_score:
+                replace_score = score
+                replace_idx = idx
+        if replace_idx is None:
+            for idx, chunk in enumerate(updated):
+                if _chunk_matches_mandatory_term(chunk, term):
+                    continue
+                score = float(getattr(chunk, "score", 0.0) or 0.0)
+                if score < replace_score:
+                    replace_score = score
+                    replace_idx = idx
+        if replace_idx is None:
+            continue
+
+        updated[replace_idx] = candidate
+        selected_ids.add(str(getattr(candidate, "chunk_id", "")))
+        changed = True
+
+    if not changed:
+        return selected_chunks, False
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _query_has_sanction_intent(query: str) -> bool:
+    normalized = _normalize_for_query_coverage(query)
+    if not normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "peine",
+            "peines",
+            "sanction",
+            "sanctions",
+            "amende",
+            "emprisonnement",
+            "risque",
+            "encourt",
+            "puni",
+        )
+    )
+
+
+def _chunk_penalty_signal(chunk: Any) -> int:
+    haystack = _normalize_for_query_coverage(
+        " ".join(
+            [
+                str(getattr(chunk, "article_hint", "") or ""),
+                str(getattr(chunk, "text", "") or "")[:1800],
+            ]
+        )
+    )
+    if not haystack:
+        return 0
+    signal = 0
+    for marker in ("amende", "emprisonnement", "peine", "peines", "puni", "punie", "punis"):
+        if marker in haystack:
+            signal += 1
+    if re.search(r"\b\d+\s*(?:ans?|mois|francs?|f)\b", haystack):
+        signal += 1
+    return signal
+
+
+def _chunk_sanction_path_signal(chunk: Any) -> int:
+    haystack = _normalize_for_query_coverage(
+        " ".join(
+            [
+                str(getattr(chunk, "relative_path", "") or ""),
+                str(getattr(chunk, "source_path", "") or ""),
+                str(getattr(chunk, "doc_id", "") or ""),
+            ]
+        )
+    )
+    if not haystack:
+        return 0
+    signal = 0
+    if "sanction" in haystack:
+        signal += 1
+    if "amenagement des sanctions" in haystack:
+        signal += 1
+    if "sanctions penales" in haystack:
+        signal += 1
+    if "peine" in haystack:
+        signal += 1
+    return signal
+
+
+def _enforce_sanction_intent_coverage(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+    if not _query_has_sanction_intent(original_query):
+        return selected_chunks, False
+
+    query_tokens = _extract_query_focus_tokens(original_query)
+    for chunk in selected_chunks:
+        focus_overlap = (
+            _chunk_overlap_with_query_tokens(chunk, query_tokens) if query_tokens else 0
+        )
+        if focus_overlap >= 1 and _chunk_penalty_signal(chunk) >= 2:
+            return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    replacement: Any | None = None
+    replacement_focus_overlap = -1
+    replacement_penalty_signal = -1
+    replacement_score = float("-inf")
+    for chunk in ranked_candidates:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id or chunk_id in selected_ids:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < min_score_guard:
+            continue
+        focus_overlap = (
+            _chunk_overlap_with_query_tokens(chunk, query_tokens) if query_tokens else 0
+        )
+        if focus_overlap < 1:
+            continue
+        penalty_signal = _chunk_penalty_signal(chunk)
+        if penalty_signal < 1:
+            continue
+        key = (focus_overlap, penalty_signal, score)
+        best_key = (replacement_focus_overlap, replacement_penalty_signal, replacement_score)
+        if key > best_key:
+            replacement = chunk
+            replacement_focus_overlap = focus_overlap
+            replacement_penalty_signal = penalty_signal
+            replacement_score = score
+
+    if replacement is None:
+        return selected_chunks, False
+
+    replace_idx: int | None = None
+    replace_score = float("inf")
+    for idx, chunk in enumerate(selected_chunks):
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < replace_score:
+            replace_score = score
+            replace_idx = idx
+    if replace_idx is None:
+        return selected_chunks, False
+
+    updated = list(selected_chunks)
+    updated[replace_idx] = replacement
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _deprioritize_sanction_chunks_without_intent(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+    if _query_has_sanction_intent(original_query):
+        return selected_chunks, False
+
+    query_tokens = _extract_query_focus_tokens(original_query)
+    if not query_tokens:
+        return selected_chunks, False
+
+    replace_targets: list[tuple[int, int, float]] = []
+    for idx, chunk in enumerate(selected_chunks):
+        penalty_signal = _chunk_penalty_signal(chunk)
+        path_signal = _chunk_sanction_path_signal(chunk)
+        if penalty_signal < 1 and path_signal < 2:
+            continue
+        overlap = _chunk_overlap_with_query_tokens(chunk, query_tokens)
+        if overlap > 0:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        replace_targets.append((idx, penalty_signal + path_signal, score))
+    if not replace_targets:
+        return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    replacement_pool: list[tuple[int, float, int, Any]] = []
+    for chunk in ranked_candidates:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id or chunk_id in selected_ids:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < min_score_guard:
+            continue
+        overlap = _chunk_overlap_with_query_tokens(chunk, query_tokens)
+        if overlap < 1:
+            continue
+        penalty_signal = _chunk_penalty_signal(chunk)
+        if penalty_signal > 1:
+            continue
+        replacement_pool.append((overlap, score, penalty_signal, chunk))
+    if not replacement_pool:
+        return selected_chunks, False
+
+    replace_targets.sort(key=lambda item: (item[1], -item[2]), reverse=True)
+    replacement_pool.sort(key=lambda item: (item[0], item[1], -item[2]), reverse=True)
+
+    updated = list(selected_chunks)
+    used_chunk_ids: set[str] = set()
+    changed = False
+    replacement_cursor = 0
+    for target_idx, _, _ in replace_targets:
+        while replacement_cursor < len(replacement_pool):
+            _, _, _, candidate = replacement_pool[replacement_cursor]
+            replacement_cursor += 1
+            candidate_id = str(getattr(candidate, "chunk_id", ""))
+            if not candidate_id or candidate_id in used_chunk_ids:
+                continue
+            updated[target_idx] = candidate
+            used_chunk_ids.add(candidate_id)
+            changed = True
+            break
+
+    if not changed:
+        return selected_chunks, False
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _deprioritize_specialized_mismatch_chunks(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    original_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+
+    disallowed_tags = {
+        tag
+        for tag in _SPECIALIZED_SOURCE_TAG_PATTERNS
+        if not _query_allows_specialized_tag(original_query, tag)
+    }
+    if not disallowed_tags:
+        return selected_chunks, False
+
+    query_tokens = _extract_query_focus_tokens(original_query)
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+
+    replace_targets: list[tuple[int, float, Any]] = []
+    for idx, chunk in enumerate(selected_chunks):
+        tags = _chunk_specialization_tags(chunk)
+        if not tags.intersection(disallowed_tags):
+            continue
+        overlap = _chunk_overlap_with_query_tokens(chunk, query_tokens) if query_tokens else 0
+        if overlap >= 2:
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        replace_targets.append((idx, score, chunk))
+    if not replace_targets:
+        return selected_chunks, False
+
+    replacement_candidates: list[tuple[int, float, Any]] = []
+    for chunk in ranked_candidates:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id or chunk_id in selected_ids:
+            continue
+        tags = _chunk_specialization_tags(chunk)
+        if tags.intersection(disallowed_tags):
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < min_score_guard:
+            continue
+        overlap = _chunk_overlap_with_query_tokens(chunk, query_tokens) if query_tokens else 0
+        if query_tokens and overlap < 1:
+            continue
+        replacement_candidates.append((overlap, score, chunk))
+    if not replacement_candidates:
+        return selected_chunks, False
+
+    replace_targets.sort(key=lambda item: item[1])
+    replacement_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    updated = list(selected_chunks)
+    used_ids: set[str] = set()
+    changed = False
+    replacement_cursor = 0
+    for idx, _, _ in replace_targets:
+        while replacement_cursor < len(replacement_candidates):
+            _, _, candidate = replacement_candidates[replacement_cursor]
+            replacement_cursor += 1
+            candidate_id = str(getattr(candidate, "chunk_id", ""))
+            if not candidate_id or candidate_id in used_ids:
+                continue
+            updated[idx] = candidate
+            used_ids.add(candidate_id)
+            changed = True
+            break
+
+    if not changed:
+        return selected_chunks, False
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
+
+
+def _chunk_has_penal_core_signal(chunk: Any) -> bool:
+    haystack = _normalize_for_query_coverage(
+        " ".join(
+            [
+                str(getattr(chunk, "relative_path", "") or ""),
+                str(getattr(chunk, "source_path", "") or ""),
+                str(getattr(chunk, "article_hint", "") or ""),
+                str(getattr(chunk, "text", "") or "")[:1200],
+            ]
+        )
+    )
+    if not haystack:
+        return False
+    return (
+        "code penal" in haystack
+        or "droit penal" in haystack
+        or "portant code penal" in haystack
+    )
+
+
+def _enforce_penal_core_coverage(
+    selected_chunks: list[Any],
+    ranked_candidates: list[Any],
+    *,
+    retrieval_query: str,
+    original_query: str,
+    top_k: int,
+    min_score_guard: float,
+) -> tuple[list[Any], bool]:
+    if not selected_chunks or not ranked_candidates or top_k < 1:
+        return selected_chunks, False
+
+    normalized_query = _normalize_for_query_coverage(f"{retrieval_query} {original_query}")
+    if "penal" not in normalized_query:
+        return selected_chunks, False
+
+    query_tokens = _extract_query_focus_tokens(original_query)
+    for chunk in selected_chunks:
+        if not _chunk_has_penal_core_signal(chunk):
+            continue
+        if not query_tokens or _chunk_overlap_with_query_tokens(chunk, query_tokens) >= 1:
+            return selected_chunks, False
+
+    selected_ids = {str(getattr(chunk, "chunk_id", "")) for chunk in selected_chunks}
+    candidate: Any | None = None
+    candidate_overlap = -1
+    candidate_score = float("-inf")
+    for chunk in ranked_candidates:
+        chunk_id = str(getattr(chunk, "chunk_id", ""))
+        if not chunk_id or chunk_id in selected_ids:
+            continue
+        if not _chunk_has_penal_core_signal(chunk):
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < min_score_guard:
+            continue
+        overlap = (
+            _chunk_overlap_with_query_tokens(chunk, query_tokens) if query_tokens else 0
+        )
+        if query_tokens and overlap < 1:
+            continue
+        if (overlap, score) > (candidate_overlap, candidate_score):
+            candidate = chunk
+            candidate_overlap = overlap
+            candidate_score = score
+
+    if candidate is None:
+        return selected_chunks, False
+
+    replace_idx: int | None = None
+    replace_score = float("inf")
+    for idx, chunk in enumerate(selected_chunks):
+        if _chunk_has_penal_core_signal(chunk):
+            continue
+        score = float(getattr(chunk, "score", 0.0) or 0.0)
+        if score < replace_score:
+            replace_score = score
+            replace_idx = idx
+    if replace_idx is None:
+        return selected_chunks, False
+
+    updated = list(selected_chunks)
+    updated[replace_idx] = candidate
+    updated = _merge_unique_chunks(updated)
+    if len(updated) > top_k:
+        updated = updated[:top_k]
+    return updated, True
 
 
 def _normalize_workspace_file_ids(file_ids: list[str] | None) -> set[str]:
@@ -1386,9 +3109,11 @@ async def _prepare_messages_with_rag(
         original_query,
         retrieval_query,
     )
+    coverage_query = _compose_query_coverage_input(original_query, retrieval_query)
 
     try:
         from backend.retrieval import (
+            detect_query_domains,
             enforce_article_reference_coverage,
             extract_query_article_refs,
             filter_candidates_by_query_domains,
@@ -1412,6 +3137,10 @@ async def _prepare_messages_with_rag(
     # Les refs d'articles sont extraites depuis la query originale
     # (les numeros d'articles sont dans la question de l'utilisateur)
     article_refs = extract_query_article_refs(original_query)
+    article_refs_for_selection = list(article_refs)
+    exact_query_domains: list[str] = []
+    if not workspace_only and settings.rag_domain_filter_enabled:
+        exact_query_domains = detect_query_domains(retrieval_query)
 
     reranker_applied = False
     reranker_error: str | None = None
@@ -1420,6 +3149,23 @@ async def _prepare_messages_with_rag(
     domain_filter_query_domains: list[str] = []
     domain_filter_in_domain_count = 0
     coverage_applied = False
+    anchor_path_coverage_applied = False
+    anchor_path_promoted = False
+    sanction_intent_coverage_applied = False
+    sanction_no_intent_deprioritized = False
+    specialized_mismatch_deprioritized = False
+    penal_core_coverage_applied = False
+    query_coverage_diversity_applied = False
+    query_focus_coverage_applied = False
+    query_focus_minimum_coverage_applied = False
+    strong_token_coverage_applied = False
+    mandatory_term_coverage_applied = False
+    mandatory_term_lock_applied = False
+    query_focus_minimum_lock_applied = False
+    specialized_mismatch_lock_applied = False
+    inferred_article_refs_applied = False
+    article_coverage_lock_applied = False
+    query_focus_retrieval_used = False
     threshold_start = settings.rag_min_score_threshold
     threshold_final = threshold_start
     adaptive_iterations = 0
@@ -1464,17 +3210,52 @@ async def _prepare_messages_with_rag(
             settings.rag_top_k * RAG_RETRIEVAL_OVERFETCH_FACTOR,
             reranker_pool_size,
             effective_target_max_chunks,
+            320,
         )
-        # Recherche RAG avec la question (eventuellement reformulee)
-        retrieved_candidates = (
-            []
-            if workspace_only
-            else retriever.search_hybrid(
+        # Recherche RAG: fusion requete reformulee + requete originale
+        # pour eviter une perte de rappel quand la reformulation est trop restrictive.
+        if workspace_only:
+            retrieved_candidates = []
+            retrieved_candidates_rewrite: list[Any] = []
+            retrieved_candidates_original: list[Any] = []
+            retrieved_candidates_focus: list[Any] = []
+        else:
+            retrieved_candidates_rewrite = retriever.search_hybrid(
                 query=retrieval_query,
                 top_k=candidate_pool_size,
                 candidate_pool_size=candidate_pool_size,
             )
-        )
+            normalized_retrieval_query = _normalize_spaces(_strip_accents(retrieval_query).lower())
+            normalized_original_query = _normalize_spaces(_strip_accents(original_query).lower())
+            if normalized_retrieval_query != normalized_original_query:
+                retrieved_candidates_original = retriever.search_hybrid(
+                    query=original_query,
+                    top_k=max(settings.rag_top_k, candidate_pool_size // 2),
+                    candidate_pool_size=candidate_pool_size,
+                )
+            else:
+                retrieved_candidates_original = []
+            focus_tokens = sorted(_extract_query_focus_tokens(original_query))
+            if len(focus_tokens) >= 2:
+                focus_query = " ".join(focus_tokens[:12])
+                normalized_focus_query = _normalize_spaces(_strip_accents(focus_query).lower())
+                if normalized_focus_query not in {
+                    normalized_original_query,
+                    normalized_retrieval_query,
+                }:
+                    retrieved_candidates_focus = retriever.search_hybrid(
+                        query=focus_query,
+                        top_k=max(settings.rag_top_k, candidate_pool_size // 2),
+                        candidate_pool_size=candidate_pool_size,
+                    )
+                    query_focus_retrieval_used = bool(retrieved_candidates_focus)
+                else:
+                    retrieved_candidates_focus = []
+            else:
+                retrieved_candidates_focus = []
+            retrieved_candidates = _merge_unique_chunks(
+                retrieved_candidates_rewrite + retrieved_candidates_original + retrieved_candidates_focus
+            )
         include_workspace_candidates = workspace_only or bool(allowed_workspace_file_ids)
         if include_workspace_candidates:
             workspace_candidates = get_workspace_rag_index().search(
@@ -1493,9 +3274,12 @@ async def _prepare_messages_with_rag(
             {}
             if workspace_only
             else retriever.find_exact_article_matches(
-                query=original_query,
+                query=coverage_query,
                 refs=article_refs,
                 per_ref_limit=12,
+                allowed_domains=exact_query_domains,
+                strict_domain=False,
+                allow_neutral_when_filtered=True,
             )
         )
         exact_candidates: list[Any] = []
@@ -1525,6 +3309,7 @@ async def _prepare_messages_with_rag(
                 )
         else:
             domain_filtered_candidates = merged_candidates
+
         allowed_chunk_ids = {chunk.chunk_id for chunk in domain_filtered_candidates}
         exact_matches_by_ref_for_selection: dict[Any, list[Any]] = {}
         for ref, matches in exact_matches_by_ref.items():
@@ -1550,6 +3335,48 @@ async def _prepare_messages_with_rag(
             else:
                 ranked_candidates = pre_ranked[:candidate_pool_size]
 
+            inferred_refs = _infer_article_refs_from_candidates(
+                ranked_candidates,
+                original_query=original_query,
+                max_refs=3,
+                scan_limit=160,
+            )
+            inferred_refs = [ref for ref in inferred_refs if ref not in article_refs_for_selection]
+            if inferred_refs:
+                inferred_exact_by_ref = retriever.find_exact_article_matches(
+                    query=coverage_query,
+                    refs=inferred_refs,
+                    per_ref_limit=6,
+                    allowed_domains=domain_filter_query_domains or exact_query_domains,
+                    strict_domain=True,
+                    allow_neutral_when_filtered=False,
+                )
+                inferred_exact_candidates: list[Any] = []
+                for ref in inferred_refs:
+                    inferred_exact_candidates.extend(inferred_exact_by_ref.get(ref, []))
+                if inferred_exact_candidates:
+                    domain_filtered_candidates = _merge_unique_chunks(
+                        inferred_exact_candidates + domain_filtered_candidates
+                    )
+                    ranked_candidates = _merge_unique_chunks(
+                        inferred_exact_candidates + ranked_candidates
+                    )
+                    ranked_candidates, _ = rerank_article_aware(
+                        query=retrieval_query,
+                        candidates=ranked_candidates,
+                        top_k=candidate_pool_size,
+                    )
+                    allowed_chunk_ids = {chunk.chunk_id for chunk in domain_filtered_candidates}
+                    for ref, matches in inferred_exact_by_ref.items():
+                        kept = [chunk for chunk in matches if chunk.chunk_id in allowed_chunk_ids]
+                        if kept:
+                            exact_matches_by_ref_for_selection[ref] = kept
+                    exact_matches_by_ref.update(inferred_exact_by_ref)
+                    for ref in inferred_refs:
+                        if ref not in article_refs_for_selection:
+                            article_refs_for_selection.append(ref)
+                    inferred_article_refs_applied = True
+
         if workspace_only:
             selected_chunks = ranked_candidates[: max(1, effective_target_max_chunks)]
             threshold_final = threshold_start
@@ -1566,11 +3393,11 @@ async def _prepare_messages_with_rag(
                     target_min=effective_target_min_chunks,
                     target_max=effective_target_max_chunks,
                     neutral_fallback_max=settings.rag_neutral_fallback_max,
-                    article_refs=article_refs,
+                    article_refs=article_refs_for_selection,
                     exact_matches_by_ref=exact_matches_by_ref_for_selection,
                 )
                 # select_chunks_adaptive already enforces article coverage.
-                if article_refs and exact_matches_by_ref_for_selection:
+                if article_refs_for_selection and exact_matches_by_ref_for_selection:
                     coverage_applied = True
             else:
                 selected_chunks, removed_by_threshold = filter_by_score_threshold(
@@ -1579,7 +3406,7 @@ async def _prepare_messages_with_rag(
                 )
                 selected_chunks, coverage_applied = enforce_article_reference_coverage(
                     ranked_chunks=selected_chunks,
-                    article_refs=article_refs,
+                    article_refs=article_refs_for_selection,
                     exact_matches_by_ref=exact_matches_by_ref_for_selection,
                     top_k=effective_target_max_chunks,
                 )
@@ -1596,6 +3423,116 @@ async def _prepare_messages_with_rag(
                 selected_chunks = direct_workspace_chunks
             else:
                 selected_chunks = _merge_unique_chunks(direct_workspace_chunks + selected_chunks)
+
+        if not workspace_only:
+            coverage_min_score_guard = max(0.0, settings.rag_min_score_threshold * 0.2)
+            selected_chunks, anchor_path_coverage_applied = _enforce_anchor_path_coverage(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                retrieval_query=retrieval_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, sanction_intent_coverage_applied = _enforce_sanction_intent_coverage(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, sanction_no_intent_deprioritized = _deprioritize_sanction_chunks_without_intent(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, specialized_mismatch_deprioritized = _deprioritize_specialized_mismatch_chunks(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, query_focus_coverage_applied = _enforce_query_focus_coverage(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, query_focus_minimum_coverage_applied = _enforce_query_focus_minimum_coverage(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, strong_token_coverage_applied = _enforce_strong_token_coverage(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, mandatory_term_coverage_applied = _enforce_mandatory_term_coverage(
+                selected_chunks,
+                domain_filtered_candidates,
+                original_query=coverage_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, penal_core_coverage_applied = _enforce_penal_core_coverage(
+                selected_chunks,
+                ranked_candidates,
+                retrieval_query=retrieval_query,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=coverage_min_score_guard,
+            )
+            selected_chunks, query_coverage_diversity_applied = _enforce_query_coverage_diversity(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                retrieval_query=retrieval_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=max(0.05, settings.rag_min_score_threshold * 0.5),
+            )
+            selected_chunks, anchor_path_promoted = _promote_anchor_path_chunk(
+                selected_chunks,
+                retrieval_query=retrieval_query,
+                top_k=effective_target_max_chunks,
+            )
+            selected_chunks, mandatory_term_lock_applied = _enforce_mandatory_term_coverage(
+                selected_chunks,
+                domain_filtered_candidates,
+                original_query=coverage_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=0.0,
+            )
+            selected_chunks, specialized_mismatch_lock_applied = _deprioritize_specialized_mismatch_chunks(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=0.0,
+            )
+            selected_chunks, query_focus_minimum_lock_applied = _enforce_query_focus_minimum_coverage(
+                selected_chunks,
+                ranked_candidates,
+                original_query=original_query,
+                top_k=effective_target_max_chunks,
+                min_score_guard=0.0,
+            )
+            if article_refs_for_selection and exact_matches_by_ref_for_selection:
+                selected_chunks, article_coverage_lock_applied = enforce_article_reference_coverage(
+                    ranked_chunks=selected_chunks,
+                    article_refs=article_refs_for_selection,
+                    exact_matches_by_ref=exact_matches_by_ref_for_selection,
+                    top_k=effective_target_max_chunks,
+                )
+
     except Exception as exc:  # noqa: BLE001
         logger.exception("RAG retrieval pipeline failed: %s: %s", type(exc).__name__, exc)
         return messages, [], f"RAG retrieval failed: {exc}", None
@@ -1648,10 +3585,15 @@ async def _prepare_messages_with_rag(
         rag_note = " | ".join(rag_notes)
         return [{"role": "system", "content": RAG_NO_CONTEXT_RESPONSE}, *messages], [], None, rag_note
 
+    context_focus_terms = _extract_query_mandatory_terms(coverage_query)
+    if not context_focus_terms:
+        context_focus_terms = sorted(_extract_query_focus_tokens(coverage_query))[:8]
+
     context_chunks = _renumber_chunks_for_context(selected_chunks)
     context_text, sources = format_retrieval_context(
         context_chunks,
         max_chars=settings.rag_max_context_chars,
+        focus_terms=context_focus_terms,
     )
     if not context_text:
         return [{"role": "system", "content": RAG_NO_CONTEXT_RESPONSE}, *messages], [], None, "no-context-after-format"
@@ -1668,13 +3610,6 @@ async def _prepare_messages_with_rag(
         "content": f"{RAG_SYSTEM_INSTRUCTIONS}\n\n{context_header}\n{context_text}",
     }
     extra_system_messages: list[dict[str, str]] = []
-    if _is_article_319_topic(original_query):
-        extra_system_messages.append(
-            {
-                "role": "system",
-                "content": ARTICLE_319_SPECIAL_INSTRUCTIONS,
-            }
-        )
     if _is_definition_question(original_query):
         extra_system_messages.append(
             {
@@ -1697,6 +3632,8 @@ async def _prepare_messages_with_rag(
         rag_notes.append(query_rewrite_status)
     if article_refs and exact_matches_by_ref:
         rag_notes.append("article-exact-match")
+    if inferred_article_refs_applied:
+        rag_notes.append("article-inferred-match")
     if rerank_applied:
         rag_notes.append("article-aware-rerank")
     if settings.rag_domain_filter_enabled and domain_filter_query_domains:
@@ -1711,6 +3648,38 @@ async def _prepare_messages_with_rag(
             rag_notes.append(f"cross-encoder-fallback={reranker_error}")
     if coverage_applied:
         rag_notes.append("multi-article-coverage")
+    if article_coverage_lock_applied:
+        rag_notes.append("multi-article-coverage-lock")
+    if anchor_path_coverage_applied:
+        rag_notes.append("anchor-path-coverage")
+    if sanction_intent_coverage_applied:
+        rag_notes.append("sanction-intent-coverage")
+    if sanction_no_intent_deprioritized:
+        rag_notes.append("sanction-nointent-deprioritized")
+    if specialized_mismatch_deprioritized:
+        rag_notes.append("specialized-mismatch-deprioritized")
+    if specialized_mismatch_lock_applied:
+        rag_notes.append("specialized-mismatch-lock")
+    if query_focus_coverage_applied:
+        rag_notes.append("query-focus-coverage")
+    if query_focus_minimum_coverage_applied:
+        rag_notes.append("query-focus-minimum-coverage")
+    if query_focus_minimum_lock_applied:
+        rag_notes.append("query-focus-minimum-lock")
+    if strong_token_coverage_applied:
+        rag_notes.append("strong-token-coverage")
+    if mandatory_term_coverage_applied:
+        rag_notes.append("mandatory-term-coverage")
+    if mandatory_term_lock_applied:
+        rag_notes.append("mandatory-term-lock")
+    if penal_core_coverage_applied:
+        rag_notes.append("penal-core-coverage")
+    if query_coverage_diversity_applied:
+        rag_notes.append("query-coverage-diversity")
+    if anchor_path_promoted:
+        rag_notes.append("anchor-path-promoted")
+    if query_focus_retrieval_used:
+        rag_notes.append("query-focus-retrieval")
     rag_notes.append(f"confidence={confidence_level}")
     rag_notes.append(f"threshold_start={threshold_start:.2f}")
     rag_notes.append(f"threshold_final={threshold_final:.2f}")
@@ -1725,8 +3694,6 @@ async def _prepare_messages_with_rag(
     rag_notes.append(f"citation_target={settings.rag_min_source_citations}")
     rag_notes.append(f"best={best_score:.3f}")
     rag_notes.append(f"mean={mean_score:.3f}")
-    if any(msg.get("content") == ARTICLE_319_SPECIAL_INSTRUCTIONS for msg in extra_system_messages):
-        rag_notes.append("article-319-special-rule")
     if any(msg.get("content") == DEFINITION_FOCUS_INSTRUCTIONS for msg in extra_system_messages):
         rag_notes.append("definition-focus")
     if any(msg.get("content") == ACT_GENERATION_INSTRUCTIONS for msg in extra_system_messages):
@@ -2069,6 +4036,12 @@ async def chat(payload: ChatRequest, request: Request):
         )
         if citations_sanitized:
             rag_note = _append_rag_note(rag_note, "citation-sanitized")
+        answer, article_ranges_sanitized = _sanitize_conflicting_article_ranges(
+            answer,
+            rag_sources,
+        )
+        if article_ranges_sanitized:
+            rag_note = _append_rag_note(rag_note, "article-range-sanitized")
         answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(answer)
         if article_mentions_sanitized:
             rag_note = _append_rag_note(rag_note, "article-mention-sanitized")
@@ -2252,6 +4225,12 @@ async def chat_stream(payload: ChatRequest, request: Request):
                         )
                         if citations_sanitized:
                             yield _sse("replace", {"text": sanitized_answer})
+                        sanitized_answer, article_ranges_sanitized = _sanitize_conflicting_article_ranges(
+                            sanitized_answer,
+                            final_sources,
+                        )
+                        if article_ranges_sanitized:
+                            yield _sse("replace", {"text": sanitized_answer})
                         sanitized_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(
                             sanitized_answer
                         )
@@ -2262,6 +4241,8 @@ async def chat_stream(payload: ChatRequest, request: Request):
                             final_rag_note = _append_rag_note(final_rag_note, "answer-sanitized")
                         if citations_sanitized:
                             final_rag_note = _append_rag_note(final_rag_note, "citation-sanitized")
+                        if article_ranges_sanitized:
+                            final_rag_note = _append_rag_note(final_rag_note, "article-range-sanitized")
                         if article_mentions_sanitized:
                             final_rag_note = _append_rag_note(final_rag_note, "article-mention-sanitized")
                         final_rag_note, citation_underuse = _check_citation_underuse(
@@ -2298,6 +4279,13 @@ async def chat_stream(payload: ChatRequest, request: Request):
                     if citations_sanitized:
                         yield _sse("replace", {"text": final_answer})
                         stream_rag_note = _append_rag_note(stream_rag_note, "citation-sanitized")
+                    final_answer, article_ranges_sanitized = _sanitize_conflicting_article_ranges(
+                        final_answer,
+                        final_sources,
+                    )
+                    if article_ranges_sanitized:
+                        yield _sse("replace", {"text": final_answer})
+                        stream_rag_note = _append_rag_note(stream_rag_note, "article-range-sanitized")
                     final_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(
                         final_answer
                     )
@@ -2337,6 +4325,13 @@ async def chat_stream(payload: ChatRequest, request: Request):
             if citations_sanitized:
                 yield _sse("replace", {"text": final_answer})
                 stream_rag_note = _append_rag_note(stream_rag_note, "citation-sanitized")
+            final_answer, article_ranges_sanitized = _sanitize_conflicting_article_ranges(
+                final_answer,
+                final_sources,
+            )
+            if article_ranges_sanitized:
+                yield _sse("replace", {"text": final_answer})
+                stream_rag_note = _append_rag_note(stream_rag_note, "article-range-sanitized")
             final_answer, article_mentions_sanitized = _sanitize_unbacked_article_mentions(final_answer)
             if article_mentions_sanitized:
                 yield _sse("replace", {"text": final_answer})
