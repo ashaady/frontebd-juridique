@@ -36,6 +36,7 @@ type RagSource = {
   score?: number;
   chunk_id?: string;
   citation?: string;
+  source_mode?: "cited" | "retrieved";
   relative_path?: string | null;
   source_path?: string | null;
   page_start?: number | null;
@@ -89,10 +90,13 @@ type ChatMessagePayload = {
   content: string;
 };
 
+const BACKEND_HISTORY_USER_TURNS = 6;
+
 type CitationCard = {
   badge: string;
   excerpt: string;
   meta: string;
+  sourceMode: "cited" | "retrieved";
   chunkId?: string;
   articleHint?: string;
   sourcePath?: string;
@@ -795,16 +799,13 @@ function confidenceToPercent(level: "high" | "medium" | "low" | "none"): number 
 }
 
 function buildMessageHistory(turns: Turn[]): ChatMessagePayload[] {
-  const history: ChatMessagePayload[] = [];
-  for (const turn of turns) {
-    if (turn.question.trim().length > 0) {
-      history.push({ role: "user", content: turn.question });
-    }
-    if (turn.answer.trim().length > 0) {
-      history.push({ role: "assistant", content: turn.answer });
-    }
-  }
-  return history;
+  // Do not resend prior assistant answers to the backend. Old generated text can
+  // anchor the next completion and make the frontend appear "stuck" on outdated
+  // behavior even when the backend retrieval/ranking has changed.
+  return turns
+    .filter((turn) => turn.question.trim().length > 0)
+    .slice(-BACKEND_HISTORY_USER_TURNS)
+    .map((turn) => ({ role: "user", content: turn.question.trim() }));
 }
 
 type PersistedSessionPayload = {
@@ -1048,6 +1049,7 @@ function buildCitationCards(sources: RagSource[]): CitationCard[] {
       badge,
       excerpt,
       meta,
+      sourceMode: source.source_mode === "retrieved" ? "retrieved" : "cited",
       chunkId: source.chunk_id ?? undefined,
       articleHint: source.article_hint ?? undefined,
       sourcePath: source.relative_path ?? source.source_path ?? undefined,
@@ -1092,16 +1094,22 @@ function selectSourcesUsedForResponse(answer: string, sources: RagSource[]): Rag
     return [];
   }
   const citedRanks = extractCitedSourceRanks(answer);
-  if (citedRanks.size === 0) {
-    return [];
-  }
   const dedup = new Map<string, RagSource>();
-  for (const [index, source] of sources.entries()) {
-    const rank = typeof source.rank === "number" && source.rank > 0 ? source.rank : index + 1;
-    if (!citedRanks.has(rank)) {
-      continue;
+  if (citedRanks.size > 0) {
+    for (const [index, source] of sources.entries()) {
+      const rank = typeof source.rank === "number" && source.rank > 0 ? source.rank : index + 1;
+      if (!citedRanks.has(rank)) {
+        continue;
+      }
+      dedup.set(sourceUsageKey(source, index), { ...source, source_mode: "cited" });
     }
-    dedup.set(sourceUsageKey(source, index), source);
+  } else {
+    for (const [index, source] of sources.entries()) {
+      if (dedup.size >= 5) {
+        break;
+      }
+      dedup.set(sourceUsageKey(source, index), { ...source, source_mode: "retrieved" });
+    }
   }
   return Array.from(dedup.values()).sort((a, b) => {
     const rankA = typeof a.rank === "number" && a.rank > 0 ? a.rank : Number.MAX_SAFE_INTEGER;
@@ -4388,7 +4396,7 @@ export function ChatWorkspace({
                 <div>
                   <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
                     <span className="material-symbols-outlined text-sm text-primary">menu_book</span>
-                    Sources synthetisees dans la reponse
+                    Sources utilisees pour la reponse
                   </h3>
                   {workspaceActiveTurn ? (
                     <p className="text-[11px] text-slate-400 mb-3 line-clamp-2">
@@ -4399,7 +4407,7 @@ export function ChatWorkspace({
                     {citationCards.length === 0 ? (
                       <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
                         <p className="text-xs text-slate-500">
-                          Aucune source explicitement synthetisee dans cette reponse.
+                          Aucune source RAG disponible pour cette reponse.
                         </p>
                       </div>
                     ) : (
@@ -4425,7 +4433,9 @@ export function ChatWorkspace({
                             </p>
                             <p className="text-[10px] text-slate-500 mt-2">{card.meta}</p>
                             <p className="text-[10px] mt-1 text-slate-400">
-                              Source synthetisee et citee dans la reponse.
+                              {card.sourceMode === "cited"
+                                ? "Source explicitement citee dans la reponse."
+                                : "Source retenue par le RAG pour cette reponse."}
                             </p>
                             {chunkId ? (
                               <div className="mt-3">
@@ -4504,7 +4514,7 @@ export function ChatWorkspace({
                     <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Sources</p>
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold">{displayedSourceCount}</span>
-                      <span className="text-[10px] text-slate-500">sources synthetisees</span>
+                      <span className="text-[10px] text-slate-500">sources affichees</span>
                     </div>
                   </div>
                 </div>
