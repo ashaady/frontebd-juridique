@@ -157,7 +157,7 @@ export function UserDashboard() {
 
   return (
     <div className="min-h-screen bg-[#112117] text-slate-100">
-      <header className="flex items-center justify-between gap-4 px-4 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800">
+      <header className="flex items-center justify-between gap-4 px-4 sm:px-6 py-3 bg-[#122118] border-b border-slate-800">
         <div className="flex items-center gap-3 min-w-0">
           <div className="size-8 bg-[#13221a] border border-[#49DE80]/40 rounded flex items-center justify-center">
             <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>

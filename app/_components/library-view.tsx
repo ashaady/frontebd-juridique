@@ -1975,10 +1975,10 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
           <button ref={signInModalTriggerRef} type="button" className="hidden" aria-hidden="true" />
         </SignInButton>
       </SignedOut>
-      <header className="px-3 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
+      <header className="px-3 sm:px-6 py-3 bg-[#122118] border-b border-slate-800 shrink-0 z-20">
         <div className="flex items-center gap-3 w-full min-w-0">
           <button
-            className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+            className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-700 px-2.5 py-1.5 hover:bg-[#1e2e24]"
             onClick={() => {
               setIsMobileLeftPanelOpen((previous) => {
                 const next = !previous;
@@ -2050,7 +2050,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
           <div className="lg:hidden flex items-center gap-2 ml-auto shrink-0">
             <SignedOut>
               <Link
-                className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#1e2e24] transition-colors"
+                className="inline-flex items-center justify-center rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-[#1e2e24] transition-colors"
                 href="/sign-in"
               >
                 Connexion

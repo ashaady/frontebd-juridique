@@ -21,6 +21,9 @@ export default function RootLayout({
   return (
     <html className="dark" lang="fr" suppressHydrationWarning>
       <head>
+        <meta content="#112117" name="theme-color" />
+        <meta content="black-translucent" name="apple-mobile-web-app-status-bar-style" />
+        <meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport" />
         {/* Google Tag Manager */}
         <script
           dangerouslySetInnerHTML={{

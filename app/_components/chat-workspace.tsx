@@ -3613,10 +3613,10 @@ export function ChatWorkspace({
           <button ref={signInModalTriggerRef} type="button" className="hidden" aria-hidden="true" />
         </SignInButton>
       </SignedOut>
-      <header className="px-3 sm:px-6 py-3 bg-white dark:bg-[#122118] border-b border-slate-200 dark:border-slate-800 shrink-0 z-20">
+      <header className="px-3 sm:px-6 py-3 bg-[#122118] border-b border-slate-800 shrink-0 z-20">
         <div className="flex items-center gap-3 w-full min-w-0">
           <button
-            className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+            className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-700 px-2.5 py-1.5 hover:bg-[#1e2e24]"
             onClick={() => {
               setIsMobileLeftPanelOpen((previous) => {
                 const next = !previous;
@@ -3691,7 +3691,7 @@ export function ChatWorkspace({
           <div className="lg:hidden flex items-center gap-2 ml-auto shrink-0">
             <SignedOut>
               <Link
-                className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#1e2e24] transition-colors"
+                className="inline-flex items-center justify-center rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-[#1e2e24] transition-colors"
                 href="/sign-in"
               >
                 Connexion
@@ -3709,7 +3709,7 @@ export function ChatWorkspace({
               </UserButton>
             </SignedIn>
             <button
-              className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-700 px-2.5 py-1.5 hover:bg-[#1e2e24]"
               onClick={() => {
                 if (isMobileRightPanelOpen) {
                   handleCloseWorkspacePanel();
@@ -3761,7 +3761,7 @@ export function ChatWorkspace({
         <aside
           className={`${
             isMobileLeftPanelOpen ? "fixed inset-y-0 left-0 z-40 flex w-[84vw] max-w-xs shadow-2xl" : "hidden"
-          } lg:static lg:z-auto lg:flex ${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0c1811] flex-col shrink-0 transition-all duration-300`}
+          } lg:static lg:z-auto lg:flex ${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} border-r border-slate-800 bg-[#0c1811] flex-col shrink-0 transition-all duration-300`}
         >
           <div className={isSidebarCollapsed ? "p-2" : "p-6"}>
             <div className={`flex ${isSidebarCollapsed ? "flex-col items-center gap-2" : "items-center justify-between"} mb-6`}>
@@ -3909,7 +3909,7 @@ export function ChatWorkspace({
           ) : null}
         </aside>
 
-        <main className="flex-1 min-w-0 flex flex-col bg-[#112117] dark:bg-[#112117] relative lg:border-r border-slate-200 dark:border-slate-800">
+        <main className="flex-1 min-w-0 flex flex-col bg-[#112117] relative lg:border-r border-slate-800">
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-8 scroll-smooth no-scrollbar">
             <div className="max-w-3xl mx-auto space-y-8">
               {turns.length === 0 ? (
@@ -4108,7 +4108,7 @@ export function ChatWorkspace({
                       <span className="material-symbols-outlined text-primary text-xl">smart_toy</span>
                     </div>
                     <div className="flex flex-col items-start max-w-[85%]">
-                      <div className="bg-white dark:bg-[#1e2e24] text-slate-900 dark:text-slate-100 px-6 py-5 rounded-2xl rounded-tl-sm shadow-sm border border-slate-200 dark:border-slate-800">
+                      <div className="bg-[#1e2e24] text-slate-100 px-6 py-5 rounded-2xl rounded-tl-sm shadow-sm border border-slate-800">
                         {turn.answer.trim().length > 0 ? (
                           renderAnswerContent(turn.answer)
                         ) : (
@@ -4152,11 +4152,11 @@ export function ChatWorkspace({
           <div className={`p-3 sm:p-4 lg:p-6 bg-transparent ${!hasConversationStarted ? "sm:hidden" : ""}`}>
             <div className="max-w-3xl mx-auto">
               <form
-                className="bg-white dark:bg-[#122118] rounded-2xl p-2 shadow-xl border border-slate-200 dark:border-slate-700 focus-within:ring-2 focus-within:ring-primary/30 transition-all"
+                className="bg-[#122118] rounded-2xl p-2 shadow-xl border border-slate-700 focus-within:ring-2 focus-within:ring-primary/30 transition-all"
                 onSubmit={handleSubmit}
               >
                 {pendingComposerFiles.length > 0 ? (
-                  <div className="px-2 pb-2 mb-2 border-b border-slate-200 dark:border-slate-800 flex flex-wrap gap-2">
+                  <div className="px-2 pb-2 mb-2 border-b border-slate-800 flex flex-wrap gap-2">
                     {pendingComposerFiles.map((file) => {
                       const key = composerFileKey(file);
                       return (
@@ -4184,7 +4184,7 @@ export function ChatWorkspace({
                   </div>
                 ) : null}
                 {isUploadingComposerFiles ? (
-                  <div className="px-2 pb-2 mb-2 border-b border-slate-200 dark:border-slate-800">
+                  <div className="px-2 pb-2 mb-2 border-b border-slate-800">
                     <div className="flex items-center gap-2 text-xs text-slate-300">
                       <span className="material-symbols-outlined animate-spin text-[15px] text-primary">autorenew</span>
                       Chargement du document en cours...
@@ -4196,7 +4196,7 @@ export function ChatWorkspace({
                     className={`p-2.5 transition-colors rounded-xl ${
                       isUploadingComposerFiles
                         ? "text-slate-600 cursor-not-allowed"
-                        : "text-slate-400 hover:text-primary hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+                        : "text-slate-400 hover:text-primary hover:bg-[#1e2e24]"
                     }`}
                     disabled={isUploadingComposerFiles}
                     onClick={() => composerFileInputRef.current?.click()}
@@ -4228,7 +4228,7 @@ export function ChatWorkspace({
                       className={`p-2.5 transition-colors rounded-xl ${
                         isRecording
                           ? "text-red-400 bg-red-500/10 hover:bg-red-500/20"
-                          : "text-slate-400 hover:text-primary hover:bg-slate-50 dark:hover:bg-[#1e2e24]"
+                          : "text-slate-400 hover:text-primary hover:bg-[#1e2e24]"
                       } ${isTranscribing ? "opacity-60 cursor-not-allowed" : ""}`}
                       disabled={isTranscribing}
                       onClick={() => void handleVoiceCapture()}
@@ -4279,9 +4279,9 @@ export function ChatWorkspace({
         <aside
           className={`${isMobileRightPanelOpen ? "fixed inset-y-0 right-0 z-40 flex w-[90vw] max-w-sm shadow-2xl" : "hidden"} ${
             isWorkspacePanelOpen ? "lg:static lg:z-auto lg:flex lg:w-[400px]" : "lg:hidden"
-          } bg-white dark:bg-[#122118] flex-col shrink-0 overflow-hidden`}
+          } bg-[#122118] flex-col shrink-0 overflow-hidden`}
         >
-          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
             <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Workspace</p>
             <button
               className="inline-flex items-center justify-center rounded-md border border-slate-300 dark:border-slate-700 p-1.5"
@@ -4291,7 +4291,7 @@ export function ChatWorkspace({
               <span className="material-symbols-outlined text-sm">close</span>
             </button>
           </div>
-          <div className="flex border-b border-slate-200 dark:border-slate-800">
+          <div className="flex border-b border-slate-800">
             <button
               className={`flex-1 py-4 text-xs font-bold uppercase tracking-widest transition-colors ${
                 rightPanelTab === "workspace"
@@ -4331,11 +4331,11 @@ export function ChatWorkspace({
             {rightPanelTab === "workspace" ? (
               <div className="space-y-6">
                 <button
-                  className="w-full border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center text-center group hover:border-primary/50 transition-colors cursor-pointer bg-slate-50/30 dark:bg-[#0a120e]/20"
+                  className="w-full border-2 border-dashed border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center text-center group hover:border-primary/50 transition-colors cursor-pointer bg-[#0a120e]/20"
                   onClick={() => workspaceFileInputRef.current?.click()}
                   type="button"
                 >
-                  <div className="size-12 rounded-full bg-slate-100 dark:bg-[#1e2e24] flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                  <div className="size-12 rounded-full bg-[#1e2e24] flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
                     <span className="material-symbols-outlined text-slate-400 group-hover:text-primary">upload_file</span>
                   </div>
                   <p className="text-sm font-semibold">Deposez vos documents ici</p>
@@ -4359,7 +4359,7 @@ export function ChatWorkspace({
                     Questions de la discussion
                   </h3>
                   {workspaceQuestionTurns.length === 0 ? (
-                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                    <div className="p-3 rounded-xl bg-[#1e2e24] border border-slate-800">
                       <p className="text-[11px] text-slate-500">Aucune question pour le moment.</p>
                     </div>
                   ) : (
@@ -4372,7 +4372,7 @@ export function ChatWorkspace({
                             className={`w-full text-left rounded-xl border px-3 py-2 transition-colors ${
                               isSelected
                                 ? "border-primary/50 bg-primary/10"
-                                : "border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-[#1e2e24] hover:border-primary/30"
+                                : "border-slate-800 bg-[#1e2e24] hover:border-primary/30"
                             }`}
                             key={turn.id}
                             onClick={() => setWorkspaceSelectedTurnId(turn.id)}
@@ -4405,7 +4405,7 @@ export function ChatWorkspace({
                   ) : null}
                   <div className="space-y-3">
                     {citationCards.length === 0 ? (
-                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                      <div className="p-4 rounded-xl bg-[#1e2e24] border border-slate-800">
                         <p className="text-xs text-slate-500">
                           Aucune source RAG disponible pour cette reponse.
                         </p>
@@ -4417,7 +4417,7 @@ export function ChatWorkspace({
                         const isExpanded = chunkId ? expandedChunkIds[chunkId] === true : false;
                         return (
                           <div
-                            className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800 group hover:border-primary/30 transition-all"
+                            className="p-4 rounded-xl bg-[#1e2e24] border border-slate-800 group hover:border-primary/30 transition-all"
                             key={`${card.badge}-${card.meta}`}
                           >
                             <div className="flex justify-between items-start mb-2">
@@ -4477,7 +4477,7 @@ export function ChatWorkspace({
                   </div>
                 </div>
 
-                <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                <div className="p-3 rounded-xl bg-[#1e2e24] border border-slate-800">
                   <p className="text-[10px] text-slate-400 uppercase font-bold mb-2">Visualisation des sources</p>
                   {sourceBreakdown.length === 0 ? (
                     <p className="text-[11px] text-slate-500">Aucune source a repartir pour cette reponse.</p>
@@ -4501,7 +4501,7 @@ export function ChatWorkspace({
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                  <div className="p-3 rounded-xl bg-[#1e2e24] border border-slate-800">
                     <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Confiance</p>
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold">{confidencePercent}%</span>
@@ -4510,7 +4510,7 @@ export function ChatWorkspace({
                       </div>
                     </div>
                   </div>
-                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                  <div className="p-3 rounded-xl bg-[#1e2e24] border border-slate-800">
                     <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Sources</p>
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold">{displayedSourceCount}</span>
@@ -4527,14 +4527,14 @@ export function ChatWorkspace({
                   <span className="material-symbols-outlined text-sm text-primary">edit_note</span>
                   Prise de notes rapide
                 </h3>
-                <div className="bg-slate-50 dark:bg-[#1e2e24] rounded-xl p-3 border border-slate-100 dark:border-slate-800">
+                <div className="bg-[#1e2e24] rounded-xl p-3 border border-slate-800">
                   <textarea
-                    className="w-full bg-transparent border-0 p-0 text-sm text-slate-600 dark:text-slate-300 focus:ring-0 min-h-[220px] resize-none"
+                    className="w-full bg-transparent border-0 p-0 text-sm text-slate-300 focus:ring-0 min-h-[220px] resize-none"
                     onChange={(event) => setNotes(event.target.value)}
                     placeholder="Prenez des notes sur cette analyse..."
                     value={notes}
                   ></textarea>
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-700 mt-2">
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-700 mt-2">
                     <span className="text-[10px] text-slate-500">{notes.trim().length} caracteres</span>
                     <button className="text-[10px] font-bold text-primary uppercase" onClick={() => void persistWorkspaceSnapshot()} type="button">
                       Sauvegarder maintenant
@@ -4551,13 +4551,13 @@ export function ChatWorkspace({
                   Fichiers du Workspace
                 </h3>
                 {allWorkspaceFiles.length === 0 ? (
-                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800">
+                  <div className="p-4 rounded-xl bg-[#1e2e24] border border-slate-800">
                     <p className="text-xs text-slate-500">Aucun fichier pour le moment. Ajoutez un document depuis le chat.</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
                     {allWorkspaceFiles.map((file) => (
-                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1e2e24] border border-slate-100 dark:border-slate-800" key={file.id}>
+                      <div className="p-3 rounded-xl bg-[#1e2e24] border border-slate-800" key={file.id}>
                         <p className="text-sm font-semibold break-all">{file.name}</p>
                         <p className="text-[11px] text-slate-500 mt-1">
                           {formatFileSize(file.size)} - {formatDateLabel(file.addedAt)}
@@ -4570,7 +4570,7 @@ export function ChatWorkspace({
             ) : null}
           </div>
 
-          <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-[#0a120e]/30">
+          <div className="p-4 border-t border-slate-800 bg-[#0a120e]/30">
             {rightPanelTab === "workspace" ? (
               <button className="w-full py-3 rounded-xl border border-primary/40 text-primary hover:bg-primary/10 transition-colors text-sm font-bold flex items-center justify-center gap-2" onClick={() => void persistWorkspaceSnapshot()} type="button">
                 <span className="material-symbols-outlined text-sm">cloud_sync</span> Synchroniser le Workspace
