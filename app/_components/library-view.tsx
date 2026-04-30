@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInButton, SignedIn, SignedOut, UserButton, useAuth, useUser } from "@clerk/nextjs";
 import {
+  buildWorkspaceRequestHeaders,
   buildLibraryViewUrl,
   deleteConsultationApi,
   listLibraryDocumentsApi,
   readConsultationsApi,
   readWorkspaceTemplatesApi,
+  setWorkspaceAuthToken,
   setWorkspaceUserContext,
   upsertWorkspaceTemplateApi,
   type LibraryDocumentRecord,
@@ -933,7 +935,7 @@ function enrichDocuments(rows: LibraryDocumentRecord[]): DecoratedDocument[] {
 }
 
 export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewProps) {
-  const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
+  const { getToken, isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
   const { user } = useUser();
   const router = useRouter();
   const signInModalTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -1024,6 +1026,11 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
     if (!isAuthLoaded) {
       return;
     }
+    if (!isSignedIn) {
+      setWorkspaceAuthToken(null);
+    } else {
+      void getToken().then((token) => setWorkspaceAuthToken(token));
+    }
     setWorkspaceUserContext(
       isSignedIn
         ? {
@@ -1034,7 +1041,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
           }
         : null
     );
-  }, [isAuthLoaded, isSignedIn, userId, user]);
+  }, [getToken, isAuthLoaded, isSignedIn, userId, user]);
 
   const requireSignedIn = useCallback(() => {
     if (!isAuthLoaded) {
@@ -1761,9 +1768,10 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
 
       let response: Response;
       try {
+        setWorkspaceAuthToken(isSignedIn ? await getToken() : null);
         response = await fetch(`${backendBaseUrl}/chat`, {
           method: "POST",
-          headers: {
+          headers: buildWorkspaceRequestHeaders({
             "Content-Type": "application/json",
             "X-Client-Auth-Mode": isSignedIn ? "signed-in" : "guest",
             ...(userId ? { "X-User-Id": userId } : {}),
@@ -1774,7 +1782,7 @@ export function LibraryView({ title = "Bibliotheque Juridique" }: LibraryViewPro
               ? { "X-User-Name": user.fullName ?? user.firstName ?? "" }
               : {}),
             ...(user?.username ? { "X-User-Username": user.username } : {}),
-          },
+          }),
           body: JSON.stringify({
             messages: [{ role: "user", content: generationPrompt }],
             temperature: 0,

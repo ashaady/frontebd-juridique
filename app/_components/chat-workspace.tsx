@@ -7,6 +7,7 @@ import { SignInButton, SignedIn, SignedOut, UserButton, useAuth, useUser } from 
 import { jsPDF } from "jspdf";
 import {
   buildLibraryViewUrl,
+  buildWorkspaceRequestHeaders,
   clearConsultationsApi,
   clearWorkspaceFilesApi,
   listLibraryDocumentsApi,
@@ -15,6 +16,7 @@ import {
   readWorkspaceFilesApi,
   readWorkspaceNotesApi,
   resolveLibraryChunksApi,
+  setWorkspaceAuthToken,
   setWorkspaceUserContext,
   transcribeSpeechApi,
   upsertConsultationApi,
@@ -1089,6 +1091,10 @@ function sourceUsageKey(source: RagSource, index: number): string {
   return `doc:${path}|citation:${citation}|pages:${pageStart}-${pageEnd}|rank:${rank}`;
 }
 
+function isWorkspaceChunkId(chunkId: string | null | undefined): boolean {
+  return String(chunkId ?? "").trim().startsWith("workspace-");
+}
+
 function selectSourcesUsedForResponse(answer: string, sources: RagSource[]): RagSource[] {
   if (sources.length === 0) {
     return [];
@@ -1158,14 +1164,23 @@ function buildSourceBreakdown(sources: RagSource[]): SourceBreakdownItem[] {
     .sort((a, b) => b.percent - a.percent || b.count - a.count);
 }
 
+function safeDecodeSourceValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function normalizeSourceValue(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
     return "";
   }
-  const unified = trimmed
+  const unified = safeDecodeSourceValue(trimmed)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replaceAll("\\", "/")
-    .replace(/%2F/gi, "/")
     .replaceAll('"', "")
     .replaceAll("'", "")
     .replaceAll("`", "")
@@ -1178,6 +1193,11 @@ function normalizeSourceValue(value: string): string {
   const markerIndex = cleaned.indexOf(marker);
   if (markerIndex >= 0) {
     cleaned = cleaned.slice(markerIndex + marker.length);
+  }
+  const supabaseMarker = "legal-documents/";
+  const supabaseMarkerIndex = cleaned.indexOf(supabaseMarker);
+  if (supabaseMarkerIndex >= 0) {
+    cleaned = cleaned.slice(supabaseMarkerIndex + supabaseMarker.length);
   }
   return cleaned.trim();
 }
@@ -1524,7 +1544,7 @@ export function ChatWorkspace({
   initialStartNewSession = false,
 }: ChatWorkspaceProps) {
   const router = useRouter();
-  const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
+  const { getToken, isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
   const { user } = useUser();
   const [turns, setTurns] = useState<Turn[]>(EMPTY_TURNS);
   const [sessionHistory, setSessionHistory] = useState<ConsultationRecord[]>([]);
@@ -1703,6 +1723,11 @@ export function ChatWorkspace({
     if (!isAuthLoaded) {
       return;
     }
+    if (!isSignedIn) {
+      setWorkspaceAuthToken(null);
+    } else {
+      void getToken().then((token) => setWorkspaceAuthToken(token));
+    }
     setWorkspaceUserContext(
       isSignedIn
         ? {
@@ -1713,7 +1738,7 @@ export function ChatWorkspace({
           }
         : null
     );
-  }, [isAuthLoaded, isSignedIn, userId, user]);
+  }, [getToken, isAuthLoaded, isSignedIn, userId, user]);
 
   useEffect(() => {
     if (!isAuthLoaded) {
@@ -2070,7 +2095,7 @@ export function ChatWorkspace({
   useEffect(() => {
     const chunkIds = (workspaceActiveTurn?.ragSources ?? [])
       .map((source) => (typeof source.chunk_id === "string" ? source.chunk_id.trim() : ""))
-      .filter((chunkId) => chunkId.length > 0);
+      .filter((chunkId) => chunkId.length > 0 && !isWorkspaceChunkId(chunkId));
     if (chunkIds.length === 0) {
       return;
     }
@@ -2198,9 +2223,10 @@ export function ChatWorkspace({
     const resolvedAuthMode = resolvedUserId || isSignedIn ? "signed-in" : "guest";
 
     try {
+      setWorkspaceAuthToken(isSignedIn ? await getToken() : null);
       const response = await fetch(`${backendBaseUrl}/chat/stream`, {
         method: "POST",
-        headers: {
+        headers: buildWorkspaceRequestHeaders({
           "Content-Type": "application/json",
           "X-Client-Auth-Mode": resolvedAuthMode,
           ...(resolvedUserId ? { "X-User-Id": resolvedUserId } : {}),
@@ -2211,7 +2237,7 @@ export function ChatWorkspace({
             ? { "X-User-Name": user.fullName ?? user.firstName ?? "" }
             : {}),
           ...(user?.username ? { "X-User-Username": user.username } : {}),
-        },
+        }),
         body: JSON.stringify({
           messages: [...historyBeforeQuestion, { role: "user", content: trimmedQuestion }],
           temperature: 0.0,
@@ -3159,9 +3185,10 @@ export function ChatWorkspace({
       const resolvedUserId = String(userId ?? user?.id ?? "").trim();
       const resolvedAuthMode = resolvedUserId || isSignedIn ? "signed-in" : "guest";
       try {
+        setWorkspaceAuthToken(isSignedIn ? await getToken() : null);
         const response = await fetch(`${backendBaseUrl}/chat`, {
           method: "POST",
-          headers: {
+          headers: buildWorkspaceRequestHeaders({
             "Content-Type": "application/json",
             "X-Client-Auth-Mode": resolvedAuthMode,
             ...(resolvedUserId ? { "X-User-Id": resolvedUserId } : {}),
@@ -3172,7 +3199,7 @@ export function ChatWorkspace({
               ? { "X-User-Name": user.fullName ?? user.firstName ?? "" }
               : {}),
             ...(user?.username ? { "X-User-Username": user.username } : {}),
-          },
+          }),
           body: JSON.stringify({
             messages: [{ role: "user", content: prompt }],
             temperature: 0.1,
@@ -3535,8 +3562,7 @@ export function ChatWorkspace({
           (typeof card.pageStart === "number" && card.pageStart > 0
             ? card.pageStart
             : parsePageFromCitationText(card.meta) ?? parsePageFromCitationText(card.excerpt)) ?? null;
-        const viewUrl = buildLibraryViewUrl(matched.id);
-        const targetUrl = pageFromCard ? `${viewUrl}#page=${pageFromCard}` : viewUrl;
+        const targetUrl = buildLibraryViewUrl(matched.id, pageFromCard);
         window.location.assign(targetUrl);
         return;
       }
@@ -4413,6 +4439,7 @@ export function ChatWorkspace({
                     ) : (
                       citationCards.map((card) => {
                         const chunkId = card.chunkId ?? "";
+                        const isWorkspaceChunk = isWorkspaceChunkId(chunkId);
                         const chunkRecord = chunkId ? chunkDetailsById[chunkId] : undefined;
                         const isExpanded = chunkId ? expandedChunkIds[chunkId] === true : false;
                         return (
@@ -4437,7 +4464,11 @@ export function ChatWorkspace({
                                 ? "Source explicitement citee dans la reponse."
                                 : "Source retenue par le RAG pour cette reponse."}
                             </p>
-                            {chunkId ? (
+                            {chunkId && isWorkspaceChunk ? (
+                              <p className="mt-3 text-[11px] text-slate-400">
+                                Passage issu d'un document workspace prive: extrait non expose via le resolver public.
+                              </p>
+                            ) : chunkId ? (
                               <div className="mt-3">
                                 <button
                                   className="text-[11px] font-semibold text-primary hover:text-primary/80 inline-flex items-center gap-1"

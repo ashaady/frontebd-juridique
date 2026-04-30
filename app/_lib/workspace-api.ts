@@ -117,6 +117,7 @@ let workspaceUserId: string | null = null;
 let workspaceUserEmail: string | null = null;
 let workspaceUserName: string | null = null;
 let workspaceUserUsername: string | null = null;
+let workspaceAuthToken: string | null = null;
 
 type WorkspaceUserContext = {
   userId?: string | null;
@@ -153,6 +154,11 @@ export function setWorkspaceUserContext(context?: WorkspaceUserContext | null): 
   setWorkspaceStorageScope(workspaceUserId);
 }
 
+export function setWorkspaceAuthToken(token?: string | null): void {
+  const cleaned = String(token ?? "").trim();
+  workspaceAuthToken = cleaned || null;
+}
+
 export function setWorkspaceUserId(userId?: string | null): void {
   setWorkspaceUserContext({ userId });
 }
@@ -177,6 +183,9 @@ function buildHeaders(initHeaders?: HeadersInit, includeJsonContentType = true):
   if (includeJsonContentType && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+  if (workspaceAuthToken && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${workspaceAuthToken}`);
+  }
   if (workspaceUserId) {
     headers.set("X-User-Id", workspaceUserId);
   }
@@ -190,6 +199,13 @@ function buildHeaders(initHeaders?: HeadersInit, includeJsonContentType = true):
     headers.set("X-User-Username", workspaceUserUsername);
   }
   return headers;
+}
+
+export function buildWorkspaceRequestHeaders(
+  initHeaders?: HeadersInit,
+  includeJsonContentType = true
+): Headers {
+  return buildHeaders(initHeaders, includeJsonContentType);
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T | null> {
@@ -477,8 +493,13 @@ export function buildLibraryDownloadUrl(documentId: string): string {
   return `${backendBaseUrl()}/library/documents/${encodeURIComponent(documentId)}/download`;
 }
 
-export function buildLibraryViewUrl(documentId: string): string {
-  return `${backendBaseUrl()}/library/documents/${encodeURIComponent(documentId)}/view`;
+export function buildLibraryViewUrl(documentId: string, page?: number | null): string {
+  const base = `${backendBaseUrl()}/library/documents/${encodeURIComponent(documentId)}/view`;
+  if (!Number.isFinite(page) || !page || page <= 0) {
+    return base;
+  }
+  const normalizedPage = Math.floor(page);
+  return `${base}?page=${normalizedPage}#page=${normalizedPage}`;
 }
 
 export async function transcribeSpeechApi(audioBlob: Blob): Promise<string> {

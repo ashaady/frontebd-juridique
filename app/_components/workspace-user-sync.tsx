@@ -2,14 +2,18 @@
 
 import { useAuth, useUser } from "@clerk/nextjs";
 import { useEffect, useRef } from "react";
-import { registerWorkspaceUserApi, setWorkspaceUserContext } from "../_lib/workspace-api";
+import {
+  registerWorkspaceUserApi,
+  setWorkspaceAuthToken,
+  setWorkspaceUserContext,
+} from "../_lib/workspace-api";
 
 function normalizeSignaturePart(value: string | null | undefined): string {
   return String(value ?? "").trim();
 }
 
 export function WorkspaceUserSync() {
-  const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
+  const { getToken, isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
   const { user } = useUser();
   const lastSyncedSignatureRef = useRef("");
 
@@ -19,6 +23,7 @@ export function WorkspaceUserSync() {
     }
 
     if (!isSignedIn) {
+      setWorkspaceAuthToken(null);
       setWorkspaceUserContext(null);
       lastSyncedSignatureRef.current = "";
       return;
@@ -44,8 +49,12 @@ export function WorkspaceUserSync() {
       return;
     }
     lastSyncedSignatureRef.current = syncSignature;
-    void registerWorkspaceUserApi();
+    void (async () => {
+      setWorkspaceAuthToken(await getToken());
+      await registerWorkspaceUserApi();
+    })();
   }, [
+    getToken,
     isAuthLoaded,
     isSignedIn,
     userId,
