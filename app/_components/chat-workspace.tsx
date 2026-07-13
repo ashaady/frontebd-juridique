@@ -3872,9 +3872,20 @@ export function ChatWorkspace({
         >
           <div className={isSidebarCollapsed ? "p-2" : "p-3 xl:p-4"}>
             <div className={`flex items-center gap-2 ${isSidebarCollapsed ? "justify-center" : "justify-between"} mb-4`}>
+              <button
+                aria-label="Accueil Juridique SN"
+                className="lg:hidden inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-[#49DE80]/35 bg-[#1a2e22] text-[#49DE80] shadow-md shadow-[#49DE80]/10"
+                onClick={() => {
+                  handleStartNewChat();
+                  setIsMobileLeftPanelOpen(false);
+                }}
+                type="button"
+              >
+                <span className="material-symbols-outlined text-[23px] font-bold">gavel</span>
+              </button>
               {!isSidebarCollapsed ? (
                 <button
-                  className="flex min-w-0 flex-1 items-center justify-center gap-2 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] text-sm font-semibold py-2.5 px-3 rounded-xl transition-all shadow-md shadow-[#49DE80]/15"
+                  className="hidden lg:flex min-w-0 flex-1 items-center justify-center gap-2 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] text-sm font-semibold py-2.5 px-3 rounded-xl transition-all shadow-md shadow-[#49DE80]/15"
                   onClick={() => {
                     handleStartNewChat();
                     setIsMobileLeftPanelOpen(false);
@@ -4006,6 +4017,19 @@ export function ChatWorkspace({
               </SignedIn>
             </>
           ) : null}
+          <div className="lg:hidden mt-auto shrink-0 border-t border-slate-800/80 px-3 pt-3 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+            <button
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#49DE80] px-3 py-2.5 text-sm font-semibold text-[#112117] shadow-md shadow-[#49DE80]/15 transition-colors hover:bg-[#49DE80]/90"
+              onClick={() => {
+                handleStartNewChat();
+                setIsMobileLeftPanelOpen(false);
+              }}
+              type="button"
+            >
+              <span className="material-symbols-outlined text-[20px]">add</span>
+              <span>Nouvelle Consultation</span>
+            </button>
+          </div>
         </aside>
 
         <main className="flex-1 min-w-0 flex flex-col bg-[#112117] relative lg:border-r border-slate-800">
