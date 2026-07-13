@@ -3714,13 +3714,13 @@ export function ChatWorkspace({
   }, [pushUiMessage, requireSignedIn]);
 
   return (
-    <div className="bg-[#112117] dark:bg-[#112117] font-display text-slate-100 flex flex-col min-h-screen lg:h-screen overflow-x-hidden lg:overflow-hidden">
+    <div className="chat-app-shell bg-[#112117] dark:bg-[#112117] font-display text-slate-100 flex flex-col min-h-screen lg:h-screen overflow-x-hidden lg:overflow-hidden">
       <SignedOut>
         <SignInButton mode="modal">
           <button ref={signInModalTriggerRef} type="button" className="hidden" aria-hidden="true" />
         </SignInButton>
       </SignedOut>
-      <header className="px-3 sm:px-6 py-3 bg-[#122118] border-b border-slate-800 shrink-0 z-20">
+      <header className="chat-app-header px-3 sm:px-5 xl:px-6 py-2.5 xl:py-3 bg-[#122118] border-b border-slate-800 shrink-0 z-20">
         <div className="flex items-center gap-3 w-full min-w-0">
           <button
             className="lg:hidden inline-flex items-center justify-center rounded-lg border border-slate-700 px-2.5 py-1.5 hover:bg-[#1e2e24]"
@@ -3739,7 +3739,7 @@ export function ChatWorkspace({
             <span className="material-symbols-outlined text-base">menu</span>
           </button>
           <button
-            className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} flex items-center gap-2 shrink-0 min-w-0 text-left`}
+            className={`${isSidebarCollapsed ? "lg:w-16" : "lg:w-60 xl:w-72"} flex items-center gap-2 shrink-0 min-w-0 text-left`}
             onClick={handleStartNewChat}
             type="button"
           >
@@ -3868,25 +3868,17 @@ export function ChatWorkspace({
         <aside
           className={`${
             isMobileLeftPanelOpen ? "fixed inset-y-0 left-0 z-40 flex w-[84vw] max-w-xs shadow-2xl" : "hidden"
-          } lg:static lg:z-auto lg:flex ${isSidebarCollapsed ? "lg:w-16" : "lg:w-72"} border-r border-slate-800 bg-[#0c1811] flex-col shrink-0 transition-all duration-300`}
+          } lg:static lg:z-auto lg:flex ${isSidebarCollapsed ? "lg:w-16" : "lg:w-60 xl:w-72"} border-r border-slate-800 bg-[#0c1811] flex-col shrink-0 transition-all duration-300`}
         >
-          <div className={isSidebarCollapsed ? "p-2" : "p-6"}>
-            <div className={`flex ${isSidebarCollapsed ? "flex-col items-center gap-2" : "items-center justify-between"} mb-6`}>
+          <div className={isSidebarCollapsed ? "p-2" : "p-4 xl:p-6"}>
+            <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "justify-end"} mb-4 xl:mb-6`}>
               <button
-                className={`flex items-center ${isSidebarCollapsed ? "" : "gap-3"} text-left`}
-                onClick={handleStartNewChat}
+                aria-label="Fermer le menu"
+                className="lg:hidden inline-flex size-9 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/60 text-slate-300 hover:border-[#49DE80]/60 hover:text-[#49DE80]"
+                onClick={() => setIsMobileLeftPanelOpen(false)}
                 type="button"
               >
-                <div
-                  className={`${isSidebarCollapsed ? "size-9" : "size-10"} bg-[#1a2e22] border border-[#49DE80]/40 rounded-lg flex items-center justify-center shadow-lg shadow-[#49DE80]/10`}
-                >
-                  <span className="material-symbols-outlined text-[#49DE80] font-bold">gavel</span>
-                </div>
-                {!isSidebarCollapsed ? (
-                  <span className="text-lg font-bold tracking-tight">
-                    Juridique <span className="text-[#7ef1a9]">SN</span>
-                  </span>
-                ) : null}
+                <span className="material-symbols-outlined text-[18px]">close</span>
               </button>
               <button
                 aria-label={isSidebarCollapsed ? "Etendre le menu" : "Reduire le menu"}
@@ -3903,7 +3895,7 @@ export function ChatWorkspace({
             </div>
             {!isSidebarCollapsed ? (
               <button
-                className="flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-8 shadow-lg shadow-[#49DE80]/20"
+                className="flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-5 xl:mb-8 shadow-lg shadow-[#49DE80]/20"
                 onClick={() => {
                   handleStartNewChat();
                   setIsMobileLeftPanelOpen(false);
@@ -4017,14 +4009,14 @@ export function ChatWorkspace({
         </aside>
 
         <main className="flex-1 min-w-0 flex flex-col bg-[#112117] relative lg:border-r border-slate-800">
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-8 scroll-smooth no-scrollbar">
+          <div className="chat-main-scroll flex-1 overflow-y-auto p-4 sm:p-5 xl:p-8 space-y-8 scroll-smooth no-scrollbar">
             <div className="max-w-3xl mx-auto space-y-8">
               {turns.length === 0 ? (
-                <section className="text-center max-w-3xl mx-auto min-h-[calc(100vh-260px)] sm:min-h-[calc(100vh-180px)] md:min-h-[calc(100vh-240px)] flex flex-col justify-center gap-5 md:gap-6 pt-8 md:pt-14">
-                  <h2 className="text-3xl md:text-5xl font-bold tracking-tight">
+                <section className="chat-hero text-center max-w-3xl mx-auto min-h-[calc(100dvh-150px)] lg:min-h-[calc(100dvh-110px)] xl:min-h-[calc(100dvh-180px)] flex flex-col justify-center gap-4 xl:gap-6 pt-4 lg:pt-3 xl:pt-14">
+                  <h2 className="text-3xl md:text-4xl xl:text-5xl font-bold tracking-tight">
                     Comment puis-je vous <span className="text-primary">aider</span> aujourd&apos;hui ?
                   </h2>
-                  <p className="text-base md:text-lg text-slate-400">
+                  <p className="text-sm md:text-base xl:text-lg text-slate-400">
                     Accedez instantanement au droit senegalais. Posez vos questions sur le COCC, le Code du Travail ou les procedures administratives.
                   </p>
                   <form className="relative group hidden sm:block" onSubmit={handleLandingSubmit}>
@@ -4109,7 +4101,7 @@ export function ChatWorkspace({
                       </button>
                     </div>
                   </form>
-                  <div className="w-full pt-2 space-y-3 text-center sm:text-left">
+                  <div className="chat-hero-expertise w-full pt-1 xl:pt-2 space-y-3 text-center sm:text-left">
                     <div className="flex items-end justify-center sm:justify-between">
                       <div>
                         <h3 className="text-base font-bold">Domaines d&apos;expertise</h3>
@@ -4172,7 +4164,7 @@ export function ChatWorkspace({
                     <div className="hidden sm:grid grid-cols-2 lg:grid-cols-4 gap-3">
                       {expertiseDomains.map((domain) => (
                         <button
-                          className="bg-[#1a2e22] p-3 rounded-lg border border-slate-800 hover:border-primary/40 transition-all group cursor-pointer shadow-sm text-left"
+                          className="chat-hero-domain-card bg-[#1a2e22] p-2.5 xl:p-3 rounded-lg border border-slate-800 hover:border-primary/40 transition-all group cursor-pointer shadow-sm text-left"
                           key={domain.title}
                           onClick={() => void openExpertiseDomain(domain)}
                           type="button"
