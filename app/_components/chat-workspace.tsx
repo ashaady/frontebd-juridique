@@ -3867,7 +3867,7 @@ export function ChatWorkspace({
 
         <aside
           className={`${
-            isMobileLeftPanelOpen ? "fixed inset-y-0 left-0 z-40 flex w-[78vw] max-w-72 shadow-2xl" : "hidden"
+            isMobileLeftPanelOpen ? "fixed inset-y-0 left-0 z-40 flex w-[60vw] max-w-none shadow-2xl" : "hidden"
           } lg:static lg:z-auto lg:flex ${isSidebarCollapsed ? "lg:w-16" : "lg:w-60 xl:w-72"} border-r border-slate-800 bg-[#0c1811] flex-col shrink-0 transition-all duration-300`}
         >
           <div className={isSidebarCollapsed ? "p-2" : "p-3 xl:p-4"}>
