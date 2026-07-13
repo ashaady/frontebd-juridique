@@ -26,6 +26,9 @@ type UsersResponse = {
   limit: number;
   offset: number;
   counts: Record<Activity, number> & { active: number };
+  source?: "clerk" | "workspace_users";
+  management_enabled?: boolean;
+  management_note?: string | null;
 };
 
 const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
@@ -141,6 +144,7 @@ export function AdminUsersPanel({ currentUserId }: { currentUserId?: string }) {
       </div>
 
       {error && <p className="admin-error">{error}</p>}
+      {payload?.management_enabled === false && <p className="admin-user-notice"><span className="material-symbols-outlined">info</span>{payload.management_note}</p>}
       <div className="admin-user-table">
         <div className="admin-user-head"><span>Utilisateur</span><span>Activité</span><span>Sécurité</span><span>Création</span><span>Action</span></div>
         {loading ? <p className="admin-empty">Chargement des comptes Clerk…</p> : visibleUsers.length === 0 ? <p className="admin-empty">Aucun utilisateur pour ce filtre.</p> : visibleUsers.map((account) => (
@@ -152,7 +156,7 @@ export function AdminUsersPanel({ currentUserId }: { currentUserId?: string }) {
             <div><span className={`admin-activity ${account.activity}`}><i />{activityLabels[account.activity]}</span><small>{relativeDate(account.last_active_at)}</small></div>
             <div className="admin-user-security"><span className="material-symbols-outlined">{account.two_factor_enabled ? "verified_user" : "shield"}</span><small>{account.two_factor_enabled ? "2FA activée" : "2FA inactive"}</small></div>
             <div><strong>{account.created_at ? new Date(account.created_at).toLocaleDateString("fr-FR") : "–"}</strong><small>Connexion {relativeDate(account.last_sign_in_at)}</small></div>
-            <button className={account.banned ? "restore" : "danger"} disabled={pendingUser === account.id || account.id === currentUserId} onClick={() => void toggleBan(account)} type="button">
+            <button className={account.banned ? "restore" : "danger"} disabled={payload?.management_enabled === false || pendingUser === account.id || account.id === currentUserId} onClick={() => void toggleBan(account)} title={payload?.management_enabled === false ? payload.management_note || "Gestion Clerk indisponible" : undefined} type="button">
               <span className="material-symbols-outlined">{account.banned ? "person_check" : "person_cancel"}</span>{pendingUser === account.id ? "…" : account.banned ? "Réactiver" : "Suspendre"}
             </button>
           </article>
