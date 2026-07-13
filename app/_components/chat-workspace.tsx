@@ -1031,9 +1031,17 @@ function buildQuestionDisplayLabel(
 function extractArticleBadge(source: RagSource, index: number): string {
   const hint = (source.article_hint ?? "").trim();
   if (hint.length > 0) {
-    const match = hint.match(/Article\s+[A-Za-z0-9.\-]+/i);
+    const match = hint.match(/Article\s+(?:premier|1er|[A-Za-z0-9.\-]+)/i);
     if (match) {
-      return `${match[0]} - COCC`;
+      const sourceReference = `${source.relative_path ?? ""} ${source.source_path ?? ""}`.toLowerCase();
+      const documentLabel = sourceReference.includes("cocc")
+        ? "COCC"
+        : sourceReference.includes("code penal") || sourceReference.includes("droit penal")
+          ? "Code penal"
+          : sourceReference.includes("constitution")
+            ? "Constitution"
+            : "";
+      return documentLabel ? `${match[0]} - ${documentLabel}` : match[0];
     }
   }
   if (typeof source.rank === "number") {
@@ -1091,6 +1099,38 @@ function sourceUsageKey(source: RagSource, index: number): string {
   return `doc:${path}|citation:${citation}|pages:${pageStart}-${pageEnd}|rank:${rank}`;
 }
 
+function normalizeArticleReference(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/[.\-]+$/g, "");
+  if (normalized === "premier" || normalized === "1er") {
+    return "1";
+  }
+  const numeric = normalized.match(/^0*(\d+)$/);
+  return numeric ? String(Number.parseInt(numeric[1], 10)) : normalized || null;
+}
+
+function extractArticleReferences(value: string): Set<string> {
+  const references = new Set<string>();
+  const regex = /\barticle\s+(premier|1er|\d+[A-Za-z]?(?:[.\-]\d+)?)/gi;
+  let match: RegExpExecArray | null = regex.exec(value);
+  while (match) {
+    const normalized = normalizeArticleReference(match[1]);
+    if (normalized) {
+      references.add(normalized);
+    }
+    match = regex.exec(value);
+  }
+  return references;
+}
+
+function sourceDocumentMentionedInAnswer(answer: string, source: RagSource): boolean {
+  const normalizedAnswer = answer.toLowerCase();
+  const rawPath = (source.relative_path ?? source.source_path ?? "").replace(/\\/g, "/");
+  const fileName = rawPath.split("/").pop()?.trim().toLowerCase() ?? "";
+  const stem = fileName.replace(/\.pdf$/i, "").trim();
+  return (fileName.length >= 6 && normalizedAnswer.includes(fileName)) ||
+    (stem.length >= 10 && normalizedAnswer.includes(stem));
+}
+
 function isWorkspaceChunkId(chunkId: string | null | undefined): boolean {
   return String(chunkId ?? "").trim().startsWith("workspace-");
 }
@@ -1110,11 +1150,27 @@ function selectSourcesUsedForResponse(answer: string, sources: RagSource[]): Rag
       dedup.set(sourceUsageKey(source, index), { ...source, source_mode: "cited" });
     }
   } else {
-    for (const [index, source] of sources.entries()) {
-      if (dedup.size >= 5) {
+    const answerArticles = extractArticleReferences(answer);
+    const articleMatches = sources.filter((source) => {
+      const sourceArticles = extractArticleReferences(source.article_hint ?? "");
+      return sourceArticles.size > 0 && Array.from(sourceArticles).some((article) => answerArticles.has(article));
+    });
+    const documentAndArticleMatches = articleMatches.filter((source) =>
+      sourceDocumentMentionedInAnswer(answer, source)
+    );
+    const relevantSources = documentAndArticleMatches.length > 0
+      ? documentAndArticleMatches
+      : articleMatches.length > 0
+        ? articleMatches
+        : sources.slice(0, 3);
+    for (const [index, source] of relevantSources.entries()) {
+      if (dedup.size >= 3) {
         break;
       }
-      dedup.set(sourceUsageKey(source, index), { ...source, source_mode: "retrieved" });
+      dedup.set(sourceUsageKey(source, index), {
+        ...source,
+        source_mode: articleMatches.includes(source) ? "cited" : "retrieved",
+      });
     }
   }
   return Array.from(dedup.values()).sort((a, b) => {
