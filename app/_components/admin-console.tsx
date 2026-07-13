@@ -3,6 +3,7 @@
 import { useAuth, useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { AdminUsersPanel } from "./admin-users-panel";
 
 type AdminJob = {
   id: string;
@@ -52,6 +53,7 @@ export function AdminConsole() {
   const [folder, setFolder] = useState("Documents administrateur");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [view, setView] = useState<"documents" | "users">("documents");
 
   const request = useCallback(async (path: string, init?: RequestInit) => {
     const token = await getToken();
@@ -133,6 +135,12 @@ export function AdminConsole() {
         <div className="admin-identity"><span className="material-symbols-outlined">verified_user</span><div><strong>{user?.fullName || "Administrateur"}</strong><small>{user?.primaryEmailAddress?.emailAddress}</small></div></div>
       </header>
 
+      <nav className="admin-nav" aria-label="Sections administrateur">
+        <button className={view === "documents" ? "active" : ""} onClick={() => setView("documents")} type="button"><span className="material-symbols-outlined">library_books</span>Documents</button>
+        <button className={view === "users" ? "active" : ""} onClick={() => setView("users")} type="button"><span className="material-symbols-outlined">group</span>Utilisateurs</button>
+      </nav>
+
+      {view === "documents" ? <>
       <section className="admin-grid">
         <form className="admin-upload" onSubmit={submit}>
           <div className="admin-section-title"><span>01</span><div><h2>Ajouter une source</h2><p>Le PDF sera extrait, classé, vectorisé et publié sans redémarrage.</p></div></div>
@@ -166,6 +174,7 @@ export function AdminConsole() {
           <div className="admin-metrics"><span>{job.result?.pages ?? "–"}<small>pages</small></span><span>{job.result?.indexed ?? "–"}<small>chunks</small></span><span>{job.result?.taxonomy?.primary_domain || "–"}<small>domaine</small></span></div>
         </article>)}</div>
       </section>
+      </> : <AdminUsersPanel currentUserId={user?.id} />}
     </main>
   );
 }
