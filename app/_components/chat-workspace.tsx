@@ -3917,9 +3917,20 @@ export function ChatWorkspace({
                 </span>
               </button>
             </div>
+            <button
+              className="mb-3 flex w-full items-center justify-center gap-2 rounded-xl bg-[#49DE80] px-3 py-2.5 text-sm font-semibold text-[#112117] shadow-md shadow-[#49DE80]/15 transition-colors hover:bg-[#49DE80]/90 lg:hidden"
+              onClick={() => {
+                handleStartNewChat();
+                setIsMobileLeftPanelOpen(false);
+              }}
+              type="button"
+            >
+              <span className="material-symbols-outlined text-[20px]">add</span>
+              <span>Nouvelle Consultation</span>
+            </button>
             <nav className="space-y-1">
               {!isSidebarCollapsed ? (
-                <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-4 px-2">
+                <p className="hidden text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-4 px-2 lg:block">
                   Navigation
                 </p>
               ) : null}
@@ -4017,19 +4028,6 @@ export function ChatWorkspace({
               </SignedIn>
             </>
           ) : null}
-          <div className="lg:hidden mt-auto shrink-0 border-t border-slate-800/80 px-3 pt-3 pb-[calc(1rem+env(safe-area-inset-bottom))]">
-            <button
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#49DE80] px-3 py-2.5 text-sm font-semibold text-[#112117] shadow-md shadow-[#49DE80]/15 transition-colors hover:bg-[#49DE80]/90"
-              onClick={() => {
-                handleStartNewChat();
-                setIsMobileLeftPanelOpen(false);
-              }}
-              type="button"
-            >
-              <span className="material-symbols-outlined text-[20px]">add</span>
-              <span>Nouvelle Consultation</span>
-            </button>
-          </div>
         </aside>
 
         <main className="flex-1 min-w-0 flex flex-col bg-[#112117] relative lg:border-r border-slate-800">
