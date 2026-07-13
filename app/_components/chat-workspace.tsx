@@ -3870,11 +3870,24 @@ export function ChatWorkspace({
             isMobileLeftPanelOpen ? "fixed inset-y-0 left-0 z-40 flex w-[84vw] max-w-xs shadow-2xl" : "hidden"
           } lg:static lg:z-auto lg:flex ${isSidebarCollapsed ? "lg:w-16" : "lg:w-60 xl:w-72"} border-r border-slate-800 bg-[#0c1811] flex-col shrink-0 transition-all duration-300`}
         >
-          <div className={isSidebarCollapsed ? "p-2" : "p-4 xl:p-6"}>
-            <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "justify-end"} mb-4 xl:mb-6`}>
+          <div className={isSidebarCollapsed ? "p-2" : "p-3 xl:p-4"}>
+            <div className={`flex items-center gap-2 ${isSidebarCollapsed ? "justify-center" : "justify-between"} mb-4`}>
+              {!isSidebarCollapsed ? (
+                <button
+                  className="flex min-w-0 flex-1 items-center justify-center gap-2 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] text-sm font-semibold py-2.5 px-3 rounded-xl transition-all shadow-md shadow-[#49DE80]/15"
+                  onClick={() => {
+                    handleStartNewChat();
+                    setIsMobileLeftPanelOpen(false);
+                  }}
+                  type="button"
+                >
+                  <span className="material-symbols-outlined text-[20px]">add</span>
+                  <span className="truncate">Nouvelle Consultation</span>
+                </button>
+              ) : null}
               <button
                 aria-label="Fermer le menu"
-                className="lg:hidden inline-flex size-9 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/60 text-slate-300 hover:border-[#49DE80]/60 hover:text-[#49DE80]"
+                className="lg:hidden inline-flex size-9 shrink-0 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/60 text-slate-300 hover:border-[#49DE80]/60 hover:text-[#49DE80]"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
                 type="button"
               >
@@ -3893,19 +3906,6 @@ export function ChatWorkspace({
                 </span>
               </button>
             </div>
-            {!isSidebarCollapsed ? (
-              <button
-                className="flex w-full items-center gap-3 bg-[#49DE80] hover:bg-[#49DE80]/90 text-[#112117] font-semibold py-3 px-4 rounded-xl transition-all mb-5 xl:mb-8 shadow-lg shadow-[#49DE80]/20"
-                onClick={() => {
-                  handleStartNewChat();
-                  setIsMobileLeftPanelOpen(false);
-                }}
-                type="button"
-              >
-                <span className="material-symbols-outlined">add</span>
-                Nouvelle Consultation
-              </button>
-            ) : null}
             <nav className="space-y-1">
               {!isSidebarCollapsed ? (
                 <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-4 px-2">
