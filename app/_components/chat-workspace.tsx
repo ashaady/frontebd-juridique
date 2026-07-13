@@ -1559,6 +1559,7 @@ export function ChatWorkspace({
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("workspace");
   const [chunkDetailsById, setChunkDetailsById] = useState<Record<string, LibraryChunkRecord>>({});
   const [expandedChunkIds, setExpandedChunkIds] = useState<Record<string, boolean>>({});
+  const [chunkLoadErrorsById, setChunkLoadErrorsById] = useState<Record<string, string>>({});
   const [isMobileLeftPanelOpen, setIsMobileLeftPanelOpen] = useState<boolean>(false);
   const [isMobileRightPanelOpen, setIsMobileRightPanelOpen] = useState<boolean>(false);
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState<boolean>(false);
@@ -1718,6 +1719,47 @@ export function ChatWorkspace({
         templates: templates.sort((left, right) => left.label.localeCompare(right.label, "fr")),
       }));
   }, [allActTemplates]);
+
+  const loadChunkDetails = useCallback(async (rawChunkIds: string[]) => {
+    const chunkIds = Array.from(new Set(rawChunkIds.map((value) => value.trim()).filter(Boolean)));
+    if (chunkIds.length === 0) {
+      return;
+    }
+    try {
+      const rows = await resolveLibraryChunksApi(chunkIds);
+      const resolvedIds = new Set(rows.map((row) => row.chunk_id).filter(Boolean));
+      if (rows.length > 0) {
+        setChunkDetailsById((previous) => {
+          const next = { ...previous };
+          for (const row of rows) {
+            if (row?.chunk_id) {
+              next[row.chunk_id] = row;
+            }
+          }
+          return next;
+        });
+      }
+      setChunkLoadErrorsById((previous) => {
+        const next = { ...previous };
+        for (const chunkId of chunkIds) {
+          if (resolvedIds.has(chunkId)) {
+            delete next[chunkId];
+          } else {
+            next[chunkId] = "Le passage exact est introuvable dans l'index actif.";
+          }
+        }
+        return next;
+      });
+    } catch {
+      setChunkLoadErrorsById((previous) => {
+        const next = { ...previous };
+        for (const chunkId of chunkIds) {
+          next[chunkId] = "Impossible de charger le passage exact. Reessayez.";
+        }
+        return next;
+      });
+    }
+  }, []);
 
   useEffect(() => {
     if (!isAuthLoaded) {
@@ -2104,28 +2146,8 @@ export function ChatWorkspace({
       return;
     }
 
-    let active = true;
-    const loadChunks = async () => {
-      const rows = await resolveLibraryChunksApi(missingChunkIds);
-      if (!active || rows.length === 0) {
-        return;
-      }
-      setChunkDetailsById((previous) => {
-        const next = { ...previous };
-        for (const row of rows) {
-          if (!row?.chunk_id) {
-            continue;
-          }
-          next[row.chunk_id] = row;
-        }
-        return next;
-      });
-    };
-    void loadChunks();
-    return () => {
-      active = false;
-    };
-  }, [workspaceActiveTurn?.id, workspaceActiveTurn?.ragSources, chunkDetailsById]);
+    void loadChunkDetails(missingChunkIds);
+  }, [workspaceActiveTurn?.id, workspaceActiveTurn?.ragSources, chunkDetailsById, loadChunkDetails]);
 
   useEffect(() => {
     const onResize = () => {
@@ -3582,7 +3604,10 @@ export function ChatWorkspace({
       ...previous,
       [chunkId]: !previous[chunkId],
     }));
-  }, []);
+    if (!chunkDetailsById[chunkId]) {
+      void loadChunkDetails([chunkId]);
+    }
+  }, [chunkDetailsById, loadChunkDetails]);
 
   const addWorkspaceFiles = useCallback(async (fileList: FileList | null) => {
     if (!requireSignedIn("Connexion requise pour ajouter des fichiers au workspace.")) {
@@ -4441,6 +4466,7 @@ export function ChatWorkspace({
                         const chunkId = card.chunkId ?? "";
                         const isWorkspaceChunk = isWorkspaceChunkId(chunkId);
                         const chunkRecord = chunkId ? chunkDetailsById[chunkId] : undefined;
+                        const chunkLoadError = chunkId ? chunkLoadErrorsById[chunkId] : undefined;
                         const isExpanded = chunkId ? expandedChunkIds[chunkId] === true : false;
                         return (
                           <div
@@ -4494,6 +4520,17 @@ export function ChatWorkspace({
                                           )}
                                         </p>
                                       </>
+                                    ) : chunkLoadError ? (
+                                      <div className="flex items-center justify-between gap-3">
+                                        <p className="text-[11px] text-amber-300">{chunkLoadError}</p>
+                                        <button
+                                          className="shrink-0 text-[10px] font-semibold text-primary hover:text-primary/80"
+                                          onClick={() => void loadChunkDetails([chunkId])}
+                                          type="button"
+                                        >
+                                          Reessayer
+                                        </button>
+                                      </div>
                                     ) : (
                                       <p className="text-[11px] text-slate-400">Chargement du passage exact...</p>
                                     )}
