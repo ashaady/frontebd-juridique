@@ -3714,7 +3714,7 @@ export function ChatWorkspace({
   }, [pushUiMessage, requireSignedIn]);
 
   return (
-    <div className="chat-app-shell bg-[#112117] dark:bg-[#112117] font-display text-slate-100 flex flex-col min-h-screen lg:h-screen overflow-x-hidden lg:overflow-hidden">
+    <div className="chat-app-shell bg-[#112117] dark:bg-[#112117] font-display text-slate-100 flex h-[100dvh] min-h-0 flex-col overflow-hidden">
       <SignedOut>
         <SignInButton mode="modal">
           <button ref={signInModalTriggerRef} type="button" className="hidden" aria-hidden="true" />
@@ -4248,7 +4248,7 @@ export function ChatWorkspace({
             </div>
           </div>
 
-          <div className={`p-3 sm:p-4 lg:p-6 bg-transparent ${!hasConversationStarted ? "sm:hidden" : ""}`}>
+          <div className={`shrink-0 px-3 pt-2 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-4 lg:p-6 bg-transparent ${!hasConversationStarted ? "sm:hidden" : ""}`}>
             <div className="max-w-3xl mx-auto">
               <form
                 className="bg-[#122118] rounded-2xl p-2 shadow-xl border border-slate-700 focus-within:ring-2 focus-within:ring-primary/30 transition-all"
