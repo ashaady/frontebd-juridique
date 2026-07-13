@@ -130,16 +130,23 @@ export function AdminConsole() {
 
   return (
     <main className="admin-shell">
-      <header className="admin-topbar">
-        <div><span className="admin-kicker">JURIDIQUESN / OPÉRATIONS</span><h1>Console documentaire</h1></div>
-        <div className="admin-identity"><span className="material-symbols-outlined">verified_user</span><div><strong>{user?.fullName || "Administrateur"}</strong><small>{user?.primaryEmailAddress?.emailAddress}</small></div></div>
-      </header>
+      <div className="admin-layout">
+        <aside className="admin-sidebar">
+          <Link className="admin-sidebar-brand" href="/"><span className="material-symbols-outlined">balance</span><div><strong>JuridiqueSN</strong><small>Administration</small></div></Link>
+          <div className="admin-sidebar-rule" />
+          <span className="admin-sidebar-label">Espace de contrôle</span>
+          <nav aria-label="Sections administrateur">
+            <button className={view === "documents" ? "active" : ""} onClick={() => setView("documents")} type="button"><span className="material-symbols-outlined">deployed_code</span><div><strong>Ingestion & pipeline</strong><small>Sources, indexation et historique</small></div><i className="material-symbols-outlined">chevron_right</i></button>
+            <button className={view === "users" ? "active" : ""} onClick={() => setView("users")} type="button"><span className="material-symbols-outlined">manage_accounts</span><div><strong>Gestion utilisateurs</strong><small>Comptes, activité et accès</small></div><i className="material-symbols-outlined">chevron_right</i></button>
+          </nav>
+          <div className={`admin-sidebar-health ${activeJob ? "working" : ""}`}><span className="material-symbols-outlined">{activeJob ? "sync" : "database"}</span><div><strong>{activeJob ? "Pipeline en cours" : "RAG opérationnel"}</strong><small>{activeJob ? `${activeJob.progress}% · ${stageLabels[activeJob.stage] || activeJob.stage}` : "Index principal disponible"}</small></div></div>
+          <div className="admin-sidebar-user"><span className="material-symbols-outlined">verified_user</span><div><strong>{user?.fullName || "Administrateur"}</strong><small>{user?.primaryEmailAddress?.emailAddress}</small></div></div>
+        </aside>
 
-      <nav className="admin-nav" aria-label="Sections administrateur">
-        <button className={view === "documents" ? "active" : ""} onClick={() => setView("documents")} type="button"><span className="material-symbols-outlined">library_books</span>Documents</button>
-        <button className={view === "users" ? "active" : ""} onClick={() => setView("users")} type="button"><span className="material-symbols-outlined">group</span>Utilisateurs</button>
-      </nav>
-
+        <div className="admin-main-column">
+          <header className="admin-topbar">
+            <div><span className="admin-kicker">JURIDIQUESN / OPÉRATIONS</span><h1>{view === "documents" ? "Pipeline d’ingestion" : "Gestion utilisateurs"}</h1><p>{view === "documents" ? "Enrichir et superviser le corpus juridique." : "Piloter les comptes et contrôler les accès."}</p></div>
+          </header>
       {view === "documents" ? <>
       <section className="admin-grid">
         <form className="admin-upload" onSubmit={submit}>
@@ -175,6 +182,8 @@ export function AdminConsole() {
         </article>)}</div>
       </section>
       </> : <AdminUsersPanel currentUserId={user?.id} />}
+        </div>
+      </div>
     </main>
   );
 }
