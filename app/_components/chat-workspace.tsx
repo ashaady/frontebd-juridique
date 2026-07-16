@@ -3956,6 +3956,17 @@ export function ChatWorkspace({
                 <span className="material-symbols-outlined">description</span>
                 {!isSidebarCollapsed ? <span className="text-sm font-medium">Modeles de documents</span> : null}
               </Link>
+              <Link
+                className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
+                  isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
+                }`}
+                href="/simulation"
+                onClick={() => setIsMobileLeftPanelOpen(false)}
+                title="Simulation juridique"
+              >
+                <span className="material-symbols-outlined">account_tree</span>
+                {!isSidebarCollapsed ? <span className="text-sm font-medium">Simulation juridique</span> : null}
+              </Link>
               <button
                 className={`w-full flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
                   isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
