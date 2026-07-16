@@ -26,6 +26,15 @@ type SimulationSource = {
   page_end?: number | null;
 };
 
+type SimulationAttachment = {
+  id: string;
+  name: string;
+  size: number;
+  page_count: number;
+  extracted_chars: number;
+  created_at: string;
+};
+
 type SimulationEvent = {
   id: string;
   sequence: number;
@@ -39,7 +48,7 @@ type SimulationEvent = {
 type SimulationGraphNode = {
   id: string;
   label: string;
-  type: "case" | "actor" | "issue" | "source";
+  type: "case" | "actor" | "issue" | "source" | "document";
   detail?: string;
 };
 
@@ -76,6 +85,7 @@ type SimulationCase = {
   jurisdiction: string;
   objectives: string[];
   actors: SimulationActor[];
+  attachments: SimulationAttachment[];
   issues: string[];
   sources: SimulationSource[];
   graph: SimulationGraph;
@@ -127,6 +137,12 @@ function formatDate(value: string): string {
   }
 }
 
+function formatFileSize(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return "Taille inconnue";
+  if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} Ko`;
+  return `${(size / (1024 * 1024)).toFixed(1).replace(".0", "")} Mo`;
+}
+
 function trimLabel(value: string, max = 38): string {
   return value.length > max ? `${value.slice(0, max - 1).trim()}...` : value;
 }
@@ -136,6 +152,7 @@ function graphPosition(node: SimulationGraphNode, index: number, total: number):
   const rows: Record<SimulationGraphNode["type"], { x: number; y: number; distance: number }> = {
     actor: { x: 112, y: 82, distance: 104 },
     source: { x: 668, y: 82, distance: 90 },
+    document: { x: 668, y: 365, distance: 74 },
     issue: { x: 390, y: 390, distance: 108 },
     case: { x: 390, y: 225, distance: 1 }
   };
@@ -147,7 +164,7 @@ function graphPosition(node: SimulationGraphNode, index: number, total: number):
 
 function SimulationGraphView({ graph }: { graph: SimulationGraph }) {
   const positions = useMemo(() => {
-    const grouped: Record<SimulationGraphNode["type"], SimulationGraphNode[]> = { case: [], actor: [], source: [], issue: [] };
+    const grouped: Record<SimulationGraphNode["type"], SimulationGraphNode[]> = { case: [], actor: [], source: [], document: [], issue: [] };
     graph.nodes.forEach((node) => grouped[node.type].push(node));
     const result = new Map<string, { x: number; y: number }>();
     (Object.keys(grouped) as SimulationGraphNode["type"][]).forEach((kind) => {
@@ -189,7 +206,7 @@ function SimulationGraphView({ graph }: { graph: SimulationGraph }) {
         })}
       </svg>
       <div className="simulation-graph-legend">
-        <span><i className="case" />Dossier</span><span><i className="actor" />Acteur</span><span><i className="issue" />Question</span><span><i className="source" />Source</span>
+        <span><i className="case" />Dossier</span><span><i className="actor" />Acteur</span><span><i className="issue" />Question</span><span><i className="source" />Source</span><span><i className="document" />Piece PDF</span>
       </div>
     </div>
   );
@@ -205,7 +222,9 @@ export function SimulationWorkspace() {
   const [kind, setKind] = useState<SimulationKind>("trial");
   const [jurisdiction, setJurisdiction] = useState("Senegal");
   const [objective, setObjective] = useState("");
+  const [pendingPdf, setPendingPdf] = useState<File | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [isUploadingPdf, setIsUploadingPdf] = useState(false);
   const [error, setError] = useState("");
   const [interactionQuestion, setInteractionQuestion] = useState("");
   const [selectedActorId, setSelectedActorId] = useState("");
@@ -222,6 +241,52 @@ export function SimulationWorkspace() {
     }
     return response.json() as Promise<T>;
   }, [getToken]);
+
+  const uploadPdf = useCallback(async (caseId: string, file: File): Promise<SimulationCase> => {
+    if (file.type && file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      throw new Error("Selectionnez un fichier PDF.");
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      throw new Error("Le PDF depasse la taille maximale de 20 Mo.");
+    }
+    const token = await getToken();
+    const headers = buildWorkspaceRequestHeaders(undefined, false);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+    const response = await fetch(`${BACKEND_URL}/simulation/cases/${caseId}/documents`, {
+      method: "POST",
+      cache: "no-store",
+      headers,
+      body: formData
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null) as { detail?: string } | null;
+      throw new Error(payload?.detail || `Import du PDF impossible (${response.status}).`);
+    }
+    return response.json() as Promise<SimulationCase>;
+  }, [getToken]);
+
+  const downloadPdf = useCallback(async (attachment: SimulationAttachment) => {
+    if (!caseData) return;
+    try {
+      const token = await getToken();
+      const headers = buildWorkspaceRequestHeaders(undefined, false);
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      const response = await fetch(`${BACKEND_URL}/simulation/cases/${caseData.id}/documents/${attachment.id}`, { headers });
+      if (!response.ok) throw new Error("Le PDF n'est plus disponible.");
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = attachment.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Telechargement du PDF impossible.");
+    }
+  }, [caseData, getToken]);
 
   const refreshCases = useCallback(async () => {
     if (!isSignedIn) return;
@@ -277,16 +342,40 @@ export function SimulationWorkspace() {
           objectives: objective.trim() ? [objective.trim()] : []
         })
       });
-      setCaseData(created);
-      setCases((current) => [created, ...current.filter((item) => item.id !== created.id)]);
-      window.localStorage.setItem(LAST_CASE_KEY, created.id);
+      let dossier = created;
+      if (pendingPdf) {
+        setIsUploadingPdf(true);
+        dossier = await uploadPdf(created.id, pendingPdf);
+        setPendingPdf(null);
+        setIsUploadingPdf(false);
+      }
+      setCaseData(dossier);
+      setCases((current) => [dossier, ...current.filter((item) => item.id !== dossier.id)]);
+      window.localStorage.setItem(LAST_CASE_KEY, dossier.id);
       setActiveStep(0);
-      await request<SimulationCase>(`/simulation/cases/${created.id}/prepare`, { method: "POST" });
-      await refreshCase(created.id);
+      await request<SimulationCase>(`/simulation/cases/${dossier.id}/prepare`, { method: "POST" });
+      await refreshCase(dossier.id);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Creation de la simulation impossible.");
     } finally {
+      setIsUploadingPdf(false);
       setIsBusy(false);
+    }
+  };
+
+  const addPdfToCase = async (file: File | null) => {
+    if (!caseData || !file) return;
+    setIsUploadingPdf(true);
+    setError("");
+    try {
+      const next = await uploadPdf(caseData.id, file);
+      setCaseData(next);
+      setCases((current) => [next, ...current.filter((item) => item.id !== next.id)]);
+      setActiveStep(0);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Import du PDF impossible.");
+    } finally {
+      setIsUploadingPdf(false);
     }
   };
 
@@ -412,8 +501,17 @@ export function SimulationWorkspace() {
               {KIND_OPTIONS.map((option) => <button className={kind === option.id ? "selected" : ""} key={option.id} onClick={() => setKind(option.id)} type="button"><span className="material-symbols-outlined">{option.icon}</span><strong>{option.title}</strong><small>{option.detail}</small></button>)}
             </div>
             <label className="simulation-field"><span>Faits, contexte et demandes</span><textarea onChange={(event) => setScenario(event.target.value)} placeholder="Decrivez la situation, les parties, les faits, les dates utiles et ce que chaque partie demande..." rows={8} value={scenario} /></label>
+            <div className="simulation-upload-field">
+              <div><span>Piece PDF <small>Optionnel</small></span><p>Contrat, requete, courrier ou autre element factuel prive. Il ne sera pas ajoute au corpus juridique.</p></div>
+              <label className="simulation-upload-control">
+                <span className="material-symbols-outlined">upload_file</span>
+                <strong>{pendingPdf ? pendingPdf.name : "Ajouter un PDF"}</strong>
+                <small>{pendingPdf ? formatFileSize(pendingPdf.size) : "20 Mo maximum"}</small>
+                <input accept="application/pdf,.pdf" onChange={(event) => setPendingPdf(event.target.files?.[0] || null)} type="file" />
+              </label>
+            </div>
             <div className="simulation-create-row"><label className="simulation-field"><span>Juridiction ou cadre</span><input onChange={(event) => setJurisdiction(event.target.value)} value={jurisdiction} /></label><label className="simulation-field"><span>Objectif <small>Optionnel</small></span><input onChange={(event) => setObjective(event.target.value)} placeholder="Ex. preparer une plaidoirie" value={objective} /></label></div>
-            <button className="simulation-primary-action" disabled={isBusy || scenario.trim().length < 20} onClick={() => void createCase()} type="button"><span className={`material-symbols-outlined ${isBusy ? "spin" : ""}`}>{isBusy ? "autorenew" : "auto_awesome"}</span>{isBusy ? "Constitution en cours..." : "Constituer le dossier"}</button>
+            <button className="simulation-primary-action" disabled={isBusy || scenario.trim().length < 20} onClick={() => void createCase()} type="button"><span className={`material-symbols-outlined ${isBusy ? "spin" : ""}`}>{isBusy ? "autorenew" : "auto_awesome"}</span>{isBusy ? (isUploadingPdf ? "Import du PDF..." : "Constitution en cours...") : "Constituer le dossier"}</button>
           </div>
         </section>
       ) : (
@@ -422,6 +520,10 @@ export function SimulationWorkspace() {
             <div className="simulation-case-heading"><span className="material-symbols-outlined">folder</span><div><small>Dossier actif</small><strong>{caseData.title}</strong></div></div>
             <div className={`simulation-status ${caseData.status}`}><i /><div><strong>{caseData.status === "completed" ? "Simulation terminee" : caseData.status_message}</strong><small>{caseData.simulation_kind_label} · {caseData.jurisdiction}</small></div></div>
             <div className="simulation-rail-actions">
+              <label className={`simulation-attachment-action ${isWorking || isUploadingPdf ? "disabled" : ""}`}>
+                <span className={`material-symbols-outlined ${isUploadingPdf ? "spin" : ""}`}>{isUploadingPdf ? "autorenew" : "attach_file"}</span>{isUploadingPdf ? "Import en cours..." : "Ajouter une piece PDF"}
+                <input accept="application/pdf,.pdf" disabled={isWorking || isUploadingPdf} onChange={(event) => { const file = event.target.files?.[0] || null; event.currentTarget.value = ""; void addPdfToCase(file); }} type="file" />
+              </label>
               {["draft", "stopped", "failed", "interrupted"].includes(caseData.status) ? <button onClick={() => void prepareCase()} type="button"><span className="material-symbols-outlined">find_in_page</span> Preparer le dossier</button> : null}
               {caseData.status === "ready" ? <button className="run" onClick={() => void runCase()} type="button"><span className="material-symbols-outlined">play_arrow</span> Lancer l'audience</button> : null}
               {isWorking ? <button className="stop" onClick={() => void stopCase()} type="button"><span className="material-symbols-outlined">stop_circle</span> Arreter</button> : null}
@@ -433,7 +535,7 @@ export function SimulationWorkspace() {
 
           <div className="simulation-main-panel">
             {activeStep === 0 ? (
-              <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 1</span><h1>Dossier probatoire</h1><p>La recherche est executee dans le corpus avant tout debat entre les acteurs.</p></div><span className="material-symbols-outlined stage-icon">folder_open</span></div><div className="simulation-facts-card"><span>FAITS DECLARES</span><p>{caseData.scenario}</p><div><i>Requete de recherche</i><code>{caseData.retrieval.query || "Preparation en attente"}</code></div></div><div className="simulation-source-list">{caseData.sources.length ? caseData.sources.map((source) => <article key={source.id}><div className="simulation-source-token">{source.id}</div><div><strong>{source.label}</strong><small>{source.citation}</small><p>{source.excerpt}</p></div><span className="material-symbols-outlined">menu_book</span></article>) : <div className="simulation-panel-empty"><span className="material-symbols-outlined">manage_search</span><p>{isWorking ? "Recherche documentaire en cours..." : "Aucune source disponible. Relancez la preparation du dossier."}</p></div>}</div></div>
+              <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 1</span><h1>Dossier probatoire</h1><p>La recherche est executee dans le corpus avant tout debat entre les acteurs.</p></div><span className="material-symbols-outlined stage-icon">folder_open</span></div><div className="simulation-facts-card"><span>FAITS DECLARES</span><p>{caseData.scenario}</p><div><i>Requete de recherche</i><code>{caseData.retrieval.query || "Preparation en attente"}</code></div></div><section className="simulation-attachment-list"><div className="simulation-attachment-heading"><div><span className="simulation-eyebrow">Pieces jointes</span><h2>Elements factuels prives</h2></div><span>{caseData.attachments.length} PDF</span></div>{caseData.attachments.length ? caseData.attachments.map((attachment) => <article key={attachment.id}><span className="material-symbols-outlined">picture_as_pdf</span><div><strong>{attachment.name}</strong><small>{attachment.page_count} page{attachment.page_count > 1 ? "s" : ""} · {formatFileSize(attachment.size)} · Texte extrait</small></div><button onClick={() => void downloadPdf(attachment)} title={`Telecharger ${attachment.name}`} type="button"><span className="material-symbols-outlined">download</span></button></article>) : <p>Aucune piece jointe. Vous pouvez ajouter un PDF depuis les actions du dossier.</p>}</section><div className="simulation-source-list">{caseData.sources.length ? caseData.sources.map((source) => <article key={source.id}><div className="simulation-source-token">{source.id}</div><div><strong>{source.label}</strong><small>{source.citation}</small><p>{source.excerpt}</p></div><span className="material-symbols-outlined">menu_book</span></article>) : <div className="simulation-panel-empty"><span className="material-symbols-outlined">manage_search</span><p>{isWorking ? "Recherche documentaire en cours..." : "Aucune source disponible. Relancez la preparation du dossier."}</p></div>}</div></div>
             ) : null}
 
             {activeStep === 1 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 2</span><h1>Carte des relations</h1><p>Les liens montrent les acteurs, les questions juridiques et les passages qui structurent le scenario.</p></div><span className="material-symbols-outlined stage-icon">account_tree</span></div><SimulationGraphView graph={caseData.graph} /></div> : null}
