@@ -6,6 +6,7 @@ import {
   forceCollide,
   forceLink,
   forceManyBody,
+  forceRadial,
   forceSimulation,
   forceX,
   forceY,
@@ -53,6 +54,15 @@ const NODE_META: Record<GraphNodeType, { label: string; color: string; glyph: st
   source: { label: "Source juridique", color: "#059669", glyph: "S" },
   document: { label: "Piece PDF", color: "#ea580c", glyph: "P" },
   argument: { label: "Argument", color: "#be123c", glyph: "A" }
+};
+
+const NODE_RING: Record<GraphNodeType, number> = {
+  case: 0,
+  actor: 1,
+  issue: 1,
+  source: 2,
+  document: 2,
+  argument: 3
 };
 
 function clampLabel(value: string, length: number): string {
@@ -149,14 +159,32 @@ export function SimulationRelationshipGraph({
     if (!svgElement || !visibleGraph.nodes.length) return;
 
     const { width, height } = dimensions;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const maxRadius = Math.max(160, Math.min(width, height) * (variant === "embedded" ? 0.36 : 0.39));
+    const ringRadius: Record<number, number> = {
+      0: 0,
+      1: maxRadius * 0.42,
+      2: maxRadius * 0.72,
+      3: maxRadius
+    };
+    const groupedNodes = new Map<number, SimulationGraphNode[]>();
+    visibleGraph.nodes.forEach((node) => {
+      const ring = NODE_RING[node.type] ?? 2;
+      groupedNodes.set(ring, [...(groupedNodes.get(ring) || []), node]);
+    });
     const nodeById = new Map<string, ForceNode>();
-    const nodes: ForceNode[] = visibleGraph.nodes.map((node, index) => {
-      const angle = (index / Math.max(1, visibleGraph.nodes.length)) * Math.PI * 2;
-      const radius = Math.min(width, height) * (node.type === "case" ? 0 : 0.18 + (index % 3) * 0.045);
+    const nodes: ForceNode[] = visibleGraph.nodes.map((node) => {
+      const ring = NODE_RING[node.type] ?? 2;
+      const peers = groupedNodes.get(ring) || [node];
+      const peerIndex = Math.max(0, peers.findIndex((item) => item.id === node.id));
+      const angleOffset = ring === 1 ? -Math.PI / 2 : ring === 2 ? -Math.PI / 2.7 : -Math.PI / 2.2;
+      const angle = angleOffset + (peerIndex / Math.max(1, peers.length)) * Math.PI * 2;
+      const radius = ringRadius[ring] || ringRadius[2];
       const forceNode: ForceNode = {
         ...node,
-        x: width / 2 + Math.cos(angle) * radius,
-        y: height / 2 + Math.sin(angle) * radius
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius
       };
       nodeById.set(forceNode.id, forceNode);
       return forceNode;
@@ -226,12 +254,18 @@ export function SimulationRelationshipGraph({
     nodeSelection.append("title").text((node) => `${NODE_META[node.type].label}: ${node.label}${node.detail ? ` - ${node.detail}` : ""}`);
 
     const simulation = forceSimulation<ForceNode>(nodes)
-      .force("link", forceLink<ForceNode, ForceLink>(links).id((node) => node.id).distance((link) => link.label.length > 28 ? 160 : 128).strength(0.74))
-      .force("charge", forceManyBody().strength(-425))
-      .force("center", forceCenter(width / 2, height / 2))
-      .force("collision", forceCollide<ForceNode>().radius((node) => node.type === "case" ? 73 : 56).strength(0.88))
-      .force("x", forceX<ForceNode>(width / 2).strength(0.045))
-      .force("y", forceY<ForceNode>(height / 2).strength(0.045));
+      .force("link", forceLink<ForceNode, ForceLink>(links).id((node) => node.id).distance((link) => link.label.length > 28 ? 132 : 108).strength(0.46))
+      .force("charge", forceManyBody<ForceNode>().strength((node) => node.type === "case" ? -320 : -210))
+      .force("center", forceCenter(centerX, centerY))
+      .force("collision", forceCollide<ForceNode>().radius((node) => node.type === "case" ? 66 : 48).strength(0.94))
+      .force("ring", forceRadial<ForceNode>((node) => ringRadius[NODE_RING[node.type] ?? 2] || ringRadius[2], centerX, centerY).strength(0.72))
+      .force("x", forceX<ForceNode>((node) => {
+        if (node.type === "case") return centerX;
+        if (node.type === "actor") return centerX * 0.82;
+        if (node.type === "issue") return centerX * 1.18;
+        return centerX;
+      }).strength(0.055))
+      .force("y", forceY<ForceNode>(centerY).strength(0.04));
 
     const applySelection = (next: GraphSelection | null) => {
       const selectedNodeId = next?.kind === "node" ? next.node.id : null;

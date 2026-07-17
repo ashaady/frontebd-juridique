@@ -47,6 +47,13 @@ type SimulationEvent = {
   argument_ids?: string[];
 };
 
+type SimulationTraceItem = {
+  stage: string;
+  status: string;
+  completed_at?: string;
+  argument_count?: number;
+};
+
 type SimulationGraphNode = {
   id: string;
   label: string;
@@ -119,6 +126,7 @@ type SimulationCase = {
   agent_memories: Record<string, { actor_id: string; actor_name: string; role: string; content: string; argument_ids: string[] }>;
   arguments: SimulationArgument[];
   source_analysis: SimulationSourceAnalysis;
+  simulation_trace?: SimulationTraceItem[];
   retrieval: { query?: string; rewrite_status?: string; source_count?: number };
   status: SimulationStatus;
   status_message: string;
@@ -158,6 +166,15 @@ const EVENT_META: Record<string, { label: string; icon: string; tone: string }> 
   argument: { label: "Argument", icon: "format_quote", tone: "slate" }
 };
 
+const CYCLE_LABELS: Record<string, { title: string; detail: string }> = {
+  analyse_sources: { title: "Cycle 1", detail: "Analyse des sources" },
+  memorandum_initial: { title: "Cycle 2", detail: "Position initiale" },
+  memorandum_adverse: { title: "Cycle 3", detail: "Contradiction" },
+  replique: { title: "Cycle 4", detail: "Replique" },
+  analyse_autorite: { title: "Cycle 5", detail: "Analyse de l'autorite" },
+  analyse_risques: { title: "Cycle 6", detail: "Risques et synthese" }
+};
+
 function formatDate(value: string): string {
   try {
     return new Intl.DateTimeFormat("fr-SN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -170,6 +187,17 @@ function formatFileSize(size: number): string {
   if (!Number.isFinite(size) || size <= 0) return "Taille inconnue";
   if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} Ko`;
   return `${(size / (1024 * 1024)).toFixed(1).replace(".0", "")} Mo`;
+}
+
+function cycleTitleFor(event: SimulationEvent, index: number): { title: string; detail: string } {
+  const stage = event.type === "source_review" ? "analyse_sources"
+    : event.type === "submission" ? "memorandum_initial"
+    : event.type === "response" ? "memorandum_adverse"
+    : event.type === "rebuttal" ? "replique"
+    : event.type === "deliberation" ? "analyse_autorite"
+    : event.type === "risk_assessment" ? "analyse_risques"
+    : "";
+  return CYCLE_LABELS[stage] || { title: `Cycle ${index + 1}`, detail: EVENT_META[event.type]?.label || "Intervention" };
 }
 
 function ArgumentEvidenceList({ arguments: argumentsList, sourceAnalysis }: { arguments: SimulationArgument[]; sourceAnalysis: SimulationSourceAnalysis }) {
@@ -316,7 +344,7 @@ export function SimulationWorkspace() {
 
   useEffect(() => {
     if (!caseData || !["preparing", "running"].includes(caseData.status)) return;
-    const timer = window.setInterval(() => void refreshCase(caseData.id), 1300);
+    const timer = window.setInterval(() => void refreshCase(caseData.id), 10000);
     return () => window.clearInterval(timer);
   }, [caseData?.id, caseData?.status, refreshCase]);
 
@@ -435,6 +463,12 @@ export function SimulationWorkspace() {
 
   const isWorking = caseData?.status === "preparing" || caseData?.status === "running";
   const selectedActor = caseData?.actors.find((actor) => actor.id === selectedActorId);
+  const completedCycles = caseData?.events.length || 0;
+  const traceByStage = useMemo(() => {
+    const entries = new Map<string, SimulationTraceItem>();
+    for (const item of caseData?.simulation_trace || []) entries.set(item.stage, item);
+    return entries;
+  }, [caseData?.simulation_trace]);
 
   const beginNewCase = () => {
     setCaseData(null);
@@ -557,7 +591,7 @@ export function SimulationWorkspace() {
 
             {activeStep === 2 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 3</span><h1>Acteurs de la simulation</h1><p>Chaque role reste borne par les faits declares et les extraits du dossier.</p></div><span className="material-symbols-outlined stage-icon">groups</span></div><div className="simulation-actor-grid">{caseData.actors.map((actor) => <article key={actor.id}><div className="simulation-avatar">{actor.name.slice(0, 1).toUpperCase()}</div><div><span>{actor.kind === "institutional" ? "ROLE INSTITUTIONNEL" : "PARTIE"}</span><h3>{actor.name}</h3><b>{actor.role.replaceAll("_", " ")}</b><p>{actor.position || "Intervient dans le dossier selon son role procedurale."}</p></div></article>)}</div></div> : null}
 
-            {activeStep === 3 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 4</span><h1>Audience simulee</h1><p>Un scenario contradictoire. Les conclusions sont hypothetique et ne valent pas decision de justice.</p></div><span className="material-symbols-outlined stage-icon">gavel</span></div>{caseData.status === "ready" ? <div className="simulation-run-ready"><span className="material-symbols-outlined">record_voice_over</span><h2>Le dossier est pret a etre entendu.</h2><p>Les sources sont figees pour cette simulation. Lancez l'audience afin de produire les positions, replique et delibere.</p><button className="simulation-primary-action" onClick={() => void runCase()} type="button"><span className="material-symbols-outlined">play_arrow</span>Lancer l'audience</button></div> : null}{caseData.status === "running" ? <div className="simulation-running"><span className="material-symbols-outlined spin">autorenew</span><strong>Les acteurs examinent le dossier...</strong><p>Les memoires et leurs sources apparaissent apres chaque etape terminee.</p></div> : null}<div className="simulation-timeline">{caseData.events.map((event) => { const meta = EVENT_META[event.type] || EVENT_META.argument; return <article key={event.id}><div className={`simulation-timeline-icon ${meta.tone}`}><span className="material-symbols-outlined">{meta.icon}</span></div><div className="simulation-timeline-content"><div><span>{meta.label}</span><strong>{event.actor_name}</strong></div><p>{event.content}</p>{event.source_ids.length || event.argument_ids?.length ? <footer>{event.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}{event.argument_ids?.map((argumentId) => <i key={argumentId}>Argument</i>)}</footer> : null}</div></article>; })}</div></div> : null}
+            {activeStep === 3 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 4</span><h1>Cycles de simulation</h1><p>Chaque cycle ajoute une intervention au dossier, puis le graphe consolide les relations.</p></div><span className="material-symbols-outlined stage-icon">gavel</span></div>{caseData.status === "ready" ? <div className="simulation-run-ready"><span className="material-symbols-outlined">record_voice_over</span><h2>Le dossier est pret a etre entendu.</h2><p>Les sources sont figees pour cette simulation. Lancez les cycles afin de produire les positions, la replique et l'analyse finale.</p><button className="simulation-primary-action" onClick={() => void runCase()} type="button"><span className="material-symbols-outlined">play_arrow</span>Lancer les cycles</button></div> : null}{caseData.status === "running" ? <div className="simulation-running"><span className="material-symbols-outlined spin">autorenew</span><strong>Cycle en cours...</strong><p>{completedCycles} cycle{completedCycles > 1 ? "s" : ""} deja consolide{completedCycles > 1 ? "s" : ""}. Prochaine actualisation automatique dans 10 secondes.</p></div> : null}<div className="simulation-cycle-list">{caseData.events.map((event, index) => { const meta = EVENT_META[event.type] || EVENT_META.argument; const cycle = cycleTitleFor(event, index); const traceStage = event.type === "source_review" ? "analyse_sources" : event.type === "submission" ? "memorandum_initial" : event.type === "response" ? "memorandum_adverse" : event.type === "rebuttal" ? "replique" : event.type === "deliberation" ? "analyse_autorite" : event.type === "risk_assessment" ? "analyse_risques" : ""; const trace = traceStage ? traceByStage.get(traceStage) : undefined; return <article className="simulation-cycle-card" key={event.id}><div className={`simulation-cycle-marker ${meta.tone}`}><span>{index + 1}</span><i className="material-symbols-outlined">{meta.icon}</i></div><div className="simulation-cycle-content"><header><div><small>{cycle.title}</small><h2>{cycle.detail}</h2></div><span>{event.actor_name}</span></header><p>{event.content}</p>{event.source_ids.length || event.argument_ids?.length || trace ? <footer>{event.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}{event.argument_ids?.map((argumentId) => <i key={argumentId}>Argument</i>)}{trace?.argument_count ? <em>{trace.argument_count} argument{trace.argument_count > 1 ? "s" : ""}</em> : null}</footer> : null}</div></article>; })}{!caseData.events.length && caseData.status !== "ready" ? <div className="simulation-panel-empty"><span className="material-symbols-outlined">hourglass_empty</span><p>Les cycles apparaitront des qu'une intervention sera terminee.</p></div> : null}</div></div> : null}
 
             {activeStep === 4 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 5</span><h1>Rapport et echanges</h1><p>Restitution exploitable pour une preparation, une formation ou une analyse strategique.</p></div><span className="material-symbols-outlined stage-icon">summarize</span></div>{caseData.report ? <div className="simulation-report"><section className="simulation-report-summary"><span className="material-symbols-outlined">auto_awesome</span><div><small>SYNTHESE</small><p>{caseData.report.summary}</p></div></section><div className="simulation-report-grid"><section><h3><span className="material-symbols-outlined">add_task</span> Points a soutenir</h3>{caseData.report.points_for.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">warning</span> Points de vigilance</h3>{caseData.report.points_against.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">shield</span> Risques</h3>{caseData.report.risks.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">alt_route</span> Issues possibles</h3>{caseData.report.outcomes.map((item) => <p key={item}>{item}</p>)}</section></div><aside className="simulation-disclaimer"><span className="material-symbols-outlined">info</span>{caseData.report.disclaimer}</aside><ArgumentEvidenceList arguments={caseData.arguments} sourceAnalysis={caseData.source_analysis} /></div> : <div className="simulation-panel-empty"><span className="material-symbols-outlined">summarize</span><p>Le rapport sera disponible a la fin de l'audience simulee.</p></div>}<section className="simulation-interaction"><div className="simulation-interaction-heading"><div><span className="simulation-eyebrow">Interroger un acteur</span><h2>Tester un argument ou une position</h2></div><select onChange={(event) => setSelectedActorId(event.target.value)} value={selectedActorId}>{caseData.actors.map((actor) => <option key={actor.id} value={actor.id}>{actor.name} Â· {actor.role.replaceAll("_", " ")}</option>)}</select></div>{caseData.interactions.map((interaction) => <div className="simulation-chat-pair" key={interaction.id}><div className="user"><b>Vous</b><p>{interaction.question}</p></div><div className="actor"><b>{interaction.actor_name}</b><p>{interaction.answer}</p>{interaction.source_ids?.length ? <footer>{interaction.source_ids.map((sourceId) => <span key={sourceId}>{sourceId}</span>)}</footer> : null}</div></div>)}<div className="simulation-chat-input"><textarea disabled={!caseData.sources.length || interactionBusy} onChange={(event) => setInteractionQuestion(event.target.value)} placeholder={selectedActor ? `Questionner ${selectedActor.name}...` : "Choisissez un acteur..."} rows={2} value={interactionQuestion} /><button disabled={!caseData.sources.length || interactionBusy || interactionQuestion.trim().length < 2} onClick={() => void askActor()} type="button"><span className={`material-symbols-outlined ${interactionBusy ? "spin" : ""}`}>{interactionBusy ? "autorenew" : "north"}</span></button></div></section></div> : null}
               </div>
