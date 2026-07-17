@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { synthesizeSpeechApi } from "../_lib/workspace-api";
+import { readSpeechStatusApi, synthesizeSpeechApi } from "../_lib/workspace-api";
 
 type TtsRequest = {
   key: string;
@@ -10,6 +10,7 @@ type TtsRequest = {
 };
 
 type TtsPlayer = {
+  available: boolean;
   activeKey: string | null;
   loadingKey: string | null;
   stop: () => void;
@@ -17,6 +18,7 @@ type TtsPlayer = {
 };
 
 export function useTtsPlayer(onError?: (message: string) => void): TtsPlayer {
+  const [available, setAvailable] = useState(false);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const activeKeyRef = useRef<string | null>(null);
@@ -106,5 +108,11 @@ export function useTtsPlayer(onError?: (message: string) => void): TtsPlayer {
 
   useEffect(() => stop, [stop]);
 
-  return { activeKey, loadingKey, stop, toggle };
+  useEffect(() => {
+    const controller = new AbortController();
+    void readSpeechStatusApi(controller.signal).then(setAvailable);
+    return () => controller.abort();
+  }, []);
+
+  return { available, activeKey, loadingKey, stop, toggle };
 }

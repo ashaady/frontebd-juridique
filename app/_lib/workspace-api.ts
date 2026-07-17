@@ -117,6 +117,10 @@ type SpeechSynthesisErrorResponse = {
   detail?: string;
 };
 
+type SpeechStatusResponse = {
+  available?: boolean;
+};
+
 let workspaceUserId: string | null = null;
 let workspaceUserEmail: string | null = null;
 let workspaceUserName: string | null = null;
@@ -573,4 +577,20 @@ export async function synthesizeSpeechApi(
     throw new Error("Le service vocal a retourne un fichier vide.");
   }
   return audio;
+}
+
+export async function readSpeechStatusApi(signal?: AbortSignal): Promise<boolean> {
+  try {
+    const response = await fetch(`${backendBaseUrl()}/speech/status`, {
+      method: "GET",
+      cache: "no-store",
+      headers: buildHeaders(undefined, false),
+      signal,
+    });
+    if (!response.ok) return false;
+    const payload = await response.json() as SpeechStatusResponse;
+    return payload.available === true;
+  } catch {
+    return false;
+  }
 }

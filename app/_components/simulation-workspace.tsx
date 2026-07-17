@@ -233,12 +233,14 @@ function CycleConversation({
   actors,
   activeSpeechKey,
   loadingSpeechKey,
+  simulationSpeechAvailable,
   onToggleSpeech,
 }: {
   cycle: SimulationCycle;
   actors: SimulationActor[];
   activeSpeechKey: string | null;
   loadingSpeechKey: string | null;
+  simulationSpeechAvailable: boolean;
   onToggleSpeech: (key: string, text: string, voiceSlot: number) => void;
 }) {
   const statusLabel = cycle.status === "completed" ? "Cycle termine" : cycle.status === "running" ? "Cycle en cours" : "A venir";
@@ -274,17 +276,19 @@ function CycleConversation({
                   <footer>
                     {message.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}
                     {message.argument_ids?.map((argumentId) => <i key={argumentId}>Argument</i>)}
-                    <button
-                      aria-label={activeSpeechKey === speechKey ? "Arreter la lecture" : `Ecouter ${message.actor_name}`}
-                      className="simulation-tts-button"
-                      onClick={() => onToggleSpeech(speechKey, message.content, actorIndex + 1)}
-                      type="button"
-                    >
-                      <span className={`material-symbols-outlined ${loadingSpeechKey === speechKey ? "spin" : ""}`}>
-                        {loadingSpeechKey === speechKey ? "progress_activity" : activeSpeechKey === speechKey ? "stop_circle" : "volume_up"}
-                      </span>
-                      {activeSpeechKey === speechKey ? "Arreter" : "Ecouter"}
-                    </button>
+                    {simulationSpeechAvailable ? (
+                      <button
+                        aria-label={activeSpeechKey === speechKey ? "Arreter la lecture" : `Ecouter ${message.actor_name}`}
+                        className="simulation-tts-button"
+                        onClick={() => onToggleSpeech(speechKey, message.content, actorIndex + 1)}
+                        type="button"
+                      >
+                        <span className={`material-symbols-outlined ${loadingSpeechKey === speechKey ? "spin" : ""}`}>
+                          {loadingSpeechKey === speechKey ? "progress_activity" : activeSpeechKey === speechKey ? "stop_circle" : "volume_up"}
+                        </span>
+                        {activeSpeechKey === speechKey ? "Arreter" : "Ecouter"}
+                      </button>
+                    ) : null}
                   </footer>
                 </div>
               </article>
@@ -727,6 +731,7 @@ export function SimulationWorkspace() {
                     cycle={cycle}
                     key={cycle.id}
                     loadingSpeechKey={simulationSpeech.loadingKey}
+                    simulationSpeechAvailable={simulationSpeech.available}
                     onToggleSpeech={(key, text, voiceSlot) => void simulationSpeech.toggle({ key, text, voiceSlot })}
                   />)}
                   {!visibleCycles.length && caseData.status !== "ready" ? (

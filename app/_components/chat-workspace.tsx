@@ -4250,7 +4250,7 @@ export function ChatWorkspace({
                         )}
                       </div>
                       <div className="flex gap-4 mt-2 ml-1">
-                        <button
+                        {chatSpeech.available ? <button
                           aria-label={chatSpeech.activeKey === `chat:${turn.id}` ? "Arreter la lecture" : "Ecouter la reponse"}
                           className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-primary transition-colors disabled:opacity-50"
                           disabled={turn.answer.trim().length === 0 || turn.status === "streaming"}
@@ -4265,7 +4265,7 @@ export function ChatWorkspace({
                                 : "volume_up"}
                           </span>
                           {chatSpeech.activeKey === `chat:${turn.id}` ? "Arreter" : "Ecouter"}
-                        </button>
+                        </button> : null}
                         <button
                           className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-primary transition-colors"
                           onClick={() => copyAnswer(turn.answer)}
