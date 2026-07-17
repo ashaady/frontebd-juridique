@@ -98,13 +98,21 @@ function edgeLabelPosition(link: ForceLink, byId: Map<string, ForceNode>): { x: 
   };
 }
 
-export function SimulationRelationshipGraph({ graph, isWorking = false }: { graph: SimulationGraph; isWorking?: boolean }) {
+export function SimulationRelationshipGraph({
+  graph,
+  isWorking = false,
+  variant = "full"
+}: {
+  graph: SimulationGraph;
+  isWorking?: boolean;
+  variant?: "full" | "embedded";
+}) {
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const resetViewRef = useRef<() => void>(() => undefined);
   const selectionControlRef = useRef<GraphSelectionControl>(() => undefined);
   const [dimensions, setDimensions] = useState({ width: 920, height: 590 });
-  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(variant === "full");
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
 
@@ -124,7 +132,9 @@ export function SimulationRelationshipGraph({ graph, isWorking = false }: { grap
 
     const updateDimensions = () => {
       const width = Math.max(620, Math.floor(frame.getBoundingClientRect().width || 920));
-      const height = Math.max(500, Math.round(width * 0.62));
+      const minimumHeight = variant === "embedded" ? 390 : 500;
+      const heightRatio = variant === "embedded" ? 0.52 : 0.62;
+      const height = Math.max(minimumHeight, Math.round(width * heightRatio));
       setDimensions((current) => current.width === width && current.height === height ? current : { width, height });
     };
 
@@ -132,7 +142,7 @@ export function SimulationRelationshipGraph({ graph, isWorking = false }: { grap
     const observer = new ResizeObserver(updateDimensions);
     observer.observe(frame);
     return () => observer.disconnect();
-  }, []);
+  }, [variant]);
 
   useEffect(() => {
     const svgElement = svgRef.current;
@@ -333,12 +343,12 @@ export function SimulationRelationshipGraph({ graph, isWorking = false }: { grap
   }
 
   return (
-    <section className="legal-force-graph" ref={graphFrameRef}>
+    <section className={`legal-force-graph ${variant === "embedded" ? "embedded" : ""}`} ref={graphFrameRef}>
       <header className="legal-force-graph-toolbar">
         <div>
-          <span className="simulation-eyebrow">Exploration relationnelle</span>
-          <h2>Graphe juridique</h2>
-          <p>{visibleGraph.nodes.length} entites et {visibleGraph.edges.length} relations dans le dossier.</p>
+          <span className="simulation-eyebrow">{variant === "embedded" ? "Graphe vivant" : "Exploration relationnelle"}</span>
+          <h2>{variant === "embedded" ? "Relations du dossier" : "Graphe juridique"}</h2>
+          <p>{visibleGraph.nodes.length} entites et {visibleGraph.edges.length} relations. {isWorking ? "Mise a jour apres chaque intervention." : "Dernier etat consolide."}</p>
         </div>
         <div className="legal-force-graph-controls">
           <label className="legal-force-label-toggle"><input checked={showEdgeLabels} onChange={(event) => setShowEdgeLabels(event.target.checked)} type="checkbox" /><span>Liens</span></label>
