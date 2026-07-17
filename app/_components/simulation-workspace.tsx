@@ -39,12 +39,15 @@ type SimulationAttachment = {
 type SimulationEvent = {
   id: string;
   sequence: number;
+  stage?: string;
   type: string;
   actor_id: string;
   actor_name: string;
+  actor_role?: string;
   content: string;
   source_ids: string[];
   argument_ids?: string[];
+  created_at?: string;
 };
 
 type SimulationTraceItem = {
@@ -52,6 +55,17 @@ type SimulationTraceItem = {
   status: string;
   completed_at?: string;
   argument_count?: number;
+};
+
+type SimulationCycle = {
+  id: string;
+  sequence: number;
+  title: string;
+  description: string;
+  status: "pending" | "running" | "completed";
+  started_at?: string | null;
+  completed_at?: string | null;
+  messages: SimulationEvent[];
 };
 
 type SimulationGraphNode = {
@@ -121,13 +135,14 @@ type SimulationCase = {
   sources: SimulationSource[];
   graph: SimulationGraph;
   events: SimulationEvent[];
+  cycles?: SimulationCycle[];
   report: SimulationReport | null;
   interactions: SimulationInteraction[];
   agent_memories: Record<string, { actor_id: string; actor_name: string; role: string; content: string; argument_ids: string[] }>;
   arguments: SimulationArgument[];
   source_analysis: SimulationSourceAnalysis;
   simulation_trace?: SimulationTraceItem[];
-  retrieval: { query?: string; rewrite_status?: string; source_count?: number };
+  retrieval: { query?: string; search_query?: string; rewrite_status?: string; source_count?: number };
   status: SimulationStatus;
   status_message: string;
   error?: string | null;
@@ -166,15 +181,6 @@ const EVENT_META: Record<string, { label: string; icon: string; tone: string }> 
   argument: { label: "Argument", icon: "format_quote", tone: "slate" }
 };
 
-const CYCLE_LABELS: Record<string, { title: string; detail: string }> = {
-  analyse_sources: { title: "Cycle 1", detail: "Analyse des sources" },
-  memorandum_initial: { title: "Cycle 2", detail: "Position initiale" },
-  memorandum_adverse: { title: "Cycle 3", detail: "Contradiction" },
-  replique: { title: "Cycle 4", detail: "Replique" },
-  analyse_autorite: { title: "Cycle 5", detail: "Analyse de l'autorite" },
-  analyse_risques: { title: "Cycle 6", detail: "Risques et synthese" }
-};
-
 function formatDate(value: string): string {
   try {
     return new Intl.DateTimeFormat("fr-SN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -189,15 +195,83 @@ function formatFileSize(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(1).replace(".0", "")} Mo`;
 }
 
-function cycleTitleFor(event: SimulationEvent, index: number): { title: string; detail: string } {
-  const stage = event.type === "source_review" ? "analyse_sources"
+function eventStage(event: SimulationEvent): string {
+  if (event.stage) return event.stage;
+  return event.type === "source_review" ? "analyse_sources"
     : event.type === "submission" ? "memorandum_initial"
     : event.type === "response" ? "memorandum_adverse"
     : event.type === "rebuttal" ? "replique"
     : event.type === "deliberation" ? "analyse_autorite"
     : event.type === "risk_assessment" ? "analyse_risques"
     : "";
-  return CYCLE_LABELS[stage] || { title: `Cycle ${index + 1}`, detail: EVENT_META[event.type]?.label || "Intervention" };
+}
+
+function fallbackCycles(events: SimulationEvent[], trace: SimulationTraceItem[]): SimulationCycle[] {
+  const definitions = [
+    { id: "cycle-1", sequence: 1, title: "Examen du dossier", description: "Analyse des sources et presentation de la position initiale.", stages: ["analyse_sources", "memorandum_initial"] },
+    { id: "cycle-2", sequence: 2, title: "Debat contradictoire", description: "Reponse de la partie adverse et replique sur les points contestes.", stages: ["memorandum_adverse", "replique"] },
+    { id: "cycle-3", sequence: 3, title: "Evaluation et synthese", description: "Analyse neutre de l'autorite et examen des risques du dossier.", stages: ["analyse_autorite", "analyse_risques"] }
+  ];
+  const completedStages = new Set(trace.filter((item) => item.status === "completed").map((item) => item.stage));
+  return definitions.map((definition) => {
+    const messages = events.filter((event) => definition.stages.includes(eventStage(event)));
+    const completed = definition.stages.every((stage) => completedStages.has(stage));
+    return {
+      id: definition.id,
+      sequence: definition.sequence,
+      title: definition.title,
+      description: definition.description,
+      status: completed ? "completed" : messages.length ? "running" : "pending",
+      messages
+    };
+  });
+}
+
+function CycleConversation({ cycle, actors }: { cycle: SimulationCycle; actors: SimulationActor[] }) {
+  const statusLabel = cycle.status === "completed" ? "Cycle termine" : cycle.status === "running" ? "Cycle en cours" : "A venir";
+  return (
+    <section className={"simulation-conversation-cycle " + cycle.status}>
+      <header className="simulation-conversation-cycle-header">
+        <div className="simulation-cycle-number">{cycle.sequence}</div>
+        <div>
+          <small>Cycle {cycle.sequence}</small>
+          <h2>{cycle.title}</h2>
+          <p>{cycle.description}</p>
+        </div>
+        <span><i />{statusLabel}</span>
+      </header>
+      {cycle.messages.length ? (
+        <div className="simulation-message-thread">
+          {cycle.messages.map((message, index) => {
+            const actor = actors.find((item) => item.id === message.actor_id);
+            const role = message.actor_role || actor?.role || "";
+            const meta = EVENT_META[message.type] || EVENT_META.argument;
+            const isRight = index % 2 === 1;
+            return (
+              <article className={"simulation-cycle-message " + (isRight ? "right " : "left ") + meta.tone} key={message.id}>
+                <div className="simulation-message-avatar" title={message.actor_name}>{message.actor_name.slice(0, 1).toUpperCase()}</div>
+                <div className="simulation-message-bubble">
+                  <header>
+                    <div><strong>{message.actor_name}</strong><span>{role.replaceAll("_", " ") || meta.label}</span></div>
+                    <time>{message.created_at ? formatDate(message.created_at) : "Intervention " + message.sequence}</time>
+                  </header>
+                  <p>{message.content}</p>
+                  {message.source_ids.length || message.argument_ids?.length ? (
+                    <footer>
+                      {message.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}
+                      {message.argument_ids?.map((argumentId) => <i key={argumentId}>Argument</i>)}
+                    </footer>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="simulation-cycle-waiting"><span className="material-symbols-outlined">schedule</span>Ce cycle commencera apres le precedent.</div>
+      )}
+    </section>
+  );
 }
 
 function ArgumentEvidenceList({ arguments: argumentsList, sourceAnalysis }: { arguments: SimulationArgument[]; sourceAnalysis: SimulationSourceAnalysis }) {
@@ -212,7 +286,7 @@ function ArgumentEvidenceList({ arguments: argumentsList, sourceAnalysis }: { ar
         <div>
           <span className="simulation-eyebrow">Controle documentaire</span>
           <h2>Sources et arguments de la simulation</h2>
-          <p>La couverture indique seulement si un argument est reliÃ© aux sources ou piÃ¨ces du dossier. Elle ne prÃ©juge pas de sa validitÃ© juridique.</p>
+          <p>La couverture indique seulement si un argument est relie aux sources ou pieces du dossier. Elle ne prejuge pas de sa validite juridique.</p>
         </div>
         <span className="material-symbols-outlined">verified</span>
       </header>
@@ -227,7 +301,7 @@ function ArgumentEvidenceList({ arguments: argumentsList, sourceAnalysis }: { ar
             <div className="simulation-argument-heading"><strong>{argument.actor_name}</strong><span>{argument.support_status.replaceAll("_", " ")}</span></div>
             <p>{argument.claim}</p>
             {argument.explanation ? <small>{argument.explanation}</small> : null}
-            <footer>{argument.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}{argument.attachment_ids.length ? <i>PiÃ¨ce privÃ©e</i> : null}{!argument.source_ids.length && !argument.attachment_ids.length ? <i>Sans rÃ©fÃ©rence dÃ©clarÃ©e</i> : null}</footer>
+            <footer>{argument.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}{argument.attachment_ids.length ? <i>Piece privee</i> : null}{!argument.source_ids.length && !argument.attachment_ids.length ? <i>Sans reference declaree</i> : null}</footer>
           </article>)}
         </div>
       ) : null}
@@ -463,12 +537,14 @@ export function SimulationWorkspace() {
 
   const isWorking = caseData?.status === "preparing" || caseData?.status === "running";
   const selectedActor = caseData?.actors.find((actor) => actor.id === selectedActorId);
-  const completedCycles = caseData?.events.length || 0;
-  const traceByStage = useMemo(() => {
-    const entries = new Map<string, SimulationTraceItem>();
-    for (const item of caseData?.simulation_trace || []) entries.set(item.stage, item);
-    return entries;
-  }, [caseData?.simulation_trace]);
+  const simulationCycles = useMemo(
+    () => caseData
+      ? (caseData.cycles?.length ? caseData.cycles : fallbackCycles(caseData.events, caseData.simulation_trace || []))
+      : [],
+    [caseData?.cycles, caseData?.events, caseData?.simulation_trace]
+  );
+  const visibleCycles = simulationCycles.filter((cycle) => cycle.status !== "pending" || cycle.messages.length > 0);
+  const completedCycles = simulationCycles.filter((cycle) => cycle.status === "completed").length;
 
   const beginNewCase = () => {
     setCaseData(null);
@@ -565,7 +641,7 @@ export function SimulationWorkspace() {
         <section className="simulation-workbench">
           <aside className="simulation-left-rail">
             <div className="simulation-case-heading"><span className="material-symbols-outlined">folder</span><div><small>Dossier actif</small><strong>{caseData.title}</strong></div></div>
-            <div className={`simulation-status ${caseData.status}`}><i /><div><strong>{caseData.status === "completed" ? "Simulation terminee" : caseData.status_message}</strong><small>{caseData.simulation_kind_label} Â· {caseData.jurisdiction}</small></div></div>
+            <div className={`simulation-status ${caseData.status}`}><i /><div><strong>{caseData.status === "completed" ? "Simulation terminee" : caseData.status_message}</strong><small>{caseData.simulation_kind_label} - {caseData.jurisdiction}</small></div></div>
             <div className="simulation-rail-actions">
               <label className={`simulation-attachment-action ${isWorking || isUploadingPdf ? "disabled" : ""}`}>
                 <span className={`material-symbols-outlined ${isUploadingPdf ? "spin" : ""}`}>{isUploadingPdf ? "autorenew" : "attach_file"}</span>{isUploadingPdf ? "Import en cours..." : "Ajouter une piece PDF"}
@@ -584,16 +660,54 @@ export function SimulationWorkspace() {
             <div className={activeStep >= 2 ? "simulation-stage-layout has-live-graph" : "simulation-stage-layout"}>
               <div className="simulation-stage-layout-content">
             {activeStep === 0 ? (
-              <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 1</span><h1>Dossier probatoire</h1><p>La recherche est executee dans le corpus avant tout debat entre les acteurs.</p></div><span className="material-symbols-outlined stage-icon">folder_open</span></div><div className="simulation-facts-card"><span>FAITS DECLARES</span><p>{caseData.scenario}</p><div><i>Requete de recherche</i><code>{caseData.retrieval.query || "Preparation en attente"}</code></div></div><section className="simulation-attachment-list"><div className="simulation-attachment-heading"><div><span className="simulation-eyebrow">Pieces jointes</span><h2>Elements factuels prives</h2></div><span>{caseData.attachments.length} PDF</span></div>{caseData.attachments.length ? caseData.attachments.map((attachment) => <article key={attachment.id}><span className="material-symbols-outlined">picture_as_pdf</span><div><strong>{attachment.name}</strong><small>{attachment.page_count} page{attachment.page_count > 1 ? "s" : ""} Â· {formatFileSize(attachment.size)} Â· Texte extrait</small></div><button onClick={() => void downloadPdf(attachment)} title={`Telecharger ${attachment.name}`} type="button"><span className="material-symbols-outlined">download</span></button></article>) : <p>Aucune piece jointe. Vous pouvez ajouter un PDF depuis les actions du dossier.</p>}</section><div className="simulation-source-list">{caseData.sources.length ? caseData.sources.map((source) => <article key={source.id}><div className="simulation-source-token">{source.id}</div><div><strong>{source.label}</strong><small>{source.citation}</small><p>{source.excerpt}</p></div><span className="material-symbols-outlined">menu_book</span></article>) : <div className="simulation-panel-empty"><span className="material-symbols-outlined">manage_search</span><p>{isWorking ? "Recherche documentaire en cours..." : "Aucune source disponible. Relancez la preparation du dossier."}</p></div>}</div></div>
+              <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 1</span><h1>Dossier probatoire</h1><p>La recherche est executee dans le corpus avant tout debat entre les acteurs.</p></div><span className="material-symbols-outlined stage-icon">folder_open</span></div><div className="simulation-facts-card"><span>FAITS DECLARES</span><p>{caseData.scenario}</p><div><i>Requete de recherche</i><code>{caseData.retrieval.search_query || caseData.retrieval.query || "Preparation en attente"}</code></div></div><section className="simulation-attachment-list"><div className="simulation-attachment-heading"><div><span className="simulation-eyebrow">Pieces jointes</span><h2>Elements factuels prives</h2></div><span>{caseData.attachments.length} PDF</span></div>{caseData.attachments.length ? caseData.attachments.map((attachment) => <article key={attachment.id}><span className="material-symbols-outlined">picture_as_pdf</span><div><strong>{attachment.name}</strong><small>{attachment.page_count} page{attachment.page_count > 1 ? "s" : ""} - {formatFileSize(attachment.size)} - Texte extrait</small></div><button onClick={() => void downloadPdf(attachment)} title={`Telecharger ${attachment.name}`} type="button"><span className="material-symbols-outlined">download</span></button></article>) : <p>Aucune piece jointe. Vous pouvez ajouter un PDF depuis les actions du dossier.</p>}</section><div className="simulation-source-list">{caseData.sources.length ? caseData.sources.map((source) => <article key={source.id}><div className="simulation-source-token">{source.id}</div><div><strong>{source.label}</strong><small>{source.citation}</small><p>{source.excerpt}</p></div><span className="material-symbols-outlined">menu_book</span></article>) : <div className="simulation-panel-empty"><span className="material-symbols-outlined">manage_search</span><p>{isWorking ? "Recherche documentaire en cours..." : "Aucune source disponible. Relancez la preparation du dossier."}</p></div>}</div></div>
             ) : null}
 
             {activeStep === 1 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 2</span><h1>Carte des relations</h1><p>Les liens montrent les acteurs, les questions juridiques et les passages qui structurent le scenario.</p></div><span className="material-symbols-outlined stage-icon">account_tree</span></div><SimulationRelationshipGraph graph={caseData.graph} isWorking={isWorking} /></div> : null}
 
             {activeStep === 2 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 3</span><h1>Acteurs de la simulation</h1><p>Chaque role reste borne par les faits declares et les extraits du dossier.</p></div><span className="material-symbols-outlined stage-icon">groups</span></div><div className="simulation-actor-grid">{caseData.actors.map((actor) => <article key={actor.id}><div className="simulation-avatar">{actor.name.slice(0, 1).toUpperCase()}</div><div><span>{actor.kind === "institutional" ? "ROLE INSTITUTIONNEL" : "PARTIE"}</span><h3>{actor.name}</h3><b>{actor.role.replaceAll("_", " ")}</b><p>{actor.position || "Intervient dans le dossier selon son role procedurale."}</p></div></article>)}</div></div> : null}
 
-            {activeStep === 3 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 4</span><h1>Cycles de simulation</h1><p>Chaque cycle ajoute une intervention au dossier, puis le graphe consolide les relations.</p></div><span className="material-symbols-outlined stage-icon">gavel</span></div>{caseData.status === "ready" ? <div className="simulation-run-ready"><span className="material-symbols-outlined">record_voice_over</span><h2>Le dossier est pret a etre entendu.</h2><p>Les sources sont figees pour cette simulation. Lancez les cycles afin de produire les positions, la replique et l'analyse finale.</p><button className="simulation-primary-action" onClick={() => void runCase()} type="button"><span className="material-symbols-outlined">play_arrow</span>Lancer les cycles</button></div> : null}{caseData.status === "running" ? <div className="simulation-running"><span className="material-symbols-outlined spin">autorenew</span><strong>Cycle en cours...</strong><p>{completedCycles} cycle{completedCycles > 1 ? "s" : ""} deja consolide{completedCycles > 1 ? "s" : ""}. Prochaine actualisation automatique dans 10 secondes.</p></div> : null}<div className="simulation-cycle-list">{caseData.events.map((event, index) => { const meta = EVENT_META[event.type] || EVENT_META.argument; const cycle = cycleTitleFor(event, index); const traceStage = event.type === "source_review" ? "analyse_sources" : event.type === "submission" ? "memorandum_initial" : event.type === "response" ? "memorandum_adverse" : event.type === "rebuttal" ? "replique" : event.type === "deliberation" ? "analyse_autorite" : event.type === "risk_assessment" ? "analyse_risques" : ""; const trace = traceStage ? traceByStage.get(traceStage) : undefined; return <article className="simulation-cycle-card" key={event.id}><div className={`simulation-cycle-marker ${meta.tone}`}><span>{index + 1}</span><i className="material-symbols-outlined">{meta.icon}</i></div><div className="simulation-cycle-content"><header><div><small>{cycle.title}</small><h2>{cycle.detail}</h2></div><span>{event.actor_name}</span></header><p>{event.content}</p>{event.source_ids.length || event.argument_ids?.length || trace ? <footer>{event.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}{event.argument_ids?.map((argumentId) => <i key={argumentId}>Argument</i>)}{trace?.argument_count ? <em>{trace.argument_count} argument{trace.argument_count > 1 ? "s" : ""}</em> : null}</footer> : null}</div></article>; })}{!caseData.events.length && caseData.status !== "ready" ? <div className="simulation-panel-empty"><span className="material-symbols-outlined">hourglass_empty</span><p>Les cycles apparaitront des qu'une intervention sera terminee.</p></div> : null}</div></div> : null}
+            {activeStep === 3 ? (
+              <div className="simulation-stage">
+                <div className="simulation-stage-heading">
+                  <div>
+                    <span className="simulation-eyebrow">Etape 4</span>
+                    <h1>Cycles de simulation</h1>
+                    <p>Chaque cycle restitue plusieurs interventions contradictoires. Les cycles termines restent visibles pendant les suivants.</p>
+                  </div>
+                  <span className="material-symbols-outlined stage-icon">forum</span>
+                </div>
+                {caseData.status === "ready" ? (
+                  <div className="simulation-run-ready">
+                    <span className="material-symbols-outlined">record_voice_over</span>
+                    <h2>Le dossier est pret a etre entendu.</h2>
+                    <p>Les sources sont figees. Lancez les cycles pour faire intervenir successivement l'analyste, les parties et l'autorite simulatrice.</p>
+                    <button className="simulation-primary-action" onClick={() => void runCase()} type="button">
+                      <span className="material-symbols-outlined">play_arrow</span>
+                      Lancer les cycles
+                    </button>
+                  </div>
+                ) : null}
+                {caseData.status === "running" ? (
+                  <div className="simulation-running">
+                    <span className="material-symbols-outlined spin">autorenew</span>
+                    <strong>Discussion en cours...</strong>
+                    <p>{completedCycles} cycle{completedCycles > 1 ? "s" : ""} termine{completedCycles > 1 ? "s" : ""}. Prochaine actualisation automatique dans 10 secondes.</p>
+                  </div>
+                ) : null}
+                <div className="simulation-conversation-list" aria-live="polite">
+                  {visibleCycles.map((cycle) => <CycleConversation actors={caseData.actors} cycle={cycle} key={cycle.id} />)}
+                  {!visibleCycles.length && caseData.status !== "ready" ? (
+                    <div className="simulation-panel-empty">
+                      <span className="material-symbols-outlined">hourglass_empty</span>
+                      <p>Le premier fil de discussion apparaitra des que l'analyse des sources sera terminee.</p>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
 
-            {activeStep === 4 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 5</span><h1>Rapport et echanges</h1><p>Restitution exploitable pour une preparation, une formation ou une analyse strategique.</p></div><span className="material-symbols-outlined stage-icon">summarize</span></div>{caseData.report ? <div className="simulation-report"><section className="simulation-report-summary"><span className="material-symbols-outlined">auto_awesome</span><div><small>SYNTHESE</small><p>{caseData.report.summary}</p></div></section><div className="simulation-report-grid"><section><h3><span className="material-symbols-outlined">add_task</span> Points a soutenir</h3>{caseData.report.points_for.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">warning</span> Points de vigilance</h3>{caseData.report.points_against.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">shield</span> Risques</h3>{caseData.report.risks.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">alt_route</span> Issues possibles</h3>{caseData.report.outcomes.map((item) => <p key={item}>{item}</p>)}</section></div><aside className="simulation-disclaimer"><span className="material-symbols-outlined">info</span>{caseData.report.disclaimer}</aside><ArgumentEvidenceList arguments={caseData.arguments} sourceAnalysis={caseData.source_analysis} /></div> : <div className="simulation-panel-empty"><span className="material-symbols-outlined">summarize</span><p>Le rapport sera disponible a la fin de l'audience simulee.</p></div>}<section className="simulation-interaction"><div className="simulation-interaction-heading"><div><span className="simulation-eyebrow">Interroger un acteur</span><h2>Tester un argument ou une position</h2></div><select onChange={(event) => setSelectedActorId(event.target.value)} value={selectedActorId}>{caseData.actors.map((actor) => <option key={actor.id} value={actor.id}>{actor.name} Â· {actor.role.replaceAll("_", " ")}</option>)}</select></div>{caseData.interactions.map((interaction) => <div className="simulation-chat-pair" key={interaction.id}><div className="user"><b>Vous</b><p>{interaction.question}</p></div><div className="actor"><b>{interaction.actor_name}</b><p>{interaction.answer}</p>{interaction.source_ids?.length ? <footer>{interaction.source_ids.map((sourceId) => <span key={sourceId}>{sourceId}</span>)}</footer> : null}</div></div>)}<div className="simulation-chat-input"><textarea disabled={!caseData.sources.length || interactionBusy} onChange={(event) => setInteractionQuestion(event.target.value)} placeholder={selectedActor ? `Questionner ${selectedActor.name}...` : "Choisissez un acteur..."} rows={2} value={interactionQuestion} /><button disabled={!caseData.sources.length || interactionBusy || interactionQuestion.trim().length < 2} onClick={() => void askActor()} type="button"><span className={`material-symbols-outlined ${interactionBusy ? "spin" : ""}`}>{interactionBusy ? "autorenew" : "north"}</span></button></div></section></div> : null}
+            {activeStep === 4 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 5</span><h1>Rapport et echanges</h1><p>Restitution exploitable pour une preparation, une formation ou une analyse strategique.</p></div><span className="material-symbols-outlined stage-icon">summarize</span></div>{caseData.report ? <div className="simulation-report"><section className="simulation-report-summary"><span className="material-symbols-outlined">auto_awesome</span><div><small>SYNTHESE</small><p>{caseData.report.summary}</p></div></section><div className="simulation-report-grid"><section><h3><span className="material-symbols-outlined">add_task</span> Points a soutenir</h3>{caseData.report.points_for.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">warning</span> Points de vigilance</h3>{caseData.report.points_against.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">shield</span> Risques</h3>{caseData.report.risks.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">alt_route</span> Issues possibles</h3>{caseData.report.outcomes.map((item) => <p key={item}>{item}</p>)}</section></div><aside className="simulation-disclaimer"><span className="material-symbols-outlined">info</span>{caseData.report.disclaimer}</aside><ArgumentEvidenceList arguments={caseData.arguments} sourceAnalysis={caseData.source_analysis} /></div> : <div className="simulation-panel-empty"><span className="material-symbols-outlined">summarize</span><p>Le rapport sera disponible a la fin de l'audience simulee.</p></div>}<section className="simulation-interaction"><div className="simulation-interaction-heading"><div><span className="simulation-eyebrow">Interroger un acteur</span><h2>Tester un argument ou une position</h2></div><select onChange={(event) => setSelectedActorId(event.target.value)} value={selectedActorId}>{caseData.actors.map((actor) => <option key={actor.id} value={actor.id}>{actor.name} - {actor.role.replaceAll("_", " ")}</option>)}</select></div>{caseData.interactions.map((interaction) => <div className="simulation-chat-pair" key={interaction.id}><div className="user"><b>Vous</b><p>{interaction.question}</p></div><div className="actor"><b>{interaction.actor_name}</b><p>{interaction.answer}</p>{interaction.source_ids?.length ? <footer>{interaction.source_ids.map((sourceId) => <span key={sourceId}>{sourceId}</span>)}</footer> : null}</div></div>)}<div className="simulation-chat-input"><textarea disabled={!caseData.sources.length || interactionBusy} onChange={(event) => setInteractionQuestion(event.target.value)} placeholder={selectedActor ? `Questionner ${selectedActor.name}...` : "Choisissez un acteur..."} rows={2} value={interactionQuestion} /><button disabled={!caseData.sources.length || interactionBusy || interactionQuestion.trim().length < 2} onClick={() => void askActor()} type="button"><span className={`material-symbols-outlined ${interactionBusy ? "spin" : ""}`}>{interactionBusy ? "autorenew" : "north"}</span></button></div></section></div> : null}
               </div>
 
               {activeStep >= 2 ? (
