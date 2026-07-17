@@ -4,6 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildWorkspaceRequestHeaders } from "../_lib/workspace-api";
+import { SimulationRelationshipGraph } from "./simulation-relationship-graph";
 
 type SimulationKind = "trial" | "negotiation" | "mediation" | "training";
 type SimulationStatus = "draft" | "preparing" | "ready" | "running" | "completed" | "stopped" | "failed" | "interrupted";
@@ -141,75 +142,6 @@ function formatFileSize(size: number): string {
   if (!Number.isFinite(size) || size <= 0) return "Taille inconnue";
   if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} Ko`;
   return `${(size / (1024 * 1024)).toFixed(1).replace(".0", "")} Mo`;
-}
-
-function trimLabel(value: string, max = 38): string {
-  return value.length > max ? `${value.slice(0, max - 1).trim()}...` : value;
-}
-
-function graphPosition(node: SimulationGraphNode, index: number, total: number): { x: number; y: number } {
-  if (node.type === "case") return { x: 390, y: 225 };
-  const rows: Record<SimulationGraphNode["type"], { x: number; y: number; distance: number }> = {
-    actor: { x: 112, y: 82, distance: 104 },
-    source: { x: 668, y: 82, distance: 90 },
-    document: { x: 668, y: 365, distance: 74 },
-    issue: { x: 390, y: 390, distance: 108 },
-    case: { x: 390, y: 225, distance: 1 }
-  };
-  const group = rows[node.type];
-  const itemCount = Math.max(1, total);
-  const offset = (index - (itemCount - 1) / 2) * group.distance;
-  return node.type === "issue" ? { x: group.x + offset, y: group.y } : { x: group.x, y: group.y + offset };
-}
-
-function SimulationGraphView({ graph }: { graph: SimulationGraph }) {
-  const positions = useMemo(() => {
-    const grouped: Record<SimulationGraphNode["type"], SimulationGraphNode[]> = { case: [], actor: [], source: [], document: [], issue: [] };
-    graph.nodes.forEach((node) => grouped[node.type].push(node));
-    const result = new Map<string, { x: number; y: number }>();
-    (Object.keys(grouped) as SimulationGraphNode["type"][]).forEach((kind) => {
-      grouped[kind].forEach((node, index) => result.set(node.id, graphPosition(node, index, grouped[kind].length)));
-    });
-    return result;
-  }, [graph]);
-
-  if (!graph.nodes.length) {
-    return <div className="simulation-empty-graph"><span className="material-symbols-outlined">account_tree</span><p>Le graphe apparaitra apres la constitution du dossier.</p></div>;
-  }
-
-  return (
-    <div className="simulation-graph-canvas">
-      <svg aria-label="Graphe des relations juridiques" role="img" viewBox="0 0 780 470">
-        <defs>
-          <filter id="simulation-node-shadow" x="-30%" y="-40%" width="160%" height="180%">
-            <feDropShadow dx="0" dy="6" floodColor="#0f172a" floodOpacity="0.12" stdDeviation="5" />
-          </filter>
-        </defs>
-        {graph.edges.map((edge, index) => {
-          const source = positions.get(edge.source);
-          const target = positions.get(edge.target);
-          if (!source || !target) return null;
-          return <line className="simulation-graph-edge" key={`${edge.source}-${edge.target}-${index}`} x1={source.x} x2={target.x} y1={source.y} y2={target.y} />;
-        })}
-        {graph.nodes.map((node) => {
-          const point = positions.get(node.id);
-          if (!point) return null;
-          const width = node.type === "case" ? 168 : node.type === "source" ? 150 : 142;
-          const height = node.type === "case" ? 70 : 58;
-          return (
-            <g className={`simulation-graph-node ${node.type}`} filter="url(#simulation-node-shadow)" key={node.id} transform={`translate(${point.x - width / 2} ${point.y - height / 2})`}>
-              <rect height={height} rx="12" width={width} />
-              <text className="simulation-graph-node-label" textAnchor="middle" x={width / 2} y={height / 2 - 5}>{trimLabel(node.label, node.type === "case" ? 28 : 22)}</text>
-              <text className="simulation-graph-node-detail" textAnchor="middle" x={width / 2} y={height / 2 + 14}>{trimLabel(node.detail || node.type, 24)}</text>
-            </g>
-          );
-        })}
-      </svg>
-      <div className="simulation-graph-legend">
-        <span><i className="case" />Dossier</span><span><i className="actor" />Acteur</span><span><i className="issue" />Question</span><span><i className="source" />Source</span><span><i className="document" />Piece PDF</span>
-      </div>
-    </div>
-  );
 }
 
 export function SimulationWorkspace() {
@@ -538,7 +470,7 @@ export function SimulationWorkspace() {
               <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 1</span><h1>Dossier probatoire</h1><p>La recherche est executee dans le corpus avant tout debat entre les acteurs.</p></div><span className="material-symbols-outlined stage-icon">folder_open</span></div><div className="simulation-facts-card"><span>FAITS DECLARES</span><p>{caseData.scenario}</p><div><i>Requete de recherche</i><code>{caseData.retrieval.query || "Preparation en attente"}</code></div></div><section className="simulation-attachment-list"><div className="simulation-attachment-heading"><div><span className="simulation-eyebrow">Pieces jointes</span><h2>Elements factuels prives</h2></div><span>{caseData.attachments.length} PDF</span></div>{caseData.attachments.length ? caseData.attachments.map((attachment) => <article key={attachment.id}><span className="material-symbols-outlined">picture_as_pdf</span><div><strong>{attachment.name}</strong><small>{attachment.page_count} page{attachment.page_count > 1 ? "s" : ""} · {formatFileSize(attachment.size)} · Texte extrait</small></div><button onClick={() => void downloadPdf(attachment)} title={`Telecharger ${attachment.name}`} type="button"><span className="material-symbols-outlined">download</span></button></article>) : <p>Aucune piece jointe. Vous pouvez ajouter un PDF depuis les actions du dossier.</p>}</section><div className="simulation-source-list">{caseData.sources.length ? caseData.sources.map((source) => <article key={source.id}><div className="simulation-source-token">{source.id}</div><div><strong>{source.label}</strong><small>{source.citation}</small><p>{source.excerpt}</p></div><span className="material-symbols-outlined">menu_book</span></article>) : <div className="simulation-panel-empty"><span className="material-symbols-outlined">manage_search</span><p>{isWorking ? "Recherche documentaire en cours..." : "Aucune source disponible. Relancez la preparation du dossier."}</p></div>}</div></div>
             ) : null}
 
-            {activeStep === 1 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 2</span><h1>Carte des relations</h1><p>Les liens montrent les acteurs, les questions juridiques et les passages qui structurent le scenario.</p></div><span className="material-symbols-outlined stage-icon">account_tree</span></div><SimulationGraphView graph={caseData.graph} /></div> : null}
+            {activeStep === 1 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 2</span><h1>Carte des relations</h1><p>Les liens montrent les acteurs, les questions juridiques et les passages qui structurent le scenario.</p></div><span className="material-symbols-outlined stage-icon">account_tree</span></div><SimulationRelationshipGraph graph={caseData.graph} isWorking={isWorking} /></div> : null}
 
             {activeStep === 2 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 3</span><h1>Acteurs de la simulation</h1><p>Chaque role reste borne par les faits declares et les extraits du dossier.</p></div><span className="material-symbols-outlined stage-icon">groups</span></div><div className="simulation-actor-grid">{caseData.actors.map((actor) => <article key={actor.id}><div className="simulation-avatar">{actor.name.slice(0, 1).toUpperCase()}</div><div><span>{actor.kind === "institutional" ? "ROLE INSTITUTIONNEL" : "PARTIE"}</span><h3>{actor.name}</h3><b>{actor.role.replaceAll("_", " ")}</b><p>{actor.position || "Intervient dans le dossier selon son role procedurale."}</p></div></article>)}</div></div> : null}
 
