@@ -17,7 +17,7 @@ import {
 } from "d3";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type GraphNodeType = "case" | "actor" | "issue" | "source" | "document";
+type GraphNodeType = "case" | "actor" | "issue" | "source" | "document" | "argument";
 
 type SimulationGraphNode = {
   id: string;
@@ -51,7 +51,8 @@ const NODE_META: Record<GraphNodeType, { label: string; color: string; glyph: st
   actor: { label: "Acteur", color: "#2563eb", glyph: "A" },
   issue: { label: "Question de droit", color: "#7c3aed", glyph: "Q" },
   source: { label: "Source juridique", color: "#059669", glyph: "S" },
-  document: { label: "Piece PDF", color: "#ea580c", glyph: "P" }
+  document: { label: "Piece PDF", color: "#ea580c", glyph: "P" },
+  argument: { label: "Argument", color: "#be123c", glyph: "A" }
 };
 
 function clampLabel(value: string, length: number): string {
