@@ -211,6 +211,7 @@ export function SimulationWorkspace() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const [cases, setCases] = useState<SimulationCase[]>([]);
   const [caseData, setCaseData] = useState<SimulationCase | null>(null);
+  const [isCreatingNew, setIsCreatingNew] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
   const [title, setTitle] = useState("");
   const [scenario, setScenario] = useState("");
@@ -290,11 +291,11 @@ export function SimulationWorkspace() {
       setCases(response.items || []);
       const storedId = window.localStorage.getItem(LAST_CASE_KEY);
       const preferred = response.items.find((item) => item.id === storedId) || response.items[0];
-      if (preferred && !caseData) setCaseData(preferred);
+      if (preferred && !caseData && !isCreatingNew) setCaseData(preferred);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Impossible de charger les simulations.");
     }
-  }, [caseData, isSignedIn, request]);
+  }, [caseData, isCreatingNew, isSignedIn, request]);
 
   useEffect(() => {
     if (isLoaded && isSignedIn) void refreshCases();
@@ -345,6 +346,7 @@ export function SimulationWorkspace() {
         setIsUploadingPdf(false);
       }
       setCaseData(dossier);
+      setIsCreatingNew(false);
       setCases((current) => [dossier, ...current.filter((item) => item.id !== dossier.id)]);
       window.localStorage.setItem(LAST_CASE_KEY, dossier.id);
       setActiveStep(0);
@@ -434,6 +436,22 @@ export function SimulationWorkspace() {
   const isWorking = caseData?.status === "preparing" || caseData?.status === "running";
   const selectedActor = caseData?.actors.find((actor) => actor.id === selectedActorId);
 
+  const beginNewCase = () => {
+    setCaseData(null);
+    setIsCreatingNew(true);
+    setActiveStep(0);
+    setTitle("");
+    setScenario("");
+    setKind("trial");
+    setJurisdiction("Senegal");
+    setObjective("");
+    setPendingPdf(null);
+    setSelectedActorId("");
+    setInteractionQuestion("");
+    setError("");
+    window.localStorage.removeItem(LAST_CASE_KEY);
+  };
+
   if (!isLoaded) {
     return <main className="simulation-loading"><span className="material-symbols-outlined">autorenew</span> Chargement de la simulation...</main>;
   }
@@ -522,10 +540,10 @@ export function SimulationWorkspace() {
               {["draft", "stopped", "failed", "interrupted"].includes(caseData.status) ? <button onClick={() => void prepareCase()} type="button"><span className="material-symbols-outlined">find_in_page</span> Preparer le dossier</button> : null}
               {caseData.status === "ready" ? <button className="run" onClick={() => void runCase()} type="button"><span className="material-symbols-outlined">play_arrow</span> Lancer l'audience</button> : null}
               {isWorking ? <button className="stop" onClick={() => void stopCase()} type="button"><span className="material-symbols-outlined">stop_circle</span> Arreter</button> : null}
-              <button onClick={() => { setCaseData(null); window.localStorage.removeItem(LAST_CASE_KEY); }} type="button"><span className="material-symbols-outlined">add</span> Nouveau scenario</button>
+              <button onClick={beginNewCase} type="button"><span className="material-symbols-outlined">add</span> Nouveau scenario</button>
             </div>
             <div className="simulation-rail-section"><div className="simulation-rail-section-title"><span>Questions de droit</span><b>{caseData.issues.length}</b></div>{caseData.issues.length ? <ul className="simulation-issues">{caseData.issues.map((issue) => <li key={issue}><span className="material-symbols-outlined">trip_origin</span>{issue}</li>)}</ul> : <p className="simulation-empty-copy">En attente de la constitution du dossier.</p>}</div>
-            <div className="simulation-rail-section simulation-recent-section"><div className="simulation-rail-section-title"><span>Simulations recentes</span><b>{cases.length}</b></div><div className="simulation-recent-list">{cases.slice(0, 5).map((item) => <button className={item.id === caseData.id ? "selected" : ""} key={item.id} onClick={() => { setCaseData(item); setActiveStep(item.report ? 4 : 0); window.localStorage.setItem(LAST_CASE_KEY, item.id); }} type="button"><strong>{item.title}</strong><small>{formatDate(item.updated_at)}</small></button>)}</div></div>
+            <div className="simulation-rail-section simulation-recent-section"><div className="simulation-rail-section-title"><span>Simulations recentes</span><b>{cases.length}</b></div><div className="simulation-recent-list">{cases.slice(0, 5).map((item) => <button className={item.id === caseData.id ? "selected" : ""} key={item.id} onClick={() => { setCaseData(item); setIsCreatingNew(false); setActiveStep(item.report ? 4 : 0); window.localStorage.setItem(LAST_CASE_KEY, item.id); }} type="button"><strong>{item.title}</strong><small>{formatDate(item.updated_at)}</small></button>)}</div></div>
           </aside>
 
           <div className="simulation-main-panel">
