@@ -113,6 +113,10 @@ type SpeechTranscriptionResponse = {
   detail?: string;
 };
 
+type SpeechSynthesisErrorResponse = {
+  detail?: string;
+};
+
 let workspaceUserId: string | null = null;
 let workspaceUserEmail: string | null = null;
 let workspaceUserName: string | null = null;
@@ -541,4 +545,32 @@ export async function transcribeSpeechApi(audioBlob: Blob): Promise<string> {
     throw new Error("Aucune transcription detectee.");
   }
   return text;
+}
+
+export async function synthesizeSpeechApi(
+  text: string,
+  voiceSlot = 0,
+  signal?: AbortSignal
+): Promise<Blob> {
+  const response = await fetch(`${backendBaseUrl()}/speech/synthesize`, {
+    method: "POST",
+    cache: "no-store",
+    headers: buildHeaders(undefined, true),
+    body: JSON.stringify({
+      text,
+      voice_slot: Math.max(0, Math.floor(voiceSlot)),
+    }),
+    signal,
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as SpeechSynthesisErrorResponse | null;
+    throw new Error(payload?.detail || `Synthese vocale impossible (HTTP ${response.status}).`);
+  }
+
+  const audio = await response.blob();
+  if (!audio.size) {
+    throw new Error("Le service vocal a retourne un fichier vide.");
+  }
+  return audio;
 }

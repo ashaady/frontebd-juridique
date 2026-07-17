@@ -32,6 +32,7 @@ import {
   type WorkspaceFileRecord
 } from "../_lib/workspace-store";
 import { clerkUserButtonAppearance } from "../_lib/clerk-theme";
+import { useTtsPlayer } from "../_hooks/use-tts-player";
 
 type RagSource = {
   rank?: number;
@@ -1646,6 +1647,7 @@ export function ChatWorkspace({
   const [customActTemplates, setCustomActTemplates] = useState<ActTemplateDefinition[]>([]);
   const [globalError, setGlobalError] = useState<string>("");
   const [uiMessage, setUiMessage] = useState<string>("");
+  const chatSpeech = useTtsPlayer(setGlobalError);
   const abortRef = useRef<AbortController | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
@@ -4248,6 +4250,22 @@ export function ChatWorkspace({
                         )}
                       </div>
                       <div className="flex gap-4 mt-2 ml-1">
+                        <button
+                          aria-label={chatSpeech.activeKey === `chat:${turn.id}` ? "Arreter la lecture" : "Ecouter la reponse"}
+                          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-primary transition-colors disabled:opacity-50"
+                          disabled={turn.answer.trim().length === 0 || turn.status === "streaming"}
+                          onClick={() => void chatSpeech.toggle({ key: `chat:${turn.id}`, text: turn.answer })}
+                          type="button"
+                        >
+                          <span className={`material-symbols-outlined text-sm ${chatSpeech.loadingKey === `chat:${turn.id}` ? "animate-spin" : ""}`}>
+                            {chatSpeech.loadingKey === `chat:${turn.id}`
+                              ? "progress_activity"
+                              : chatSpeech.activeKey === `chat:${turn.id}`
+                                ? "stop_circle"
+                                : "volume_up"}
+                          </span>
+                          {chatSpeech.activeKey === `chat:${turn.id}` ? "Arreter" : "Ecouter"}
+                        </button>
                         <button
                           className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-primary transition-colors"
                           onClick={() => copyAnswer(turn.answer)}

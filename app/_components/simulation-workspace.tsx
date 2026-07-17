@@ -4,6 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildWorkspaceRequestHeaders } from "../_lib/workspace-api";
+import { useTtsPlayer } from "../_hooks/use-tts-player";
 import { SimulationRelationshipGraph } from "./simulation-relationship-graph";
 
 type SimulationKind = "trial" | "negotiation" | "mediation" | "training";
@@ -227,7 +228,19 @@ function fallbackCycles(events: SimulationEvent[], trace: SimulationTraceItem[])
   });
 }
 
-function CycleConversation({ cycle, actors }: { cycle: SimulationCycle; actors: SimulationActor[] }) {
+function CycleConversation({
+  cycle,
+  actors,
+  activeSpeechKey,
+  loadingSpeechKey,
+  onToggleSpeech,
+}: {
+  cycle: SimulationCycle;
+  actors: SimulationActor[];
+  activeSpeechKey: string | null;
+  loadingSpeechKey: string | null;
+  onToggleSpeech: (key: string, text: string, voiceSlot: number) => void;
+}) {
   const statusLabel = cycle.status === "completed" ? "Cycle termine" : cycle.status === "running" ? "Cycle en cours" : "A venir";
   return (
     <section className={"simulation-conversation-cycle " + cycle.status}>
@@ -247,6 +260,8 @@ function CycleConversation({ cycle, actors }: { cycle: SimulationCycle; actors: 
             const role = message.actor_role || actor?.role || "";
             const meta = EVENT_META[message.type] || EVENT_META.argument;
             const isRight = index % 2 === 1;
+            const speechKey = `simulation-event:${message.id}`;
+            const actorIndex = Math.max(0, actors.findIndex((item) => item.id === message.actor_id));
             return (
               <article className={"simulation-cycle-message " + (isRight ? "right " : "left ") + meta.tone} key={message.id}>
                 <div className="simulation-message-avatar" title={message.actor_name}>{message.actor_name.slice(0, 1).toUpperCase()}</div>
@@ -256,12 +271,21 @@ function CycleConversation({ cycle, actors }: { cycle: SimulationCycle; actors: 
                     <time>{message.created_at ? formatDate(message.created_at) : "Intervention " + message.sequence}</time>
                   </header>
                   <p>{message.content}</p>
-                  {message.source_ids.length || message.argument_ids?.length ? (
-                    <footer>
-                      {message.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}
-                      {message.argument_ids?.map((argumentId) => <i key={argumentId}>Argument</i>)}
-                    </footer>
-                  ) : null}
+                  <footer>
+                    {message.source_ids.map((sourceId) => <b key={sourceId}>{sourceId}</b>)}
+                    {message.argument_ids?.map((argumentId) => <i key={argumentId}>Argument</i>)}
+                    <button
+                      aria-label={activeSpeechKey === speechKey ? "Arreter la lecture" : `Ecouter ${message.actor_name}`}
+                      className="simulation-tts-button"
+                      onClick={() => onToggleSpeech(speechKey, message.content, actorIndex + 1)}
+                      type="button"
+                    >
+                      <span className={`material-symbols-outlined ${loadingSpeechKey === speechKey ? "spin" : ""}`}>
+                        {loadingSpeechKey === speechKey ? "progress_activity" : activeSpeechKey === speechKey ? "stop_circle" : "volume_up"}
+                      </span>
+                      {activeSpeechKey === speechKey ? "Arreter" : "Ecouter"}
+                    </button>
+                  </footer>
                 </div>
               </article>
             );
@@ -327,6 +351,7 @@ export function SimulationWorkspace() {
   const [interactionQuestion, setInteractionQuestion] = useState("");
   const [selectedActorId, setSelectedActorId] = useState("");
   const [interactionBusy, setInteractionBusy] = useState(false);
+  const simulationSpeech = useTtsPlayer(setError);
 
   const request = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const token = await getToken();
@@ -696,7 +721,14 @@ export function SimulationWorkspace() {
                   </div>
                 ) : null}
                 <div className="simulation-conversation-list" aria-live="polite">
-                  {visibleCycles.map((cycle) => <CycleConversation actors={caseData.actors} cycle={cycle} key={cycle.id} />)}
+                  {visibleCycles.map((cycle) => <CycleConversation
+                    activeSpeechKey={simulationSpeech.activeKey}
+                    actors={caseData.actors}
+                    cycle={cycle}
+                    key={cycle.id}
+                    loadingSpeechKey={simulationSpeech.loadingKey}
+                    onToggleSpeech={(key, text, voiceSlot) => void simulationSpeech.toggle({ key, text, voiceSlot })}
+                  />)}
                   {!visibleCycles.length && caseData.status !== "ready" ? (
                     <div className="simulation-panel-empty">
                       <span className="material-symbols-outlined">hourglass_empty</span>
