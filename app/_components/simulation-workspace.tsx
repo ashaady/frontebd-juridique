@@ -402,13 +402,6 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
     return response.json() as Promise<T>;
   }, [getClerkToken]);
 
-  useEffect(() => {
-    if (!forceNewSimulation) return;
-    setCaseData(null);
-    setIsCreatingNew(true);
-    setActiveStep(0);
-  }, [forceNewSimulation]);
-
   const loadSemanticProjection = useCallback(async () => {
     if (!caseData || projectionBusy) return;
     setProjectionBusy(true);
@@ -427,6 +420,13 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
     setSemanticProjection(null);
     resetGraphForCase(caseData?.id || null);
   }, [caseData?.id, resetGraphForCase]);
+
+  useEffect(() => {
+    if (!forceNewSimulation) return;
+    setCaseData(null);
+    setIsCreatingNew(true);
+    setActiveStep(0);
+  }, [forceNewSimulation]);
 
   const uploadPdf = useCallback(async (caseId: string, file: File): Promise<SimulationCase> => {
     if (file.type && file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
@@ -753,7 +753,60 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
               <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 1</span><h1>Dossier probatoire</h1><p>La recherche est executee dans le corpus avant tout debat entre les acteurs.</p></div><span className="material-symbols-outlined stage-icon">folder_open</span></div><div className="simulation-facts-card"><span>FAITS DECLARES</span><p>{caseData.scenario}</p><div><i>Requete de recherche</i><code>{caseData.retrieval.search_query || caseData.retrieval.query || "Preparation en attente"}</code></div></div><section className="simulation-attachment-list"><div className="simulation-attachment-heading"><div><span className="simulation-eyebrow">Pieces jointes</span><h2>Elements factuels prives</h2></div><span>{caseData.attachments.length} PDF</span></div>{caseData.attachments.length ? caseData.attachments.map((attachment) => <article key={attachment.id}><span className="material-symbols-outlined">picture_as_pdf</span><div><strong>{attachment.name}</strong><small>{attachment.page_count} page{attachment.page_count > 1 ? "s" : ""} - {formatFileSize(attachment.size)} - Texte extrait</small></div><button onClick={() => void downloadPdf(attachment)} title={`Telecharger ${attachment.name}`} type="button"><span className="material-symbols-outlined">download</span></button></article>) : <p>Aucune piece jointe. Vous pouvez ajouter un PDF depuis les actions du dossier.</p>}</section><div className="simulation-source-list">{caseData.sources.length ? caseData.sources.map((source) => <article key={source.id}><div className="simulation-source-token">{source.id}</div><div><strong>{source.label}</strong><small>{source.citation}</small><p>{source.excerpt}</p></div><span className="material-symbols-outlined">menu_book</span></article>) : <div className="simulation-panel-empty"><span className="material-symbols-outlined">manage_search</span><p>{isWorking ? "Recherche documentaire en cours..." : "Aucune source disponible. Relancez la preparation du dossier."}</p></div>}</div></div>
             ) : null}
 
-            {activeStep === 1 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 2</span><h1>Carte des relations</h1><p>Les liens montrent les acteurs, les questions juridiques et les passages qui structurent le scenario.</p></div><span className="material-symbols-outlined stage-icon">account_tree</span></div><div className="simulation-focal-toolbar" aria-label="Focales du graphe"><div><strong>Deux lectures du dossier</strong><span>La structure juridique et le debat restent synchronises par identifiant.</span></div><div className="simulation-focal-switch"><button className={graphFocalView === "split" ? "active" : ""} onClick={() => setGraphFocalView("split")} type="button"><span className="material-symbols-outlined">view_column</span>Ensemble</button><button className={graphFocalView === "debate" ? "active" : ""} onClick={() => setGraphFocalView("debate")} type="button"><span className="material-symbols-outlined">forum</span>Debat</button><button className={graphFocalView === "structure" ? "active" : ""} onClick={() => setGraphFocalView("structure")} type="button"><span className="material-symbols-outlined">account_tree</span>Structure</button><button className={graphFocalView === "3d" ? "active" : ""} onClick={() => setGraphFocalView("3d")} type="button"><span className="material-symbols-outlined">view_in_ar</span>3D</button></div></div><SimulationGraphGuide />{graphFocalView === "3d" ? <Simulation3DGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} onNodeSelect={setFocusedGraphNodeId} /> : <div className={`simulation-double-focal ${graphFocalView === "split" ? "is-split" : ""}`}>{graphFocalView !== "structure" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} scope="debate" variant="embedded" /> : null}{graphFocalView !== "debate" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} scope="structure" variant="embedded" /> : null}</div>}<SimulationDecisionTree items={caseData.decision_tree || []} onFocusNode={(nodeId) => setFocusedGraphNodeId(nodeId)} /><SimulationGraphComparison finalGraph={caseData.graph} initialGraph={caseData.graph_initial} onFocusNode={setFocusedGraphNodeId} /><section className="simulation-projection-loader"><div><span className="simulation-eyebrow">G7 · Recherche semantique</span><h2>Explorer les proximites entre arguments</h2><p>Cette projection utilise les embeddings du meme modele que le RAG et ne modifie pas le retrieval standard.</p></div><button disabled={projectionBusy || !caseData.arguments.length} onClick={() => void loadSemanticProjection()} type="button"><span className={`material-symbols-outlined ${projectionBusy ? "spin" : ""}`}>{projectionBusy ? "autorenew" : "scatter_plot"}</span>{projectionBusy ? "Calcul en cours..." : semanticProjection ? "Recalculer la projection" : "Calculer la projection"}</button>{semanticProjection ? <SimulationSemanticProjection onFocusNode={setFocusedGraphNodeId} projection={semanticProjection} /> : null}</section></div> : null}
+            {activeStep === 1 ? (
+              <div className="simulation-stage">
+                <div className="simulation-stage-heading">
+                  <div>
+                    <span className="simulation-eyebrow">Etape 2</span>
+                    <h1>La carte de votre dossier</h1>
+                    <p>Voyez simplement qui intervient, quelles questions se posent et quels textes ou pieces soutiennent l'analyse.</p>
+                  </div>
+                  <span className="material-symbols-outlined stage-icon">account_tree</span>
+                </div>
+
+                <SimulationGraphGuide graph={caseData.graph} />
+
+                <div className="simulation-focal-toolbar" aria-label="Choisir la vue de la carte">
+                  <div>
+                    <strong>Choisir ce que vous voulez voir</strong>
+                    <span>Commencez par la vue d'ensemble. Les autres vues isolent une partie du dossier.</span>
+                  </div>
+                  <div className="simulation-focal-switch">
+                    <button className={graphFocalView === "split" ? "active" : ""} onClick={() => setGraphFocalView("split")} type="button"><span className="material-symbols-outlined">hub</span>Vue d'ensemble</button>
+                    <button className={graphFocalView === "debate" ? "active" : ""} onClick={() => setGraphFocalView("debate")} type="button"><span className="material-symbols-outlined">forum</span>Personnes et arguments</button>
+                    <button className={graphFocalView === "structure" ? "active" : ""} onClick={() => setGraphFocalView("structure")} type="button"><span className="material-symbols-outlined">menu_book</span>Textes et pieces</button>
+                    <button className={graphFocalView === "3d" ? "active" : ""} onClick={() => setGraphFocalView("3d")} type="button"><span className="material-symbols-outlined">view_in_ar</span>Vue 3D</button>
+                  </div>
+                </div>
+
+                {graphFocalView === "3d" ? (
+                  <Simulation3DGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} onNodeSelect={setFocusedGraphNodeId} />
+                ) : (
+                  <div className="simulation-double-focal">
+                    {graphFocalView === "split" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} scope="all" variant="embedded" /> : null}
+                    {graphFocalView === "debate" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} scope="debate" variant="embedded" /> : null}
+                    {graphFocalView === "structure" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} scope="structure" variant="embedded" /> : null}
+                  </div>
+                )}
+
+                <details className="simulation-advanced-analysis">
+                  <summary>
+                    <span className="material-symbols-outlined">analytics</span>
+                    <span><strong>Afficher les analyses avancees</strong><small>Questions a trancher, evolution du dossier et proximite des arguments</small></span>
+                    <span className="material-symbols-outlined simulation-advanced-chevron">expand_more</span>
+                  </summary>
+                  <div className="simulation-advanced-analysis-content">
+                    <SimulationDecisionTree items={caseData.decision_tree || []} onFocusNode={(nodeId) => setFocusedGraphNodeId(nodeId)} />
+                    <SimulationGraphComparison finalGraph={caseData.graph} initialGraph={caseData.graph_initial} onFocusNode={setFocusedGraphNodeId} />
+                    <section className="simulation-projection-loader">
+                      <div><span className="simulation-eyebrow">Analyse des notions</span><h2>Voir les arguments qui se ressemblent</h2><p>Cette vue regroupe les arguments qui emploient des notions proches. Elle ne modifie pas la recherche juridique et ne predit pas la decision.</p></div>
+                      <button disabled={projectionBusy || !caseData.arguments.length} onClick={() => void loadSemanticProjection()} type="button"><span className={`material-symbols-outlined ${projectionBusy ? "spin" : ""}`}>{projectionBusy ? "autorenew" : "scatter_plot"}</span>{projectionBusy ? "Calcul en cours..." : semanticProjection ? "Recalculer cette vue" : "Afficher cette vue"}</button>
+                      {semanticProjection ? <SimulationSemanticProjection onFocusNode={setFocusedGraphNodeId} projection={semanticProjection} /> : null}
+                    </section>
+                  </div>
+                </details>
+              </div>
+            ) : null}
 
             {activeStep === 2 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 3</span><h1>Acteurs de la simulation</h1><p>Chaque role reste borne par les faits declares et les extraits du dossier.</p></div><span className="material-symbols-outlined stage-icon">groups</span></div><div className="simulation-actor-grid">{caseData.actors.map((actor) => <article key={actor.id}><div className="simulation-avatar">{actor.name.slice(0, 1).toUpperCase()}</div><div><span>{actor.kind === "institutional" ? "ROLE INSTITUTIONNEL" : "PARTIE"}</span><h3>{actor.name}</h3><b>{actor.role.replaceAll("_", " ")}</b><p>{actor.position || "Intervient dans le dossier selon son role procedurale."}</p></div></article>)}</div></div> : null}
 

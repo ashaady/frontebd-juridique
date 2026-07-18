@@ -73,10 +73,10 @@ type GraphSelectionControl = (selection: GraphSelection | null) => void;
 
 const NODE_META: Record<GraphNodeType, { label: string; color: string; glyph: string }> = {
   case: { label: "Dossier", color: "#e11d48", glyph: "D" },
-  actor: { label: "Acteur", color: "#2563eb", glyph: "A" },
-  issue: { label: "Question de droit", color: "#7c3aed", glyph: "Q" },
-  source: { label: "Source juridique", color: "#059669", glyph: "S" },
-  document: { label: "Piece PDF", color: "#ea580c", glyph: "P" },
+  actor: { label: "Personne", color: "#2563eb", glyph: "P" },
+  issue: { label: "Question juridique", color: "#7c3aed", glyph: "Q" },
+  source: { label: "Texte ou decision", color: "#059669", glyph: "T" },
+  document: { label: "Piece du dossier", color: "#ea580c", glyph: "D" },
   argument: { label: "Argument", color: "#be123c", glyph: "A" }
 };
 
@@ -90,10 +90,10 @@ const NODE_RING: Record<GraphNodeType, number> = {
 };
 
 const EVIDENCE_META: Record<EvidenceBand, { label: string; color: string }> = {
-  non_soutenu: { label: "Non soutenu", color: "#94a3b8" },
-  faible: { label: "Faible", color: "#dc2626" },
-  moyenne: { label: "Moyenne", color: "#f59e0b" },
-  forte: { label: "Forte", color: "#16a34a" }
+  non_soutenu: { label: "Sans source", color: "#94a3b8" },
+  faible: { label: "Peu etaye", color: "#dc2626" },
+  moyenne: { label: "Partiellement etaye", color: "#f59e0b" },
+  forte: { label: "Bien etaye", color: "#16a34a" }
 };
 
 function evidenceBand(node: SimulationGraphNode): EvidenceBand {
@@ -205,7 +205,7 @@ function EgoNetwork({ graph, centerId, pinned, onClose, onTogglePin, onFocusNode
   }, [center, ego.nodes]);
 
   if (!center) return null;
-  const label = NODE_META[center.type]?.label || "Entite";
+  const label = NODE_META[center.type]?.label || "Element";
 
   return (
     <section className="legal-force-ego-network" aria-label={`Voisinage de ${center.label}`}>
@@ -213,12 +213,12 @@ function EgoNetwork({ graph, centerId, pinned, onClose, onTogglePin, onFocusNode
         <div>
           <span className="simulation-eyebrow">Contexte local</span>
           <h3>{clampLabel(center.label, 42)}</h3>
-          <p>{ego.nodes.length} entites, profondeur maximale de 2 sauts</p>
+          <p>{ego.nodes.length} elements directement ou indirectement lies</p>
         </div>
         <div className="legal-force-ego-actions">
           <button aria-pressed={pinned} onClick={() => onTogglePin(center.id)} title={pinned ? "Retirer des voisinages epingles" : "Epingler ce voisinage"} type="button">
             <span className="material-symbols-outlined">{pinned ? "push_pin" : "push_pin"}</span>
-            {pinned ? "Epingle" : "Epingler"}
+            {pinned ? "Conserve" : "Conserver"}
           </button>
           {onClose ? <button aria-label="Fermer le voisinage" onClick={onClose} title="Fermer" type="button"><span className="material-symbols-outlined">close</span></button> : null}
         </div>
@@ -641,21 +641,21 @@ export function SimulationRelationshipGraph({
     <section className={`legal-force-graph ${variant === "embedded" ? "embedded" : ""}`} ref={graphFrameRef}>
       <header className="legal-force-graph-toolbar">
         <div>
-          <span className="simulation-eyebrow">{variant === "embedded" ? "Graphe vivant" : "Exploration relationnelle"}</span>
-          <h2>{scope === "structure" ? "Structure juridique" : scope === "debate" ? "Debat contradictoire" : variant === "embedded" ? "Relations du dossier" : "Graphe juridique"}</h2>
-          <p>{visibleGraph.nodes.length} entites et {visibleGraph.edges.length} relations. {isWorking ? "Mise a jour apres chaque intervention." : "Dernier etat consolide."}</p>
+          <span className="simulation-eyebrow">Carte interactive</span>
+          <h2>{scope === "structure" ? "Textes et pieces du dossier" : scope === "debate" ? "Personnes et arguments" : "Vue d'ensemble du dossier"}</h2>
+          <p>{visibleGraph.nodes.length} elements relies par {visibleGraph.edges.length} liens. {isWorking ? "La carte se complete pendant la simulation." : "La carte montre le dernier etat du dossier."}</p>
         </div>
         <div className="legal-force-graph-controls">
-          <label className="legal-force-label-toggle"><input checked={showEdgeLabels} onChange={(event) => setShowEdgeLabels(event.target.checked)} type="checkbox" /><span>Liens</span></label>
-          <button aria-label="Reorganiser le graphe" onClick={() => setLayoutVersion((value) => value + 1)} title="Reorganiser le graphe" type="button"><span className="material-symbols-outlined">refresh</span></button>
-          <button aria-label="Recentrer le graphe" onClick={() => resetViewRef.current()} title="Recentrer le graphe" type="button"><span className="material-symbols-outlined">center_focus_strong</span></button>
-          <button aria-label="Agrandir le graphe" onClick={toggleFullscreen} title="Plein ecran" type="button"><span className="material-symbols-outlined">fullscreen</span></button>
+          <label className="legal-force-label-toggle" title="Afficher les mots qui expliquent chaque ligne"><input checked={showEdgeLabels} onChange={(event) => setShowEdgeLabels(event.target.checked)} type="checkbox" /><span>Expliquer les lignes</span></label>
+          <button aria-label="Mieux repartir les elements" onClick={() => setLayoutVersion((value) => value + 1)} title="Mieux repartir les elements" type="button"><span className="material-symbols-outlined">refresh</span></button>
+          <button aria-label="Revenir au centre" onClick={() => resetViewRef.current()} title="Revenir au centre" type="button"><span className="material-symbols-outlined">center_focus_strong</span></button>
+          <button aria-label="Voir la carte en grand" onClick={toggleFullscreen} title="Voir en grand" type="button"><span className="material-symbols-outlined">fullscreen</span></button>
         </div>
       </header>
       <div className={`legal-force-timeline ${variant === "embedded" ? "compact" : ""}`}>
         <button aria-label="Rejouer la construction du graphe" disabled={maxCycle < 1} onClick={startReplay} type="button">
           <span className="material-symbols-outlined">replay</span>
-          {variant === "full" ? "Replay" : null}
+          {variant === "full" ? "Revoir" : null}
         </button>
         <label>
           <span>{activeCycle === 0 ? "Preparation" : `Cycle ${activeCycle}`}</span>
@@ -668,19 +668,19 @@ export function SimulationRelationshipGraph({
       </div>
       <div className="legal-force-graph-body">
         <svg aria-label="Graphe relationnel juridique interactif" ref={svgRef} role="img" />
-        <p className="legal-force-graph-hint"><span className="material-symbols-outlined">pan_tool</span> Faites glisser les entites. Molette ou pincement pour zoomer. Cliquez pour ouvrir le contexte.</p>
+        <p className="legal-force-graph-hint"><span className="material-symbols-outlined">touch_app</span> Cliquez sur un rond pour lire son role. Deplacez les ronds pour aerer la carte et utilisez la molette pour zoomer.</p>
         {isWorking ? <div className="legal-force-graph-processing"><i /><span>Analyse des relations en cours</span></div> : null}
         <div className="legal-force-graph-legend" aria-label="Legende du graphe">
           {(Object.keys(NODE_META) as GraphNodeType[]).map((type) => <span key={type}><i style={{ backgroundColor: NODE_META[type].color }} />{NODE_META[type].label}</span>)}
         </div>
-        {hoveredNode ? <div className="legal-force-hover-card" onMouseEnter={keepHoverCard} onMouseLeave={scheduleHoverCardClose} role="tooltip"><strong>{hoveredNode.label}</strong><span>{NODE_META[hoveredNode.type].label}</span>{hoveredNode.type === "argument" ? <><b style={{ color: EVIDENCE_META[evidenceBand(hoveredNode)].color }}>{Number(hoveredNode.evidence_score || 0)}/100</b><small>{Number(hoveredNode.evidence_metrics?.legal_sources || 0)} source(s), {Number(hoveredNode.evidence_metrics?.factual_exhibits || 0)} piece(s), {Number(hoveredNode.evidence_metrics?.refutations || 0)} contestation(s)</small></> : null}<button onClick={() => openEgoNetwork(hoveredNode)} type="button"><span className="material-symbols-outlined">hub</span> Ouvrir le voisinage</button></div> : null}
+        {hoveredNode ? <div className="legal-force-hover-card" onMouseEnter={keepHoverCard} onMouseLeave={scheduleHoverCardClose} role="tooltip"><strong>{hoveredNode.label}</strong><span>{NODE_META[hoveredNode.type].label}</span>{hoveredNode.type === "argument" ? <><b style={{ color: EVIDENCE_META[evidenceBand(hoveredNode)].color }}>{Number(hoveredNode.evidence_score || 0)}/100</b><small>{Number(hoveredNode.evidence_metrics?.legal_sources || 0)} texte(s), {Number(hoveredNode.evidence_metrics?.factual_exhibits || 0)} piece(s), {Number(hoveredNode.evidence_metrics?.refutations || 0)} contestation(s)</small></> : null}<button onClick={() => openEgoNetwork(hoveredNode)} type="button"><span className="material-symbols-outlined">hub</span> Voir les elements lies</button></div> : null}
         {selection ? <aside className="legal-force-graph-detail" aria-live="polite">
           <button aria-label="Fermer le detail" onClick={clearSelection} type="button"><span className="material-symbols-outlined">close</span></button>
-          {selection.kind === "node" ? <><span className="legal-force-detail-token" style={{ backgroundColor: selection.node.type === "argument" ? EVIDENCE_META[evidenceBand(selection.node)].color : NODE_META[selection.node.type].color }}>{NODE_META[selection.node.type].glyph}</span><small>{NODE_META[selection.node.type].label}</small><h3>{selection.node.label}</h3><p>{selection.node.detail || "Cette entite est reliee au dossier par les sources, arguments ou faits disponibles."}</p>{selection.node.type === "argument" ? <div className="legal-force-evidence-detail"><strong>Couverture probatoire: {Number(selection.node.evidence_score || 0)}/100</strong><span>{Number(selection.node.evidence_metrics?.legal_sources || 0)} source(s) juridique(s)</span><span>{Number(selection.node.evidence_metrics?.factual_exhibits || 0)} piece(s) factuelle(s)</span><span>{Number(selection.node.evidence_metrics?.refutations || 0)} contestation(s)</span><small>Ce score mesure la couverture documentaire, pas les chances de succes.</small></div> : null}<button className="legal-force-open-ego" onClick={() => openEgoNetwork(selection.node)} type="button"><span className="material-symbols-outlined">hub</span> Explorer le voisinage</button><code>{selection.node.id}</code></> : <><span className="legal-force-detail-token relation"><span className="material-symbols-outlined">arrow_forward</span></span><small>Relation</small><h3>{selection.edge.label || "Lien juridique"}</h3><p>Cette relation relie deux entites structurelles du dossier et peut etre exploree avec les noeuds associes.</p></>}
+          {selection.kind === "node" ? <><span className="legal-force-detail-token" style={{ backgroundColor: selection.node.type === "argument" ? EVIDENCE_META[evidenceBand(selection.node)].color : NODE_META[selection.node.type].color }}>{NODE_META[selection.node.type].glyph}</span><small>{NODE_META[selection.node.type].label}</small><h3>{selection.node.label}</h3><p>{selection.node.detail || "Cet element est relie au dossier par les textes, les arguments ou les faits disponibles."}</p>{selection.node.type === "argument" ? <div className="legal-force-evidence-detail"><strong>Niveau de soutien documentaire: {Number(selection.node.evidence_score || 0)}/100</strong><span>{Number(selection.node.evidence_metrics?.legal_sources || 0)} texte(s) juridique(s)</span><span>{Number(selection.node.evidence_metrics?.factual_exhibits || 0)} piece(s) du dossier</span><span>{Number(selection.node.evidence_metrics?.refutations || 0)} contestation(s)</span><small>Ce niveau indique les documents relies a l'argument, pas ses chances de succes.</small></div> : null}<button className="legal-force-open-ego" onClick={() => openEgoNetwork(selection.node)} type="button"><span className="material-symbols-outlined">hub</span> Voir les elements lies</button><code>{selection.node.id}</code></> : <><span className="legal-force-detail-token relation"><span className="material-symbols-outlined">arrow_forward</span></span><small>Lien entre deux elements</small><h3>{selection.edge.label || "Lien juridique"}</h3><p>Ce mot explique pourquoi les deux elements sont relies dans l'analyse du dossier.</p></>}
         </aside> : null}
       </div>
-      {egoNodeId ? <div className="legal-force-ego-overlay" role="dialog" aria-label="Exploration du voisinage"><div className="legal-force-ego-dialog"><header><div><span className="simulation-eyebrow">Exploration contextuelle</span><h2>Voisinages du graphe</h2><p>Les liens sont calcules depuis le graphe courant, sans nouvel appel API.</p></div><button aria-label="Fermer les voisinages" onClick={() => setEgoNodeId(null)} type="button"><span className="material-symbols-outlined">close</span></button></header><div className="legal-force-ego-grid">{[egoNodeId, ...pinnedEgoNodeIds.filter((id) => id !== egoNodeId)].map((nodeId) => <EgoNetwork centerId={nodeId} graph={visibleGraph} key={nodeId} onClose={pinnedEgoNodeIds.includes(nodeId) ? undefined : () => setEgoNodeId(null)} onFocusNode={focusEgoNode} onTogglePin={togglePinnedEgo} pinned={pinnedEgoNodeIds.includes(nodeId)} />)}</div></div></div> : null}
-      {variant === "full" ? <details className="legal-force-accessible-list"><summary>Explorer le graphe sous forme de liste</summary><div>{visibleGraph.nodes.map((node) => <button key={node.id} onClick={() => { const next = { kind: "node" as const, node }; setSelection(next); selectionControlRef.current(next); }} type="button"><i style={{ backgroundColor: node.type === "argument" ? EVIDENCE_META[evidenceBand(node)].color : NODE_META[node.type].color }} /><span><strong>{node.label}</strong><small>{NODE_META[node.type].label}{node.type === "argument" ? ` - ${Number(node.evidence_score || 0)}/100` : ""}</small></span></button>)}</div></details> : null}
+      {egoNodeId ? <div className="legal-force-ego-overlay" role="dialog" aria-label="Elements lies"><div className="legal-force-ego-dialog"><header><div><span className="simulation-eyebrow">Lecture detaillee</span><h2>Elements lies a votre selection</h2><p>Cette vue isole les liens directs et les liens proches pour eviter de surcharger la carte principale.</p></div><button aria-label="Fermer les elements lies" onClick={() => setEgoNodeId(null)} type="button"><span className="material-symbols-outlined">close</span></button></header><div className="legal-force-ego-grid">{[egoNodeId, ...pinnedEgoNodeIds.filter((id) => id !== egoNodeId)].map((nodeId) => <EgoNetwork centerId={nodeId} graph={visibleGraph} key={nodeId} onClose={pinnedEgoNodeIds.includes(nodeId) ? undefined : () => setEgoNodeId(null)} onFocusNode={focusEgoNode} onTogglePin={togglePinnedEgo} pinned={pinnedEgoNodeIds.includes(nodeId)} />)}</div></div></div> : null}
+      {variant === "full" ? <details className="legal-force-accessible-list"><summary>Afficher tous les elements sous forme de liste</summary><div>{visibleGraph.nodes.map((node) => <button key={node.id} onClick={() => { const next = { kind: "node" as const, node }; setSelection(next); selectionControlRef.current(next); }} type="button"><i style={{ backgroundColor: node.type === "argument" ? EVIDENCE_META[evidenceBand(node)].color : NODE_META[node.type].color }} /><span><strong>{node.label}</strong><small>{NODE_META[node.type].label}{node.type === "argument" ? ` - ${Number(node.evidence_score || 0)}/100` : ""}</small></span></button>)}</div></details> : null}
     </section>
   );
 }
