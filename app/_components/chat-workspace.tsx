@@ -3962,7 +3962,7 @@ export function ChatWorkspace({
                 className={`flex items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors ${
                   isSidebarCollapsed ? "justify-center px-0 py-2.5" : "gap-3 px-3 py-2.5"
                 }`}
-                href="/simulation"
+                href="/simulation?new=1"
                 onClick={() => setIsMobileLeftPanelOpen(false)}
                 title="Simulation juridique"
               >

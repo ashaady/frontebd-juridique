@@ -352,7 +352,7 @@ function ArgumentEvidenceList({ arguments: argumentsList, sourceAnalysis }: { ar
   );
 }
 
-export function SimulationWorkspace() {
+export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSimulation?: boolean }) {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const [cases, setCases] = useState<SimulationCase[]>([]);
   const [caseData, setCaseData] = useState<SimulationCase | null>(null);
@@ -390,6 +390,13 @@ export function SimulationWorkspace() {
     }
     return response.json() as Promise<T>;
   }, [getToken]);
+
+  useEffect(() => {
+    if (!forceNewSimulation) return;
+    setCaseData(null);
+    setIsCreatingNew(true);
+    setActiveStep(0);
+  }, [forceNewSimulation]);
 
   const loadSemanticProjection = useCallback(async () => {
     if (!caseData || projectionBusy) return;
@@ -461,13 +468,15 @@ export function SimulationWorkspace() {
     try {
       const response = await request<{ items: SimulationCase[] }>("/simulation/cases");
       setCases(response.items || []);
-      const storedId = window.localStorage.getItem(LAST_CASE_KEY);
+      const storedId = forceNewSimulation ? null : window.localStorage.getItem(LAST_CASE_KEY);
       const preferred = response.items.find((item) => item.id === storedId) || response.items[0];
-      if (preferred && !caseData && !isCreatingNew) setCaseData(preferred);
+      if (!forceNewSimulation && preferred && !caseData && !isCreatingNew) {
+        setCaseData(preferred);
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Impossible de charger les simulations.");
     }
-  }, [caseData, isCreatingNew, isSignedIn, request]);
+  }, [caseData, forceNewSimulation, isCreatingNew, isSignedIn, request]);
 
   useEffect(() => {
     if (isLoaded && isSignedIn) void refreshCases();
