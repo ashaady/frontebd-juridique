@@ -19,17 +19,30 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type GraphNodeType = "case" | "actor" | "issue" | "source" | "document" | "argument";
+type EvidenceBand = "non_soutenu" | "faible" | "moyenne" | "forte";
 
 type SimulationGraphNode = {
   id: string;
   label: string;
   type: GraphNodeType;
   detail?: string;
+  cycle_created?: number;
+  cycle_ended?: number | null;
+  evidence_score?: number;
+  evidence_band?: EvidenceBand;
+  evidence_metrics?: {
+    legal_sources?: number;
+    factual_exhibits?: number;
+    issues?: number;
+    refutations?: number;
+  };
+  refutation_count?: number;
+  contested_by_ids?: string[];
 };
 
 type SimulationGraph = {
   nodes: SimulationGraphNode[];
-  edges: { source: string; target: string; label: string }[];
+  edges: { source: string; target: string; label: string; cycle_created?: number }[];
 };
 
 type ForceNode = SimulationGraphNode & SimulationNodeDatum;
@@ -64,6 +77,22 @@ const NODE_RING: Record<GraphNodeType, number> = {
   document: 2,
   argument: 3
 };
+
+const EVIDENCE_META: Record<EvidenceBand, { label: string; color: string }> = {
+  non_soutenu: { label: "Non soutenu", color: "#94a3b8" },
+  faible: { label: "Faible", color: "#f59e0b" },
+  moyenne: { label: "Moyenne", color: "#0ea5e9" },
+  forte: { label: "Forte", color: "#16a34a" }
+};
+
+function evidenceBand(node: SimulationGraphNode): EvidenceBand {
+  if (node.evidence_band && EVIDENCE_META[node.evidence_band]) return node.evidence_band;
+  const score = Number(node.evidence_score || 0);
+  if (score < 20) return "non_soutenu";
+  if (score < 45) return "faible";
+  if (score < 70) return "moyenne";
+  return "forte";
+}
 
 function clampLabel(value: string, length: number): string {
   return value.length > length ? `${value.slice(0, Math.max(1, length - 1)).trim()}...` : value;
@@ -111,11 +140,13 @@ function edgeLabelPosition(link: ForceLink, byId: Map<string, ForceNode>): { x: 
 export function SimulationRelationshipGraph({
   graph,
   isWorking = false,
-  variant = "full"
+  variant = "full",
+  focusedNodeId = null
 }: {
   graph: SimulationGraph;
   isWorking?: boolean;
   variant?: "full" | "embedded";
+  focusedNodeId?: string | null;
 }) {
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -125,11 +156,45 @@ export function SimulationRelationshipGraph({
   const [showEdgeLabels, setShowEdgeLabels] = useState(variant === "full");
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<SimulationGraphNode | null>(null);
+  const [activeCycle, setActiveCycle] = useState(0);
+  const [isReplaying, setIsReplaying] = useState(false);
+  const [visibleEvidenceBands, setVisibleEvidenceBands] = useState<Set<EvidenceBand>>(
+    () => new Set(Object.keys(EVIDENCE_META) as EvidenceBand[])
+  );
 
-  const visibleGraph = useMemo<SimulationGraph>(() => ({
-    nodes: graph.nodes.filter((node) => NODE_META[node.type]),
-    edges: graph.edges.filter((edge) => graph.nodes.some((node) => node.id === edge.source) && graph.nodes.some((node) => node.id === edge.target))
-  }), [graph.edges, graph.nodes]);
+  const maxCycle = useMemo(() => Math.max(
+    0,
+    ...graph.nodes.map((node) => Number(node.cycle_created || 0)),
+    ...graph.edges.map((edge) => Number(edge.cycle_created || 0))
+  ), [graph.edges, graph.nodes]);
+
+  const visibleNodes = useMemo(() => graph.nodes.filter((node) => {
+      if (!NODE_META[node.type] || Number(node.cycle_created || 0) > activeCycle) return false;
+      return node.type !== "argument" || visibleEvidenceBands.has(evidenceBand(node));
+    }), [activeCycle, graph.nodes, visibleEvidenceBands]);
+
+  const visibleGraph = useMemo<SimulationGraph>(() => {
+    const nodeIds = new Set(visibleNodes.map((node) => node.id));
+    return {
+      nodes: visibleNodes,
+      edges: graph.edges.filter((edge) => Number(edge.cycle_created || 0) <= activeCycle && nodeIds.has(edge.source) && nodeIds.has(edge.target))
+    };
+  }, [activeCycle, graph.edges, visibleNodes]);
+
+  useEffect(() => {
+    if (!isReplaying) setActiveCycle(maxCycle);
+  }, [isReplaying, maxCycle]);
+
+  useEffect(() => {
+    if (!isReplaying) return;
+    if (activeCycle >= maxCycle) {
+      setIsReplaying(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setActiveCycle((cycle) => Math.min(maxCycle, cycle + 1)), 1300);
+    return () => window.clearTimeout(timer);
+  }, [activeCycle, isReplaying, maxCycle]);
 
   const clearSelection = useCallback(() => {
     setSelection(null);
@@ -222,7 +287,7 @@ export function SimulationRelationshipGraph({
     const pathSelection = edgeLayer.selectAll<SVGPathElement, ForceLink>("path")
       .data(links, (link) => link.id)
       .join("path")
-      .attr("class", "legal-force-edge")
+      .attr("class", (link) => `legal-force-edge ${link.label === "conteste" ? "is-contestation" : ""}`)
       .attr("marker-end", "url(#legal-force-arrow)");
 
     const edgeLabelSelection = labelLayer.selectAll<SVGGElement, ForceLink>("g")
@@ -242,13 +307,22 @@ export function SimulationRelationshipGraph({
     const nodeSelection = nodeLayer.selectAll<SVGGElement, ForceNode>("g")
       .data(nodes, (node) => node.id)
       .join("g")
-      .attr("class", (node) => `legal-force-node ${node.type}`)
+      .attr("class", (node) => {
+        const expired = node.cycle_ended !== null && node.cycle_ended !== undefined && activeCycle >= node.cycle_ended;
+        const contested = Number(node.refutation_count || 0) > 0;
+        return `legal-force-node ${node.type} ${expired ? "is-expired" : ""} ${contested ? "is-contested" : ""}`;
+      })
+      .style("--force-node-color", (node) => node.type === "argument" ? EVIDENCE_META[evidenceBand(node)].color : NODE_META[node.type].color)
       .attr("tabindex", 0)
       .attr("role", "button")
       .attr("aria-label", (node) => `${NODE_META[node.type].label}: ${node.label}`);
 
     nodeSelection.append("circle").attr("class", "legal-force-node-aura").attr("r", (node) => node.type === "case" ? 28 : 20);
-    nodeSelection.append("circle").attr("class", "legal-force-node-core").attr("r", (node) => node.type === "case" ? 15 : 11);
+    nodeSelection.append("circle").attr("class", "legal-force-node-core").attr("r", (node) => {
+      if (node.type === "case") return 15;
+      if (node.type === "argument") return 9 + Math.round(Number(node.evidence_score || 0) / 25);
+      return 11;
+    });
     nodeSelection.append("text").attr("class", "legal-force-node-glyph").attr("text-anchor", "middle").attr("dy", "0.34em").text((node) => NODE_META[node.type].glyph);
     nodeSelection.append("text").attr("class", "legal-force-node-label").attr("text-anchor", "middle").attr("dy", (node) => node.type === "case" ? 39 : 31).text((node) => clampLabel(node.label, node.type === "case" ? 30 : 23));
     nodeSelection.append("title").text((node) => `${NODE_META[node.type].label}: ${node.label}${node.detail ? ` - ${node.detail}` : ""}`);
@@ -292,16 +366,17 @@ export function SimulationRelationshipGraph({
 
     nodeSelection.on("click", (event, node) => {
       event.stopPropagation();
-      const next = { kind: "node" as const, node: { id: node.id, label: node.label, type: node.type, detail: node.detail } };
+      const next = { kind: "node" as const, node: { ...node } };
       setSelection(next);
       applySelection(next);
     }).on("keydown", (event, node) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
-      const next = { kind: "node" as const, node: { id: node.id, label: node.label, type: node.type, detail: node.detail } };
+      const next = { kind: "node" as const, node: { ...node } };
       setSelection(next);
       applySelection(next);
-    });
+    }).on("mouseenter", (_, node) => setHoveredNode({ ...node }))
+      .on("mouseleave", () => setHoveredNode(null));
     pathSelection.on("click", (event, link) => {
       event.stopPropagation();
       const next = { kind: "edge" as const, edge: { source: String(endpointNode(link.source, nodeById)?.id || link.source), target: String(endpointNode(link.target, nodeById)?.id || link.target), label: link.label } };
@@ -360,7 +435,16 @@ export function SimulationRelationshipGraph({
       svg.on(".zoom", null).on("click", null);
       selectionControlRef.current = () => undefined;
     };
-  }, [clearSelection, dimensions, isWorking, layoutVersion, showEdgeLabels, visibleGraph]);
+  }, [activeCycle, clearSelection, dimensions, isWorking, layoutVersion, showEdgeLabels, visibleGraph]);
+
+  useEffect(() => {
+    if (!focusedNodeId) return;
+    const node = visibleGraph.nodes.find((item) => item.id === focusedNodeId);
+    if (!node) return;
+    const next = { kind: "node" as const, node };
+    setSelection(next);
+    selectionControlRef.current(next);
+  }, [focusedNodeId, visibleGraph.nodes]);
 
   const toggleFullscreen = () => {
     const frame = graphFrameRef.current;
@@ -370,6 +454,20 @@ export function SimulationRelationshipGraph({
       return;
     }
     void frame.requestFullscreen?.();
+  };
+
+  const toggleEvidenceBand = (band: EvidenceBand) => {
+    setVisibleEvidenceBands((current) => {
+      const next = new Set(current);
+      if (next.has(band)) next.delete(band);
+      else next.add(band);
+      return next;
+    });
+  };
+
+  const startReplay = () => {
+    setActiveCycle(0);
+    setIsReplaying(true);
   };
 
   if (!visibleGraph.nodes.length) {
@@ -391,6 +489,20 @@ export function SimulationRelationshipGraph({
           <button aria-label="Agrandir le graphe" onClick={toggleFullscreen} title="Plein ecran" type="button"><span className="material-symbols-outlined">fullscreen</span></button>
         </div>
       </header>
+      <div className={`legal-force-timeline ${variant === "embedded" ? "compact" : ""}`}>
+        <button aria-label="Rejouer la construction du graphe" disabled={maxCycle < 1} onClick={startReplay} type="button">
+          <span className="material-symbols-outlined">replay</span>
+          {variant === "full" ? "Replay" : null}
+        </button>
+        <label>
+          <span>{activeCycle === 0 ? "Preparation" : `Cycle ${activeCycle}`}</span>
+          <input aria-label="Cycle affiche" max={maxCycle} min={0} onChange={(event) => { setIsReplaying(false); setActiveCycle(Number(event.target.value)); }} step={1} type="range" value={activeCycle} />
+          <small>{maxCycle ? `${activeCycle}/${maxCycle}` : "Dossier"}</small>
+        </label>
+        {variant === "full" ? <div className="legal-force-evidence-filters" aria-label="Filtrer les arguments par force probatoire">
+          {(Object.keys(EVIDENCE_META) as EvidenceBand[]).map((band) => <button aria-pressed={visibleEvidenceBands.has(band)} className={visibleEvidenceBands.has(band) ? "active" : ""} key={band} onClick={() => toggleEvidenceBand(band)} type="button"><i style={{ backgroundColor: EVIDENCE_META[band].color }} />{EVIDENCE_META[band].label}</button>)}
+        </div> : null}
+      </div>
       <div className="legal-force-graph-body">
         <svg aria-label="Graphe relationnel juridique interactif" ref={svgRef} role="img" />
         <p className="legal-force-graph-hint"><span className="material-symbols-outlined">pan_tool</span> Faites glisser les entites. Molette ou pincement pour zoomer. Cliquez pour ouvrir le contexte.</p>
@@ -398,11 +510,13 @@ export function SimulationRelationshipGraph({
         <div className="legal-force-graph-legend" aria-label="Legende du graphe">
           {(Object.keys(NODE_META) as GraphNodeType[]).map((type) => <span key={type}><i style={{ backgroundColor: NODE_META[type].color }} />{NODE_META[type].label}</span>)}
         </div>
+        {hoveredNode ? <div className="legal-force-hover-card" role="tooltip"><strong>{hoveredNode.label}</strong><span>{NODE_META[hoveredNode.type].label}</span>{hoveredNode.type === "argument" ? <><b style={{ color: EVIDENCE_META[evidenceBand(hoveredNode)].color }}>{Number(hoveredNode.evidence_score || 0)}/100</b><small>{Number(hoveredNode.evidence_metrics?.legal_sources || 0)} source(s), {Number(hoveredNode.evidence_metrics?.factual_exhibits || 0)} piece(s), {Number(hoveredNode.evidence_metrics?.refutations || 0)} contestation(s)</small></> : null}</div> : null}
         {selection ? <aside className="legal-force-graph-detail" aria-live="polite">
           <button aria-label="Fermer le detail" onClick={clearSelection} type="button"><span className="material-symbols-outlined">close</span></button>
-          {selection.kind === "node" ? <><span className="legal-force-detail-token" style={{ backgroundColor: NODE_META[selection.node.type].color }}>{NODE_META[selection.node.type].glyph}</span><small>{NODE_META[selection.node.type].label}</small><h3>{selection.node.label}</h3><p>{selection.node.detail || "Cette entite est reliee au dossier par les sources, arguments ou faits disponibles."}</p><code>{selection.node.id}</code></> : <><span className="legal-force-detail-token relation"><span className="material-symbols-outlined">arrow_forward</span></span><small>Relation</small><h3>{selection.edge.label || "Lien juridique"}</h3><p>Cette relation relie deux entites structurelles du dossier et peut etre exploree avec les nœuds associes.</p></>}
+          {selection.kind === "node" ? <><span className="legal-force-detail-token" style={{ backgroundColor: selection.node.type === "argument" ? EVIDENCE_META[evidenceBand(selection.node)].color : NODE_META[selection.node.type].color }}>{NODE_META[selection.node.type].glyph}</span><small>{NODE_META[selection.node.type].label}</small><h3>{selection.node.label}</h3><p>{selection.node.detail || "Cette entite est reliee au dossier par les sources, arguments ou faits disponibles."}</p>{selection.node.type === "argument" ? <div className="legal-force-evidence-detail"><strong>Couverture probatoire: {Number(selection.node.evidence_score || 0)}/100</strong><span>{Number(selection.node.evidence_metrics?.legal_sources || 0)} source(s) juridique(s)</span><span>{Number(selection.node.evidence_metrics?.factual_exhibits || 0)} piece(s) factuelle(s)</span><span>{Number(selection.node.evidence_metrics?.refutations || 0)} contestation(s)</span><small>Ce score mesure la couverture documentaire, pas les chances de succes.</small></div> : null}<code>{selection.node.id}</code></> : <><span className="legal-force-detail-token relation"><span className="material-symbols-outlined">arrow_forward</span></span><small>Relation</small><h3>{selection.edge.label || "Lien juridique"}</h3><p>Cette relation relie deux entites structurelles du dossier et peut etre exploree avec les noeuds associes.</p></>}
         </aside> : null}
       </div>
+      {variant === "full" ? <details className="legal-force-accessible-list"><summary>Explorer le graphe sous forme de liste</summary><div>{visibleGraph.nodes.map((node) => <button key={node.id} onClick={() => { const next = { kind: "node" as const, node }; setSelection(next); selectionControlRef.current(next); }} type="button"><i style={{ backgroundColor: node.type === "argument" ? EVIDENCE_META[evidenceBand(node)].color : NODE_META[node.type].color }} /><span><strong>{node.label}</strong><small>{NODE_META[node.type].label}{node.type === "argument" ? ` - ${Number(node.evidence_score || 0)}/100` : ""}</small></span></button>)}</div></details> : null}
     </section>
   );
 }
