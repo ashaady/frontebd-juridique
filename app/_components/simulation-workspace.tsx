@@ -379,17 +379,28 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
   const [projectionBusy, setProjectionBusy] = useState(false);
   const simulationSpeech = useTtsPlayer(setError);
 
+  const getClerkToken = useCallback(async (): Promise<string> => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const token = await getToken();
+      if (token) return token;
+      if (attempt < 2) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+      }
+    }
+    throw new Error("Session Clerk indisponible. Reconnectez-vous avant de constituer le dossier.");
+  }, [getToken]);
+
   const request = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
-    const token = await getToken();
+    const token = await getClerkToken();
     const headers = buildWorkspaceRequestHeaders(init?.headers, true);
-    if (token) headers.set("Authorization", `Bearer ${token}`);
+    headers.set("Authorization", `Bearer ${token}`);
     const response = await fetch(`${BACKEND_URL}${path}`, { cache: "no-store", ...init, headers });
     if (!response.ok) {
       const payload = await response.json().catch(() => null) as { detail?: string } | null;
       throw new Error(payload?.detail || `Erreur serveur (${response.status}).`);
     }
     return response.json() as Promise<T>;
-  }, [getToken]);
+  }, [getClerkToken]);
 
   useEffect(() => {
     if (!forceNewSimulation) return;
@@ -424,7 +435,7 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
     if (file.size > 20 * 1024 * 1024) {
       throw new Error("Le PDF depasse la taille maximale de 20 Mo.");
     }
-    const token = await getToken();
+    const token = await getClerkToken();
     const headers = buildWorkspaceRequestHeaders(undefined, false);
     if (token) headers.set("Authorization", `Bearer ${token}`);
     const formData = new FormData();
@@ -440,12 +451,12 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
       throw new Error(payload?.detail || `Import du PDF impossible (${response.status}).`);
     }
     return response.json() as Promise<SimulationCase>;
-  }, [getToken]);
+  }, [getClerkToken]);
 
   const downloadPdf = useCallback(async (attachment: SimulationAttachment) => {
     if (!caseData) return;
     try {
-      const token = await getToken();
+      const token = await getClerkToken();
       const headers = buildWorkspaceRequestHeaders(undefined, false);
       if (token) headers.set("Authorization", `Bearer ${token}`);
       const response = await fetch(`${BACKEND_URL}/simulation/cases/${caseData.id}/documents/${attachment.id}`, { headers });
@@ -461,7 +472,7 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Telechargement du PDF impossible.");
     }
-  }, [caseData, getToken]);
+  }, [caseData, getClerkToken]);
 
   const refreshCases = useCallback(async () => {
     if (!isSignedIn) return;

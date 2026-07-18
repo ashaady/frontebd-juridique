@@ -2201,6 +2201,7 @@ export function ChatWorkspace({
     }
     let active = true;
     const loadWorkspace = async () => {
+      setWorkspaceAuthToken(await getToken());
       const [remoteNotes, remoteFiles, remoteConsultations] = await Promise.all([
         readWorkspaceNotesApi(),
         readWorkspaceFilesApi(),
@@ -2236,7 +2237,7 @@ export function ChatWorkspace({
     return () => {
       active = false;
     };
-  }, [initialSessionId, initialStartNewSession, isAuthLoaded, isSignedIn, syncChatSessionUrl]);
+  }, [getToken, initialSessionId, initialStartNewSession, isAuthLoaded, isSignedIn, syncChatSessionUrl]);
 
   useEffect(() => {
     if (!isSignedIn) {
