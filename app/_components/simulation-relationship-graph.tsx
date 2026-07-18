@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 type GraphNodeType = "case" | "actor" | "issue" | "source" | "document" | "argument";
 type EvidenceBand = "non_soutenu" | "faible" | "moyenne" | "forte";
 
-type SimulationGraphNode = {
+export type SimulationGraphNode = {
   id: string;
   label: string;
   type: GraphNodeType;
@@ -40,9 +40,20 @@ type SimulationGraphNode = {
   contested_by_ids?: string[];
 };
 
-type SimulationGraph = {
+export type SimulationGraph = {
   nodes: SimulationGraphNode[];
   edges: { source: string; target: string; label: string; cycle_created?: number }[];
+};
+
+type EgoGraphNode = SimulationGraphNode & { distance: number };
+
+type EgoNetworkProps = {
+  graph: SimulationGraph;
+  centerId: string;
+  pinned: boolean;
+  onClose?: () => void;
+  onTogglePin: (nodeId: string) => void;
+  onFocusNode: (nodeId: string) => void;
 };
 
 type ForceNode = SimulationGraphNode & SimulationNodeDatum;
@@ -137,16 +148,126 @@ function edgeLabelPosition(link: ForceLink, byId: Map<string, ForceNode>): { x: 
   };
 }
 
+function buildEgoNetwork(graph: SimulationGraph, centerId: string, maxNodes = 20): { nodes: EgoGraphNode[]; edges: SimulationGraph["edges"] } {
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  if (!nodeById.has(centerId)) return { nodes: [], edges: [] };
+
+  const adjacency = new Map<string, Set<string>>();
+  graph.edges.forEach((edge) => {
+    if (!nodeById.has(edge.source) || !nodeById.has(edge.target)) return;
+    adjacency.set(edge.source, new Set([...(adjacency.get(edge.source) || []), edge.target]));
+    adjacency.set(edge.target, new Set([...(adjacency.get(edge.target) || []), edge.source]));
+  });
+
+  const distanceById = new Map<string, number>([[centerId, 0]]);
+  const queue = [centerId];
+  while (queue.length) {
+    const currentId = queue.shift() as string;
+    const distance = distanceById.get(currentId) || 0;
+    if (distance >= 2) continue;
+    (adjacency.get(currentId) || new Set<string>()).forEach((neighborId) => {
+      if (distanceById.has(neighborId)) return;
+      distanceById.set(neighborId, distance + 1);
+      queue.push(neighborId);
+    });
+  }
+
+  const orderedIds = [...distanceById.entries()]
+    .sort(([leftId, leftDistance], [rightId, rightDistance]) => {
+      if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+      return (nodeById.get(leftId)?.label || "").localeCompare(nodeById.get(rightId)?.label || "");
+    })
+    .slice(0, maxNodes)
+    .map(([id]) => id);
+  const selectedIds = new Set(orderedIds);
+  return {
+    nodes: orderedIds.map((id) => ({ ...nodeById.get(id) as SimulationGraphNode, distance: distanceById.get(id) || 0 })),
+    edges: graph.edges.filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target))
+  };
+}
+
+function EgoNetwork({ graph, centerId, pinned, onClose, onTogglePin, onFocusNode }: EgoNetworkProps) {
+  const ego = useMemo(() => buildEgoNetwork(graph, centerId), [centerId, graph]);
+  const center = ego.nodes.find((node) => node.id === centerId);
+  const positions = useMemo(() => {
+    const next = new Map<string, { x: number; y: number }>();
+    if (!center) return next;
+    next.set(center.id, { x: 160, y: 112 });
+    ([1, 2] as const).forEach((distance) => {
+      const ring = ego.nodes.filter((node) => node.distance === distance);
+      const radius = distance === 1 ? 55 : 98;
+      ring.forEach((node, index) => {
+        const angle = -Math.PI / 2 + (index / Math.max(1, ring.length)) * Math.PI * 2;
+        next.set(node.id, { x: 160 + Math.cos(angle) * radius, y: 112 + Math.sin(angle) * radius });
+      });
+    });
+    return next;
+  }, [center, ego.nodes]);
+
+  if (!center) return null;
+  const label = NODE_META[center.type]?.label || "Entite";
+
+  return (
+    <section className="legal-force-ego-network" aria-label={`Voisinage de ${center.label}`}>
+      <header>
+        <div>
+          <span className="simulation-eyebrow">Contexte local</span>
+          <h3>{clampLabel(center.label, 42)}</h3>
+          <p>{ego.nodes.length} entites, profondeur maximale de 2 sauts</p>
+        </div>
+        <div className="legal-force-ego-actions">
+          <button aria-pressed={pinned} onClick={() => onTogglePin(center.id)} title={pinned ? "Retirer des voisinages epingles" : "Epingler ce voisinage"} type="button">
+            <span className="material-symbols-outlined">{pinned ? "push_pin" : "push_pin"}</span>
+            {pinned ? "Epingle" : "Epingler"}
+          </button>
+          {onClose ? <button aria-label="Fermer le voisinage" onClick={onClose} title="Fermer" type="button"><span className="material-symbols-outlined">close</span></button> : null}
+        </div>
+      </header>
+      <div className="legal-force-ego-canvas">
+        <svg aria-label={`Sous-graphe autour de ${center.label}`} role="img" viewBox="0 0 320 224">
+          <g className="legal-force-ego-edges">
+            {ego.edges.map((edge, index) => {
+              const source = positions.get(edge.source);
+              const target = positions.get(edge.target);
+              if (!source || !target) return null;
+              return <line key={`${edge.source}-${edge.target}-${index}`} x1={source.x} x2={target.x} y1={source.y} y2={target.y} />;
+            })}
+          </g>
+          <g className="legal-force-ego-nodes">
+            {ego.nodes.map((node) => {
+              const position = positions.get(node.id);
+              if (!position) return null;
+              const color = node.type === "argument" ? EVIDENCE_META[evidenceBand(node)].color : NODE_META[node.type].color;
+              return <g className={`legal-force-ego-node distance-${node.distance} ${node.id === center.id ? "center" : ""}`} key={node.id} onClick={() => onFocusNode(node.id)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onFocusNode(node.id); }} transform={`translate(${position.x},${position.y})`}>
+                <circle className="legal-force-ego-node-aura" r={node.id === center.id ? 21 : 15} />
+                <circle className="legal-force-ego-node-core" fill={color} r={node.id === center.id ? 12 : 8} />
+                <text className="legal-force-ego-node-glyph" textAnchor="middle" dy=".34em">{NODE_META[node.type].glyph}</text>
+                <text className="legal-force-ego-node-label" textAnchor="middle" y={node.id === center.id ? 32 : 25}>{clampLabel(node.label, node.id === center.id ? 22 : 15)}</text>
+                <title>{`${label}: ${node.label} (${node.distance} saut${node.distance > 1 ? "s" : ""})`}</title>
+              </g>;
+            })}
+          </g>
+        </svg>
+      </div>
+      <footer><span><i className="center" /> centre</span><span><i /> voisins directs</span><span><i className="far" /> voisins a 2 sauts</span></footer>
+    </section>
+  );
+}
+
 export function SimulationRelationshipGraph({
   graph,
   isWorking = false,
   variant = "full",
-  focusedNodeId = null
+  focusedNodeId = null,
+  scope = "all",
+  onNodeSelect
 }: {
   graph: SimulationGraph;
   isWorking?: boolean;
   variant?: "full" | "embedded";
   focusedNodeId?: string | null;
+  scope?: "all" | "structure" | "debate";
+  onNodeSelect?: (nodeId: string) => void;
 }) {
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -157,30 +278,42 @@ export function SimulationRelationshipGraph({
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const [hoveredNode, setHoveredNode] = useState<SimulationGraphNode | null>(null);
+  const [egoNodeId, setEgoNodeId] = useState<string | null>(null);
+  const [pinnedEgoNodeIds, setPinnedEgoNodeIds] = useState<string[]>([]);
   const [activeCycle, setActiveCycle] = useState(0);
   const [isReplaying, setIsReplaying] = useState(false);
   const [visibleEvidenceBands, setVisibleEvidenceBands] = useState<Set<EvidenceBand>>(
     () => new Set(Object.keys(EVIDENCE_META) as EvidenceBand[])
   );
 
+  const scopedGraph = useMemo<SimulationGraph>(() => {
+    if (scope === "all") return graph;
+    const allowedTypes = scope === "structure"
+      ? new Set<GraphNodeType>(["case", "issue", "source", "document"])
+      : new Set<GraphNodeType>(["case", "actor", "issue", "argument"]);
+    const nodes = graph.nodes.filter((node) => allowedTypes.has(node.type));
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    return { nodes, edges: graph.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)) };
+  }, [graph, scope]);
+
   const maxCycle = useMemo(() => Math.max(
     0,
-    ...graph.nodes.map((node) => Number(node.cycle_created || 0)),
-    ...graph.edges.map((edge) => Number(edge.cycle_created || 0))
-  ), [graph.edges, graph.nodes]);
+    ...scopedGraph.nodes.map((node) => Number(node.cycle_created || 0)),
+    ...scopedGraph.edges.map((edge) => Number(edge.cycle_created || 0))
+  ), [scopedGraph.edges, scopedGraph.nodes]);
 
-  const visibleNodes = useMemo(() => graph.nodes.filter((node) => {
+  const visibleNodes = useMemo(() => scopedGraph.nodes.filter((node) => {
       if (!NODE_META[node.type] || Number(node.cycle_created || 0) > activeCycle) return false;
       return node.type !== "argument" || visibleEvidenceBands.has(evidenceBand(node));
-    }), [activeCycle, graph.nodes, visibleEvidenceBands]);
+    }), [activeCycle, scopedGraph.nodes, visibleEvidenceBands]);
 
   const visibleGraph = useMemo<SimulationGraph>(() => {
     const nodeIds = new Set(visibleNodes.map((node) => node.id));
     return {
       nodes: visibleNodes,
-      edges: graph.edges.filter((edge) => Number(edge.cycle_created || 0) <= activeCycle && nodeIds.has(edge.source) && nodeIds.has(edge.target))
+      edges: scopedGraph.edges.filter((edge) => Number(edge.cycle_created || 0) <= activeCycle && nodeIds.has(edge.source) && nodeIds.has(edge.target))
     };
-  }, [activeCycle, graph.edges, visibleNodes]);
+  }, [activeCycle, scopedGraph.edges, visibleNodes]);
 
   useEffect(() => {
     if (!isReplaying) setActiveCycle(maxCycle);
@@ -199,6 +332,23 @@ export function SimulationRelationshipGraph({
   const clearSelection = useCallback(() => {
     setSelection(null);
     selectionControlRef.current(null);
+  }, []);
+
+  const focusEgoNode = useCallback((nodeId: string) => {
+    const node = visibleGraph.nodes.find((item) => item.id === nodeId);
+    if (!node) return;
+    const next = { kind: "node" as const, node };
+    setSelection(next);
+    selectionControlRef.current(next);
+    onNodeSelect?.(nodeId);
+  }, [onNodeSelect, visibleGraph.nodes]);
+
+  const openEgoNetwork = useCallback((node: SimulationGraphNode) => {
+    setEgoNodeId(node.id);
+  }, []);
+
+  const togglePinnedEgo = useCallback((nodeId: string) => {
+    setPinnedEgoNodeIds((current) => current.includes(nodeId) ? current.filter((id) => id !== nodeId) : [...current, nodeId].slice(-3));
   }, []);
 
   useEffect(() => {
@@ -369,12 +519,14 @@ export function SimulationRelationshipGraph({
       const next = { kind: "node" as const, node: { ...node } };
       setSelection(next);
       applySelection(next);
+      onNodeSelect?.(node.id);
     }).on("keydown", (event, node) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       const next = { kind: "node" as const, node: { ...node } };
       setSelection(next);
       applySelection(next);
+      onNodeSelect?.(node.id);
     }).on("mouseenter", (_, node) => setHoveredNode({ ...node }))
       .on("mouseleave", () => setHoveredNode(null));
     pathSelection.on("click", (event, link) => {
@@ -435,7 +587,7 @@ export function SimulationRelationshipGraph({
       svg.on(".zoom", null).on("click", null);
       selectionControlRef.current = () => undefined;
     };
-  }, [activeCycle, clearSelection, dimensions, isWorking, layoutVersion, showEdgeLabels, visibleGraph]);
+  }, [activeCycle, clearSelection, dimensions, isWorking, layoutVersion, onNodeSelect, showEdgeLabels, visibleGraph]);
 
   useEffect(() => {
     if (!focusedNodeId) return;
@@ -479,7 +631,7 @@ export function SimulationRelationshipGraph({
       <header className="legal-force-graph-toolbar">
         <div>
           <span className="simulation-eyebrow">{variant === "embedded" ? "Graphe vivant" : "Exploration relationnelle"}</span>
-          <h2>{variant === "embedded" ? "Relations du dossier" : "Graphe juridique"}</h2>
+          <h2>{scope === "structure" ? "Structure juridique" : scope === "debate" ? "Debat contradictoire" : variant === "embedded" ? "Relations du dossier" : "Graphe juridique"}</h2>
           <p>{visibleGraph.nodes.length} entites et {visibleGraph.edges.length} relations. {isWorking ? "Mise a jour apres chaque intervention." : "Dernier etat consolide."}</p>
         </div>
         <div className="legal-force-graph-controls">
@@ -510,12 +662,13 @@ export function SimulationRelationshipGraph({
         <div className="legal-force-graph-legend" aria-label="Legende du graphe">
           {(Object.keys(NODE_META) as GraphNodeType[]).map((type) => <span key={type}><i style={{ backgroundColor: NODE_META[type].color }} />{NODE_META[type].label}</span>)}
         </div>
-        {hoveredNode ? <div className="legal-force-hover-card" role="tooltip"><strong>{hoveredNode.label}</strong><span>{NODE_META[hoveredNode.type].label}</span>{hoveredNode.type === "argument" ? <><b style={{ color: EVIDENCE_META[evidenceBand(hoveredNode)].color }}>{Number(hoveredNode.evidence_score || 0)}/100</b><small>{Number(hoveredNode.evidence_metrics?.legal_sources || 0)} source(s), {Number(hoveredNode.evidence_metrics?.factual_exhibits || 0)} piece(s), {Number(hoveredNode.evidence_metrics?.refutations || 0)} contestation(s)</small></> : null}</div> : null}
+        {hoveredNode ? <div className="legal-force-hover-card" role="tooltip"><strong>{hoveredNode.label}</strong><span>{NODE_META[hoveredNode.type].label}</span>{hoveredNode.type === "argument" ? <><b style={{ color: EVIDENCE_META[evidenceBand(hoveredNode)].color }}>{Number(hoveredNode.evidence_score || 0)}/100</b><small>{Number(hoveredNode.evidence_metrics?.legal_sources || 0)} source(s), {Number(hoveredNode.evidence_metrics?.factual_exhibits || 0)} piece(s), {Number(hoveredNode.evidence_metrics?.refutations || 0)} contestation(s)</small></> : null}<button onClick={() => openEgoNetwork(hoveredNode)} type="button"><span className="material-symbols-outlined">hub</span> Ouvrir le voisinage</button></div> : null}
         {selection ? <aside className="legal-force-graph-detail" aria-live="polite">
           <button aria-label="Fermer le detail" onClick={clearSelection} type="button"><span className="material-symbols-outlined">close</span></button>
-          {selection.kind === "node" ? <><span className="legal-force-detail-token" style={{ backgroundColor: selection.node.type === "argument" ? EVIDENCE_META[evidenceBand(selection.node)].color : NODE_META[selection.node.type].color }}>{NODE_META[selection.node.type].glyph}</span><small>{NODE_META[selection.node.type].label}</small><h3>{selection.node.label}</h3><p>{selection.node.detail || "Cette entite est reliee au dossier par les sources, arguments ou faits disponibles."}</p>{selection.node.type === "argument" ? <div className="legal-force-evidence-detail"><strong>Couverture probatoire: {Number(selection.node.evidence_score || 0)}/100</strong><span>{Number(selection.node.evidence_metrics?.legal_sources || 0)} source(s) juridique(s)</span><span>{Number(selection.node.evidence_metrics?.factual_exhibits || 0)} piece(s) factuelle(s)</span><span>{Number(selection.node.evidence_metrics?.refutations || 0)} contestation(s)</span><small>Ce score mesure la couverture documentaire, pas les chances de succes.</small></div> : null}<code>{selection.node.id}</code></> : <><span className="legal-force-detail-token relation"><span className="material-symbols-outlined">arrow_forward</span></span><small>Relation</small><h3>{selection.edge.label || "Lien juridique"}</h3><p>Cette relation relie deux entites structurelles du dossier et peut etre exploree avec les noeuds associes.</p></>}
+          {selection.kind === "node" ? <><span className="legal-force-detail-token" style={{ backgroundColor: selection.node.type === "argument" ? EVIDENCE_META[evidenceBand(selection.node)].color : NODE_META[selection.node.type].color }}>{NODE_META[selection.node.type].glyph}</span><small>{NODE_META[selection.node.type].label}</small><h3>{selection.node.label}</h3><p>{selection.node.detail || "Cette entite est reliee au dossier par les sources, arguments ou faits disponibles."}</p>{selection.node.type === "argument" ? <div className="legal-force-evidence-detail"><strong>Couverture probatoire: {Number(selection.node.evidence_score || 0)}/100</strong><span>{Number(selection.node.evidence_metrics?.legal_sources || 0)} source(s) juridique(s)</span><span>{Number(selection.node.evidence_metrics?.factual_exhibits || 0)} piece(s) factuelle(s)</span><span>{Number(selection.node.evidence_metrics?.refutations || 0)} contestation(s)</span><small>Ce score mesure la couverture documentaire, pas les chances de succes.</small></div> : null}<button className="legal-force-open-ego" onClick={() => openEgoNetwork(selection.node)} type="button"><span className="material-symbols-outlined">hub</span> Explorer le voisinage</button><code>{selection.node.id}</code></> : <><span className="legal-force-detail-token relation"><span className="material-symbols-outlined">arrow_forward</span></span><small>Relation</small><h3>{selection.edge.label || "Lien juridique"}</h3><p>Cette relation relie deux entites structurelles du dossier et peut etre exploree avec les noeuds associes.</p></>}
         </aside> : null}
       </div>
+      {egoNodeId ? <div className="legal-force-ego-overlay" role="dialog" aria-label="Exploration du voisinage"><div className="legal-force-ego-dialog"><header><div><span className="simulation-eyebrow">Exploration contextuelle</span><h2>Voisinages du graphe</h2><p>Les liens sont calcules depuis le graphe courant, sans nouvel appel API.</p></div><button aria-label="Fermer les voisinages" onClick={() => setEgoNodeId(null)} type="button"><span className="material-symbols-outlined">close</span></button></header><div className="legal-force-ego-grid">{[egoNodeId, ...pinnedEgoNodeIds.filter((id) => id !== egoNodeId)].map((nodeId) => <EgoNetwork centerId={nodeId} graph={visibleGraph} key={nodeId} onClose={pinnedEgoNodeIds.includes(nodeId) ? undefined : () => setEgoNodeId(null)} onFocusNode={focusEgoNode} onTogglePin={togglePinnedEgo} pinned={pinnedEgoNodeIds.includes(nodeId)} />)}</div></div></div> : null}
       {variant === "full" ? <details className="legal-force-accessible-list"><summary>Explorer le graphe sous forme de liste</summary><div>{visibleGraph.nodes.map((node) => <button key={node.id} onClick={() => { const next = { kind: "node" as const, node }; setSelection(next); selectionControlRef.current(next); }} type="button"><i style={{ backgroundColor: node.type === "argument" ? EVIDENCE_META[evidenceBand(node)].color : NODE_META[node.type].color }} /><span><strong>{node.label}</strong><small>{NODE_META[node.type].label}{node.type === "argument" ? ` - ${Number(node.evidence_score || 0)}/100` : ""}</small></span></button>)}</div></details> : null}
     </section>
   );
