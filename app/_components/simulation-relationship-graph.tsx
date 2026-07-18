@@ -2,14 +2,6 @@
 
 import {
   drag,
-  forceCenter,
-  forceCollide,
-  forceLink,
-  forceManyBody,
-  forceRadial,
-  forceSimulation,
-  forceX,
-  forceY,
   select,
   zoom,
   zoomIdentity,
@@ -80,13 +72,13 @@ const NODE_META: Record<GraphNodeType, { label: string; color: string; glyph: st
   argument: { label: "Argument", color: "#be123c", glyph: "A" }
 };
 
-const NODE_RING: Record<GraphNodeType, number> = {
-  case: 0,
-  actor: 1,
-  issue: 1,
-  source: 2,
-  document: 2,
-  argument: 3
+const GRAPH_COLUMN_LABELS: Record<string, string> = {
+  case: "Dossier",
+  actor: "Acteurs",
+  issue: "Questions de droit",
+  argument: "Arguments",
+  source: "Textes et decisions",
+  document: "Pieces du dossier"
 };
 
 const EVIDENCE_META: Record<EvidenceBand, { label: string; color: string }> = {
@@ -275,7 +267,7 @@ export function SimulationRelationshipGraph({
   const selectionControlRef = useRef<GraphSelectionControl>(() => undefined);
   const hoverClearTimerRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({ width: 920, height: 590 });
-  const [showEdgeLabels, setShowEdgeLabels] = useState(variant === "full");
+  const [showEdgeLabels, setShowEdgeLabels] = useState(false);
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const [hoveredNode, setHoveredNode] = useState<SimulationGraphNode | null>(null);
@@ -286,6 +278,12 @@ export function SimulationRelationshipGraph({
   const [visibleEvidenceBands, setVisibleEvidenceBands] = useState<Set<EvidenceBand>>(
     () => new Set(Object.keys(EVIDENCE_META) as EvidenceBand[])
   );
+
+  const columnTypes = useMemo<GraphNodeType[]>(() => {
+    if (scope === "structure") return ["case", "issue", "source", "document"];
+    if (scope === "debate") return ["case", "actor", "issue", "argument"];
+    return ["case", "actor", "issue", "argument", "source"];
+  }, [scope]);
 
   const scopedGraph = useMemo<SimulationGraph>(() => {
     if (scope === "all") return graph;
@@ -387,30 +385,27 @@ export function SimulationRelationshipGraph({
     const { width, height } = dimensions;
     const centerX = width / 2;
     const centerY = height / 2;
-    const maxRadius = Math.max(160, Math.min(width, height) * (variant === "embedded" ? 0.36 : 0.39));
-    const ringRadius: Record<number, number> = {
-      0: 0,
-      1: maxRadius * 0.42,
-      2: maxRadius * 0.72,
-      3: maxRadius
-    };
-    const groupedNodes = new Map<number, SimulationGraphNode[]>();
+    const horizontalPadding = Math.min(92, Math.max(58, width * 0.075));
+    const columnCount = Math.max(1, columnTypes.length);
+    const columnStep = columnCount === 1 ? 0 : (width - horizontalPadding * 2) / (columnCount - 1);
+    const topPadding = 76;
+    const bottomPadding = 84;
+    const groupedNodes = new Map<GraphNodeType, SimulationGraphNode[]>();
     visibleGraph.nodes.forEach((node) => {
-      const ring = NODE_RING[node.type] ?? 2;
-      groupedNodes.set(ring, [...(groupedNodes.get(ring) || []), node]);
+      groupedNodes.set(node.type, [...(groupedNodes.get(node.type) || []), node]);
     });
     const nodeById = new Map<string, ForceNode>();
     const nodes: ForceNode[] = visibleGraph.nodes.map((node) => {
-      const ring = NODE_RING[node.type] ?? 2;
-      const peers = groupedNodes.get(ring) || [node];
+      const typeColumn = node.type === "document" && !columnTypes.includes("document") ? "source" : node.type;
+      const column = Math.max(0, columnTypes.indexOf(typeColumn));
+      const peers = groupedNodes.get(node.type) || [node];
       const peerIndex = Math.max(0, peers.findIndex((item) => item.id === node.id));
-      const angleOffset = ring === 1 ? -Math.PI / 2 : ring === 2 ? -Math.PI / 2.7 : -Math.PI / 2.2;
-      const angle = angleOffset + (peerIndex / Math.max(1, peers.length)) * Math.PI * 2;
-      const radius = ringRadius[ring] || ringRadius[2];
+      const peerStep = (height - topPadding - bottomPadding) / Math.max(1, peers.length - 1);
+      const y = peers.length === 1 ? centerY : topPadding + peerIndex * peerStep;
       const forceNode: ForceNode = {
         ...node,
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius
+        x: columnCount === 1 ? centerX : horizontalPadding + column * columnStep,
+        y
       };
       nodeById.set(forceNode.id, forceNode);
       return forceNode;
@@ -441,9 +436,28 @@ export function SimulationRelationshipGraph({
       .attr("fill", "#9ca3af");
 
     const viewport = svg.append("g").attr("class", "legal-force-viewport");
+    const laneLayer = viewport.append("g").attr("class", "legal-force-lanes");
     const edgeLayer = viewport.append("g").attr("class", "legal-force-edges");
     const labelLayer = viewport.append("g").attr("class", "legal-force-edge-labels");
     const nodeLayer = viewport.append("g").attr("class", "legal-force-nodes");
+
+    const laneWidth = Math.max(112, columnStep * 0.82);
+    columnTypes.forEach((type, index) => {
+      const x = columnCount === 1 ? centerX : horizontalPadding + index * columnStep;
+      const lane = laneLayer.append("g").attr("class", `legal-force-lane lane-${type}`);
+      lane.append("rect")
+        .attr("x", x - laneWidth / 2)
+        .attr("y", 18)
+        .attr("width", laneWidth)
+        .attr("height", Math.max(90, height - 38))
+        .attr("rx", 16);
+      const laneLabel = type === "source" && !columnTypes.includes("document") ? "Textes et pieces" : GRAPH_COLUMN_LABELS[type];
+      lane.append("text")
+        .attr("x", x)
+        .attr("y", 42)
+        .attr("text-anchor", "middle")
+        .text(laneLabel);
+    });
 
     const pathSelection = edgeLayer.selectAll<SVGPathElement, ForceLink>("path")
       .data(links, (link) => link.id)
@@ -487,20 +501,6 @@ export function SimulationRelationshipGraph({
     nodeSelection.append("text").attr("class", "legal-force-node-glyph").attr("text-anchor", "middle").attr("dy", "0.34em").text((node) => NODE_META[node.type].glyph);
     nodeSelection.append("text").attr("class", "legal-force-node-label").attr("text-anchor", "middle").attr("dy", (node) => node.type === "case" ? 39 : 31).text((node) => clampLabel(node.label, node.type === "case" ? 30 : 23));
     nodeSelection.append("title").text((node) => `${NODE_META[node.type].label}: ${node.label}${node.detail ? ` - ${node.detail}` : ""}`);
-
-    const simulation = forceSimulation<ForceNode>(nodes)
-      .force("link", forceLink<ForceNode, ForceLink>(links).id((node) => node.id).distance((link) => link.label.length > 28 ? 132 : 108).strength(0.46))
-      .force("charge", forceManyBody<ForceNode>().strength((node) => node.type === "case" ? -320 : -210))
-      .force("center", forceCenter(centerX, centerY))
-      .force("collision", forceCollide<ForceNode>().radius((node) => node.type === "case" ? 66 : 48).strength(0.94))
-      .force("ring", forceRadial<ForceNode>((node) => ringRadius[NODE_RING[node.type] ?? 2] || ringRadius[2], centerX, centerY).strength(0.72))
-      .force("x", forceX<ForceNode>((node) => {
-        if (node.type === "case") return centerX;
-        if (node.type === "actor") return centerX * 0.82;
-        if (node.type === "issue") return centerX * 1.18;
-        return centerX;
-      }).strength(0.055))
-      .force("y", forceY<ForceNode>(centerY).strength(0.04));
 
     const applySelection = (next: GraphSelection | null) => {
       const selectedNodeId = next?.kind === "node" ? next.node.id : null;
@@ -554,20 +554,15 @@ export function SimulationRelationshipGraph({
     });
 
     const dragBehaviour = drag<SVGGElement, ForceNode>()
-      .on("start", (event, node) => {
-        if (!event.active) simulation.alphaTarget(0.28).restart();
-        node.fx = node.x;
-        node.fy = node.y;
-      })
+      .on("start", (_, node) => { node.fx = node.x; node.fy = node.y; })
       .on("drag", (event, node) => {
         node.fx = event.x;
         node.fy = event.y;
+        node.x = event.x;
+        node.y = event.y;
+        update();
       })
-      .on("end", (event, node) => {
-        if (!event.active) simulation.alphaTarget(0);
-        node.fx = null;
-        node.fy = null;
-      });
+      .on("end", (_, node) => { node.fx = null; node.fy = null; });
     nodeSelection.call(dragBehaviour);
 
     const update = () => {
@@ -578,7 +573,6 @@ export function SimulationRelationshipGraph({
       });
       nodeSelection.attr("transform", (node) => `translate(${node.x || width / 2},${node.y || height / 2})`);
     };
-    simulation.on("tick", update);
     update();
 
     nodeSelection.style("opacity", 0).attr("transform", `translate(${width / 2},${height / 2})`)
@@ -594,11 +588,10 @@ export function SimulationRelationshipGraph({
     };
 
     return () => {
-      simulation.stop();
       svg.on(".zoom", null).on("click", null);
       selectionControlRef.current = () => undefined;
     };
-  }, [activeCycle, clearSelection, dimensions, isWorking, keepHoverCard, layoutVersion, onNodeSelect, scheduleHoverCardClose, showEdgeLabels, visibleGraph]);
+  }, [activeCycle, clearSelection, columnTypes, dimensions, isWorking, keepHoverCard, layoutVersion, onNodeSelect, scheduleHoverCardClose, showEdgeLabels, visibleGraph]);
 
   useEffect(() => {
     if (!focusedNodeId) return;
@@ -643,7 +636,7 @@ export function SimulationRelationshipGraph({
         <div>
           <span className="simulation-eyebrow">Carte interactive</span>
           <h2>{scope === "structure" ? "Textes et pieces du dossier" : scope === "debate" ? "Personnes et arguments" : "Vue d'ensemble du dossier"}</h2>
-          <p>{visibleGraph.nodes.length} elements relies par {visibleGraph.edges.length} liens. {isWorking ? "La carte se complete pendant la simulation." : "La carte montre le dernier etat du dossier."}</p>
+          <p>{visibleGraph.nodes.length} elements et {visibleGraph.edges.length} liens. Lisez la carte de gauche a droite. {isWorking ? "Elle se complete pendant la simulation." : "Elle montre le dernier etat du dossier."}</p>
         </div>
         <div className="legal-force-graph-controls">
           <label className="legal-force-label-toggle" title="Afficher les mots qui expliquent chaque ligne"><input checked={showEdgeLabels} onChange={(event) => setShowEdgeLabels(event.target.checked)} type="checkbox" /><span>Expliquer les lignes</span></label>
@@ -668,7 +661,7 @@ export function SimulationRelationshipGraph({
       </div>
       <div className="legal-force-graph-body">
         <svg aria-label="Graphe relationnel juridique interactif" ref={svgRef} role="img" />
-        <p className="legal-force-graph-hint"><span className="material-symbols-outlined">touch_app</span> Cliquez sur un rond pour lire son role. Deplacez les ronds pour aerer la carte et utilisez la molette pour zoomer.</p>
+        <p className="legal-force-graph-hint"><span className="material-symbols-outlined">touch_app</span> Lisez de gauche a droite. Cliquez sur un rond pour afficher ses liens. Deplacez un rond si besoin.</p>
         {isWorking ? <div className="legal-force-graph-processing"><i /><span>Analyse des relations en cours</span></div> : null}
         <div className="legal-force-graph-legend" aria-label="Legende du graphe">
           {(Object.keys(NODE_META) as GraphNodeType[]).map((type) => <span key={type}><i style={{ backgroundColor: NODE_META[type].color }} />{NODE_META[type].label}</span>)}
