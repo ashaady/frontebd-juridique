@@ -273,6 +273,7 @@ export function SimulationRelationshipGraph({
   const svgRef = useRef<SVGSVGElement | null>(null);
   const resetViewRef = useRef<() => void>(() => undefined);
   const selectionControlRef = useRef<GraphSelectionControl>(() => undefined);
+  const hoverClearTimerRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({ width: 920, height: 590 });
   const [showEdgeLabels, setShowEdgeLabels] = useState(variant === "full");
   const [layoutVersion, setLayoutVersion] = useState(0);
@@ -350,6 +351,16 @@ export function SimulationRelationshipGraph({
   const togglePinnedEgo = useCallback((nodeId: string) => {
     setPinnedEgoNodeIds((current) => current.includes(nodeId) ? current.filter((id) => id !== nodeId) : [...current, nodeId].slice(-3));
   }, []);
+
+  const keepHoverCard = useCallback(() => {
+    if (hoverClearTimerRef.current !== null) window.clearTimeout(hoverClearTimerRef.current);
+    hoverClearTimerRef.current = null;
+  }, []);
+
+  const scheduleHoverCardClose = useCallback(() => {
+    keepHoverCard();
+    hoverClearTimerRef.current = window.setTimeout(() => setHoveredNode(null), 180);
+  }, [keepHoverCard]);
 
   useEffect(() => {
     const frame = graphFrameRef.current;
@@ -527,8 +538,8 @@ export function SimulationRelationshipGraph({
       setSelection(next);
       applySelection(next);
       onNodeSelect?.(node.id);
-    }).on("mouseenter", (_, node) => setHoveredNode({ ...node }))
-      .on("mouseleave", () => setHoveredNode(null));
+    }).on("mouseenter", (_, node) => { keepHoverCard(); setHoveredNode({ ...node }); })
+      .on("mouseleave", () => scheduleHoverCardClose());
     pathSelection.on("click", (event, link) => {
       event.stopPropagation();
       const next = { kind: "edge" as const, edge: { source: String(endpointNode(link.source, nodeById)?.id || link.source), target: String(endpointNode(link.target, nodeById)?.id || link.target), label: link.label } };
@@ -587,7 +598,7 @@ export function SimulationRelationshipGraph({
       svg.on(".zoom", null).on("click", null);
       selectionControlRef.current = () => undefined;
     };
-  }, [activeCycle, clearSelection, dimensions, isWorking, layoutVersion, onNodeSelect, showEdgeLabels, visibleGraph]);
+  }, [activeCycle, clearSelection, dimensions, isWorking, keepHoverCard, layoutVersion, onNodeSelect, scheduleHoverCardClose, showEdgeLabels, visibleGraph]);
 
   useEffect(() => {
     if (!focusedNodeId) return;
@@ -662,7 +673,7 @@ export function SimulationRelationshipGraph({
         <div className="legal-force-graph-legend" aria-label="Legende du graphe">
           {(Object.keys(NODE_META) as GraphNodeType[]).map((type) => <span key={type}><i style={{ backgroundColor: NODE_META[type].color }} />{NODE_META[type].label}</span>)}
         </div>
-        {hoveredNode ? <div className="legal-force-hover-card" role="tooltip"><strong>{hoveredNode.label}</strong><span>{NODE_META[hoveredNode.type].label}</span>{hoveredNode.type === "argument" ? <><b style={{ color: EVIDENCE_META[evidenceBand(hoveredNode)].color }}>{Number(hoveredNode.evidence_score || 0)}/100</b><small>{Number(hoveredNode.evidence_metrics?.legal_sources || 0)} source(s), {Number(hoveredNode.evidence_metrics?.factual_exhibits || 0)} piece(s), {Number(hoveredNode.evidence_metrics?.refutations || 0)} contestation(s)</small></> : null}<button onClick={() => openEgoNetwork(hoveredNode)} type="button"><span className="material-symbols-outlined">hub</span> Ouvrir le voisinage</button></div> : null}
+        {hoveredNode ? <div className="legal-force-hover-card" onMouseEnter={keepHoverCard} onMouseLeave={scheduleHoverCardClose} role="tooltip"><strong>{hoveredNode.label}</strong><span>{NODE_META[hoveredNode.type].label}</span>{hoveredNode.type === "argument" ? <><b style={{ color: EVIDENCE_META[evidenceBand(hoveredNode)].color }}>{Number(hoveredNode.evidence_score || 0)}/100</b><small>{Number(hoveredNode.evidence_metrics?.legal_sources || 0)} source(s), {Number(hoveredNode.evidence_metrics?.factual_exhibits || 0)} piece(s), {Number(hoveredNode.evidence_metrics?.refutations || 0)} contestation(s)</small></> : null}<button onClick={() => openEgoNetwork(hoveredNode)} type="button"><span className="material-symbols-outlined">hub</span> Ouvrir le voisinage</button></div> : null}
         {selection ? <aside className="legal-force-graph-detail" aria-live="polite">
           <button aria-label="Fermer le detail" onClick={clearSelection} type="button"><span className="material-symbols-outlined">close</span></button>
           {selection.kind === "node" ? <><span className="legal-force-detail-token" style={{ backgroundColor: selection.node.type === "argument" ? EVIDENCE_META[evidenceBand(selection.node)].color : NODE_META[selection.node.type].color }}>{NODE_META[selection.node.type].glyph}</span><small>{NODE_META[selection.node.type].label}</small><h3>{selection.node.label}</h3><p>{selection.node.detail || "Cette entite est reliee au dossier par les sources, arguments ou faits disponibles."}</p>{selection.node.type === "argument" ? <div className="legal-force-evidence-detail"><strong>Couverture probatoire: {Number(selection.node.evidence_score || 0)}/100</strong><span>{Number(selection.node.evidence_metrics?.legal_sources || 0)} source(s) juridique(s)</span><span>{Number(selection.node.evidence_metrics?.factual_exhibits || 0)} piece(s) factuelle(s)</span><span>{Number(selection.node.evidence_metrics?.refutations || 0)} contestation(s)</span><small>Ce score mesure la couverture documentaire, pas les chances de succes.</small></div> : null}<button className="legal-force-open-ego" onClick={() => openEgoNetwork(selection.node)} type="button"><span className="material-symbols-outlined">hub</span> Explorer le voisinage</button><code>{selection.node.id}</code></> : <><span className="legal-force-detail-token relation"><span className="material-symbols-outlined">arrow_forward</span></span><small>Relation</small><h3>{selection.edge.label || "Lien juridique"}</h3><p>Cette relation relie deux entites structurelles du dossier et peut etre exploree avec les noeuds associes.</p></>}
