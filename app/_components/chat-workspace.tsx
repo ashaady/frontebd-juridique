@@ -118,6 +118,7 @@ type ChatWorkspaceProps = {
   autoOpenActGenerator?: boolean;
   initialActTemplateId?: string;
   initialStartNewSession?: boolean;
+  initialSessionId?: string;
 };
 
 type RightPanelTab = "workspace" | "notes" | "files";
@@ -973,6 +974,33 @@ function parseSessionPayload(answer: string): PersistedSessionPayload | null {
   }
 }
 
+function restoreConsultationTurns(session: ConsultationRecord): Turn[] {
+  const parsed = parseSessionPayload(session.answer);
+  if (parsed?.turns?.length) {
+    return parsed.turns;
+  }
+
+  const fallbackQuestion = String(session.question ?? "").trim();
+  const fallbackAnswer = String(session.answer ?? "").trim();
+  if (!fallbackQuestion && !fallbackAnswer) {
+    return [];
+  }
+
+  return [
+    {
+      id: `turn-restored-${Date.now()}`,
+      question: fallbackQuestion || "Question",
+      displayQuestion: fallbackQuestion || "Question",
+      answer: fallbackAnswer,
+      reasoning: "",
+      status: session.status === "error" ? "error" : "done",
+      ragSources: [],
+      ragNote: String(session.ragNote ?? ""),
+      finishReason: String(session.finishReason ?? ""),
+    },
+  ];
+}
+
 function consultationTitle(record: ConsultationRecord): string {
   const direct = String(record.question ?? "").trim();
   if (direct && !/^session du/i.test(direct)) {
@@ -1599,6 +1627,7 @@ export function ChatWorkspace({
   autoOpenActGenerator = false,
   initialActTemplateId = "",
   initialStartNewSession = false,
+  initialSessionId = "",
 }: ChatWorkspaceProps) {
   const router = useRouter();
   const { getToken, isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
@@ -1607,6 +1636,7 @@ export function ChatWorkspace({
   const [sessionHistory, setSessionHistory] = useState<ConsultationRecord[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>(() => `session-${Date.now()}`);
   const [activeSessionCreatedAt, setActiveSessionCreatedAt] = useState<string>(() => new Date().toISOString());
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [input, setInput] = useState<string>("");
   const [pendingComposerFiles, setPendingComposerFiles] = useState<File[]>([]);
   const [pendingComposerFileIdsByKey, setPendingComposerFileIdsByKey] = useState<Record<string, string>>({});
@@ -1648,6 +1678,22 @@ export function ChatWorkspace({
   const [globalError, setGlobalError] = useState<string>("");
   const [uiMessage, setUiMessage] = useState<string>("");
   const chatSpeech = useTtsPlayer(setGlobalError);
+  const syncChatSessionUrl = useCallback((sessionId: string | null) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    if (sessionId) {
+      url.pathname = "/chat";
+      url.searchParams.delete("q");
+      url.searchParams.delete("new");
+      url.searchParams.set("session", sessionId);
+    } else {
+      url.searchParams.delete("session");
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", nextUrl || "/chat");
+  }, []);
   const abortRef = useRef<AbortController | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
@@ -2150,6 +2196,7 @@ export function ChatWorkspace({
       setNotes("");
       setWorkspaceFiles([]);
       setSessionHistory([]);
+      setIsSessionHydrated(false);
       return;
     }
     let active = true;
@@ -2162,15 +2209,34 @@ export function ChatWorkspace({
       if (!active) {
         return;
       }
+      const storedSessionId = window.localStorage.getItem(ACTIVE_CHAT_SESSION_STORAGE_KEY) ?? "";
+      const requestedSessionIds = initialStartNewSession
+        ? []
+        : [initialSessionId.trim(), storedSessionId.trim()].filter((value, index, values) =>
+            value.length > 0 && values.indexOf(value) === index
+          );
+      const restoredSession = requestedSessionIds
+        .map((sessionId) => remoteConsultations.find((session) => session.id === sessionId))
+        .find((session): session is ConsultationRecord => Boolean(session));
+
       setNotes(remoteNotes);
       setWorkspaceFiles(remoteFiles);
       setSessionHistory(remoteConsultations);
+      if (restoredSession) {
+        const restoredTurns = restoreConsultationTurns(restoredSession);
+        setActiveSessionId(restoredSession.id);
+        setActiveSessionCreatedAt(restoredSession.createdAt);
+        setTurns(restoredTurns);
+        setWorkspaceSelectedTurnId(restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1].id : null);
+        syncChatSessionUrl(restoredSession.id);
+      }
+      setIsSessionHydrated(true);
     };
     void loadWorkspace();
     return () => {
       active = false;
     };
-  }, [isAuthLoaded, isSignedIn]);
+  }, [initialSessionId, initialStartNewSession, isAuthLoaded, isSignedIn, syncChatSessionUrl]);
 
   useEffect(() => {
     if (!isSignedIn) {
@@ -2219,7 +2285,7 @@ export function ChatWorkspace({
   }, []);
 
   useEffect(() => {
-    if (!isSignedIn) {
+    if (!isSignedIn || !isSessionHydrated) {
       return;
     }
     const finalizedTurns = turns.filter((turn) => {
@@ -2254,6 +2320,7 @@ export function ChatWorkspace({
       return;
     }
     persistedSessionFingerprintRef.current.set(activeSessionId, fingerprint);
+    syncChatSessionUrl(activeSessionId);
     void upsertConsultationApi({
       id: activeSessionId,
       question: sessionTitle,
@@ -2269,7 +2336,7 @@ export function ChatWorkspace({
     }).catch(() => {
       // Ignore sidebar sync failures to avoid blocking chat.
     });
-  }, [activeSessionCreatedAt, activeSessionId, isSignedIn, turns]);
+  }, [activeSessionCreatedAt, activeSessionId, isSessionHydrated, isSignedIn, syncChatSessionUrl, turns]);
 
   const sendQuestion = useCallback(async (question: string, options?: SendQuestionOptions) => {
     const trimmedQuestion = question.trim();
@@ -2501,11 +2568,12 @@ export function ChatWorkspace({
       return;
     }
     const url = new URL(window.location.href);
-    if (!url.searchParams.has("q") && !url.searchParams.has("new")) {
+    if (!url.searchParams.has("q") && !url.searchParams.has("new") && !url.searchParams.has("session")) {
       return;
     }
     url.searchParams.delete("q");
     url.searchParams.delete("new");
+    url.searchParams.delete("session");
     const cleanedUrl = `${url.pathname}${url.search}${url.hash}`;
     window.history.replaceState(window.history.state, "", cleanedUrl || "/chat");
   }, []);
@@ -2859,33 +2927,12 @@ export function ChatWorkspace({
     isUploadingComposerFilesRef.current = false;
     setIsUploadingComposerFiles(false);
 
-    const parsed = parseSessionPayload(session.answer);
-    let restoredTurns: Turn[] = [];
-    if (parsed?.turns?.length) {
-      restoredTurns = parsed.turns;
-    } else {
-      const fallbackQuestion = String(session.question ?? "").trim();
-      const fallbackAnswer = String(session.answer ?? "").trim();
-      if (fallbackQuestion || fallbackAnswer) {
-        restoredTurns = [
-          {
-            id: `turn-restored-${Date.now()}`,
-            question: fallbackQuestion || "Question",
-            displayQuestion: fallbackQuestion || "Question",
-            answer: fallbackAnswer,
-            reasoning: "",
-            status: session.status === "error" ? "error" : "done",
-            ragSources: [],
-            ragNote: String(session.ragNote ?? ""),
-            finishReason: String(session.finishReason ?? ""),
-          },
-        ];
-      }
-    }
+    const restoredTurns = restoreConsultationTurns(session);
 
     setActiveSessionId(session.id);
     setActiveSessionCreatedAt(session.createdAt);
     setTurns(restoredTurns);
+    syncChatSessionUrl(session.id);
     setInput("");
     setPendingComposerFiles([]);
     setPendingComposerFileIdsByKey({});
@@ -2894,17 +2941,17 @@ export function ChatWorkspace({
     setIsMobileRightPanelOpen(false);
     setWorkspaceSelectedTurnId(restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1].id : null);
     pushUiMessage("Session chargee.");
-  }, [pushUiMessage, stopVoiceCapture]);
+  }, [pushUiMessage, stopVoiceCapture, syncChatSessionUrl]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
-    if (!activeSessionId) {
+    if (!isSessionHydrated || !activeSessionId) {
       return;
     }
     window.localStorage.setItem(ACTIVE_CHAT_SESSION_STORAGE_KEY, activeSessionId);
-  }, [activeSessionId]);
+  }, [activeSessionId, isSessionHydrated]);
 
   const handleClearHistory = useCallback(async () => {
     if (sessionHistory.length === 0) {
