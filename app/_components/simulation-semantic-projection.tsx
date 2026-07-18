@@ -27,8 +27,8 @@ export type SemanticProjection = {
 
 const COLORS: Record<string, string> = {
   non_soutenu: "#94a3b8",
-  faible: "#f59e0b",
-  moyenne: "#0ea5e9",
+  faible: "#dc2626",
+  moyenne: "#f59e0b",
   forte: "#16a34a"
 };
 

@@ -62,7 +62,7 @@ function argumentColor(node: SimulationGraphNode): string {
   const score = Number(node.evidence_score || 0);
   if (!node.evidence_score) return "#94a3b8";
   if (score < 30) return "#dc2626";
-  if (score < 60) return "#f59e0b";
+  if (score <= 60) return "#f59e0b";
   return "#16a34a";
 }
 

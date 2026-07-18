@@ -91,17 +91,17 @@ const NODE_RING: Record<GraphNodeType, number> = {
 
 const EVIDENCE_META: Record<EvidenceBand, { label: string; color: string }> = {
   non_soutenu: { label: "Non soutenu", color: "#94a3b8" },
-  faible: { label: "Faible", color: "#f59e0b" },
-  moyenne: { label: "Moyenne", color: "#0ea5e9" },
+  faible: { label: "Faible", color: "#dc2626" },
+  moyenne: { label: "Moyenne", color: "#f59e0b" },
   forte: { label: "Forte", color: "#16a34a" }
 };
 
 function evidenceBand(node: SimulationGraphNode): EvidenceBand {
   if (node.evidence_band && EVIDENCE_META[node.evidence_band]) return node.evidence_band;
   const score = Number(node.evidence_score || 0);
-  if (score < 20) return "non_soutenu";
-  if (score < 45) return "faible";
-  if (score < 70) return "moyenne";
+  if (score <= 0) return "non_soutenu";
+  if (score < 30) return "faible";
+  if (score <= 60) return "moyenne";
   return "forte";
 }
 
