@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type GraphNodeType = "case" | "actor" | "issue" | "source" | "document" | "argument";
 type EvidenceBand = "non_soutenu" | "faible" | "moyenne" | "forte";
+type LinkDensity = "essential" | "all";
 
 export type SimulationGraphNode = {
   id: string;
@@ -268,6 +269,7 @@ export function SimulationRelationshipGraph({
   const hoverClearTimerRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({ width: 920, height: 590 });
   const [showEdgeLabels, setShowEdgeLabels] = useState(false);
+  const [linkDensity, setLinkDensity] = useState<LinkDensity>("essential");
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const [hoveredNode, setHoveredNode] = useState<SimulationGraphNode | null>(null);
@@ -313,6 +315,48 @@ export function SimulationRelationshipGraph({
       edges: scopedGraph.edges.filter((edge) => Number(edge.cycle_created || 0) <= activeCycle && nodeIds.has(edge.source) && nodeIds.has(edge.target))
     };
   }, [activeCycle, scopedGraph.edges, visibleNodes]);
+
+  const selectedNodeId = selection?.kind === "node" ? selection.node.id : null;
+  const displayGraph = useMemo<SimulationGraph>(() => {
+    if (linkDensity === "all") return visibleGraph;
+
+    const nodeById = new Map(visibleGraph.nodes.map((node) => [node.id, node]));
+    const columnFor = (type: GraphNodeType) => {
+      const typeColumn = type === "document" && !columnTypes.includes("document") ? "source" : type;
+      return Math.max(0, columnTypes.indexOf(typeColumn));
+    };
+    const selectedEdgeKeys = new Set<string>();
+    const edgeKey = (edge: SimulationGraph["edges"][number]) => `${edge.source}|${edge.target}|${edge.label}`;
+
+    visibleGraph.nodes.forEach((node) => {
+      if (node.type === "case") return;
+      const nodeColumn = columnFor(node.type);
+      const candidates = visibleGraph.edges
+        .filter((edge) => edge.source === node.id || edge.target === node.id)
+        .sort((left, right) => {
+          const leftOther = nodeById.get(left.source === node.id ? left.target : left.source);
+          const rightOther = nodeById.get(right.source === node.id ? right.target : right.source);
+          const leftColumn = leftOther ? columnFor(leftOther.type) : nodeColumn;
+          const rightColumn = rightOther ? columnFor(rightOther.type) : nodeColumn;
+          const leftPrevious = leftColumn < nodeColumn ? 0 : 1;
+          const rightPrevious = rightColumn < nodeColumn ? 0 : 1;
+          if (leftPrevious !== rightPrevious) return leftPrevious - rightPrevious;
+          return Math.abs(nodeColumn - leftColumn) - Math.abs(nodeColumn - rightColumn);
+        });
+      candidates.slice(0, 1).forEach((edge) => selectedEdgeKeys.add(edgeKey(edge)));
+    });
+
+    if (selectedNodeId) {
+      visibleGraph.edges
+        .filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
+        .forEach((edge) => selectedEdgeKeys.add(edgeKey(edge)));
+    }
+
+    return {
+      nodes: visibleGraph.nodes,
+      edges: visibleGraph.edges.filter((edge) => selectedEdgeKeys.has(edgeKey(edge)))
+    };
+  }, [columnTypes, linkDensity, selectedNodeId, visibleGraph]);
 
   useEffect(() => {
     if (!isReplaying) setActiveCycle(maxCycle);
@@ -385,17 +429,17 @@ export function SimulationRelationshipGraph({
     const { width, height } = dimensions;
     const centerX = width / 2;
     const centerY = height / 2;
-    const horizontalPadding = Math.min(92, Math.max(58, width * 0.075));
+    const horizontalPadding = Math.min(138, Math.max(82, width * 0.085));
     const columnCount = Math.max(1, columnTypes.length);
     const columnStep = columnCount === 1 ? 0 : (width - horizontalPadding * 2) / (columnCount - 1);
     const topPadding = 76;
     const bottomPadding = 84;
     const groupedNodes = new Map<GraphNodeType, SimulationGraphNode[]>();
-    visibleGraph.nodes.forEach((node) => {
+    displayGraph.nodes.forEach((node) => {
       groupedNodes.set(node.type, [...(groupedNodes.get(node.type) || []), node]);
     });
     const nodeById = new Map<string, ForceNode>();
-    const nodes: ForceNode[] = visibleGraph.nodes.map((node) => {
+    const nodes: ForceNode[] = displayGraph.nodes.map((node) => {
       const typeColumn = node.type === "document" && !columnTypes.includes("document") ? "source" : node.type;
       const column = Math.max(0, columnTypes.indexOf(typeColumn));
       const peers = groupedNodes.get(node.type) || [node];
@@ -410,7 +454,7 @@ export function SimulationRelationshipGraph({
       nodeById.set(forceNode.id, forceNode);
       return forceNode;
     });
-    const links: ForceLink[] = visibleGraph.edges.map((edge, index) => ({
+    const links: ForceLink[] = displayGraph.edges.map((edge, index) => ({
       ...edge,
       id: `${edge.source}-${edge.target}-${index}`,
       source: edge.source,
@@ -499,7 +543,12 @@ export function SimulationRelationshipGraph({
       return 11;
     });
     nodeSelection.append("text").attr("class", "legal-force-node-glyph").attr("text-anchor", "middle").attr("dy", "0.34em").text((node) => NODE_META[node.type].glyph);
-    nodeSelection.append("text").attr("class", "legal-force-node-label").attr("text-anchor", "middle").attr("dy", (node) => node.type === "case" ? 39 : 31).text((node) => clampLabel(node.label, node.type === "case" ? 30 : 23));
+    nodeSelection.append("text")
+      .attr("class", "legal-force-node-label")
+      .attr("text-anchor", (node) => node.type === "case" ? "start" : "middle")
+      .attr("x", (node) => node.type === "case" ? 23 : 0)
+      .attr("dy", (node) => node.type === "case" ? ".34em" : 31)
+      .text((node) => clampLabel(node.label, node.type === "case" ? 34 : 23));
     nodeSelection.append("title").text((node) => `${NODE_META[node.type].label}: ${node.label}${node.detail ? ` - ${node.detail}` : ""}`);
 
     const applySelection = (next: GraphSelection | null) => {
@@ -516,12 +565,28 @@ export function SimulationRelationshipGraph({
           }
         });
       }
+      if (selectedEdge) {
+        linkedNodeIds.add(selectedEdge.source);
+        linkedNodeIds.add(selectedEdge.target);
+      }
 
-      nodeSelection.classed("is-selected", (node) => node.id === selectedNodeId).classed("is-related", (node) => linkedNodeIds.has(node.id));
-      pathSelection.classed("is-selected", (link) => Boolean(selectedEdge && link.source === selectedEdge.source && link.target === selectedEdge.target && link.label === selectedEdge.label))
-        .classed("is-related", (link) => Boolean(selectedNodeId && (endpointNode(link.source, nodeById)?.id === selectedNodeId || endpointNode(link.target, nodeById)?.id === selectedNodeId)));
-      edgeLabelSelection.classed("is-selected", (link) => Boolean(selectedEdge && link.source === selectedEdge.source && link.target === selectedEdge.target && link.label === selectedEdge.label))
-        .classed("is-related", (link) => Boolean(selectedNodeId && (endpointNode(link.source, nodeById)?.id === selectedNodeId || endpointNode(link.target, nodeById)?.id === selectedNodeId)));
+      const matchesSelectedEdge = (link: ForceLink) => Boolean(selectedEdge
+        && endpointNode(link.source, nodeById)?.id === selectedEdge.source
+        && endpointNode(link.target, nodeById)?.id === selectedEdge.target
+        && link.label === selectedEdge.label);
+      const touchesSelectedNode = (link: ForceLink) => Boolean(selectedNodeId
+        && (endpointNode(link.source, nodeById)?.id === selectedNodeId || endpointNode(link.target, nodeById)?.id === selectedNodeId));
+      const hasSelection = Boolean(selectedNodeId || selectedEdge);
+
+      nodeSelection.classed("is-selected", (node) => node.id === selectedNodeId)
+        .classed("is-related", (node) => linkedNodeIds.has(node.id))
+        .classed("is-dimmed", (node) => hasSelection && node.id !== selectedNodeId && !linkedNodeIds.has(node.id));
+      pathSelection.classed("is-selected", matchesSelectedEdge)
+        .classed("is-related", touchesSelectedNode)
+        .classed("is-dimmed", (link) => hasSelection && !matchesSelectedEdge(link) && !touchesSelectedNode(link));
+      edgeLabelSelection.classed("is-selected", matchesSelectedEdge)
+        .classed("is-related", touchesSelectedNode)
+        .classed("is-dimmed", (link) => hasSelection && !matchesSelectedEdge(link) && !touchesSelectedNode(link));
     };
     selectionControlRef.current = applySelection;
 
@@ -591,7 +656,11 @@ export function SimulationRelationshipGraph({
       svg.on(".zoom", null).on("click", null);
       selectionControlRef.current = () => undefined;
     };
-  }, [activeCycle, clearSelection, columnTypes, dimensions, isWorking, keepHoverCard, layoutVersion, onNodeSelect, scheduleHoverCardClose, showEdgeLabels, visibleGraph]);
+  }, [activeCycle, clearSelection, columnTypes, dimensions, displayGraph, isWorking, keepHoverCard, layoutVersion, onNodeSelect, scheduleHoverCardClose, showEdgeLabels]);
+
+  useEffect(() => {
+    selectionControlRef.current(selection);
+  }, [displayGraph, selection]);
 
   useEffect(() => {
     if (!focusedNodeId) return;
@@ -636,9 +705,24 @@ export function SimulationRelationshipGraph({
         <div>
           <span className="simulation-eyebrow">Carte interactive</span>
           <h2>{scope === "structure" ? "Textes et pieces du dossier" : scope === "debate" ? "Personnes et arguments" : "Vue d'ensemble du dossier"}</h2>
-          <p>{visibleGraph.nodes.length} elements et {visibleGraph.edges.length} liens. Lisez la carte de gauche a droite. {isWorking ? "Elle se complete pendant la simulation." : "Elle montre le dernier etat du dossier."}</p>
+          <p>
+            {displayGraph.nodes.length} elements et {displayGraph.edges.length} liens affiches
+            {linkDensity === "essential" && visibleGraph.edges.length > displayGraph.edges.length ? ` sur ${visibleGraph.edges.length}` : ""}.
+            {" "}Lisez la carte de gauche a droite. {isWorking ? "Elle se complete pendant la simulation." : "Cliquez sur un element pour afficher tous ses liens directs."}
+          </p>
         </div>
         <div className="legal-force-graph-controls">
+          <button
+            aria-label={linkDensity === "all" ? "Afficher seulement les liens essentiels" : "Afficher tous les liens"}
+            aria-pressed={linkDensity === "all"}
+            className="legal-force-density-control"
+            onClick={() => setLinkDensity((value) => value === "all" ? "essential" : "all")}
+            title={linkDensity === "all" ? "Revenir aux liens essentiels" : `Afficher les ${visibleGraph.edges.length} liens`}
+            type="button"
+          >
+            <span className="material-symbols-outlined">{linkDensity === "all" ? "hub" : "filter_alt"}</span>
+            <b>{linkDensity === "all" ? "Tous les liens" : "Liens essentiels"}</b>
+          </button>
           <label className="legal-force-label-toggle" title="Afficher les mots qui expliquent chaque ligne"><input checked={showEdgeLabels} onChange={(event) => setShowEdgeLabels(event.target.checked)} type="checkbox" /><span>Expliquer les lignes</span></label>
           <button aria-label="Mieux repartir les elements" onClick={() => setLayoutVersion((value) => value + 1)} title="Mieux repartir les elements" type="button"><span className="material-symbols-outlined">refresh</span></button>
           <button aria-label="Revenir au centre" onClick={() => resetViewRef.current()} title="Revenir au centre" type="button"><span className="material-symbols-outlined">center_focus_strong</span></button>
