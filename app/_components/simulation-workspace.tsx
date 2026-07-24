@@ -13,7 +13,7 @@ import { SimulationRelationshipGraph } from "./simulation-relationship-graph";
 import { SimulationSemanticProjection, type SemanticProjection } from "./simulation-semantic-projection";
 import { Simulation3DGraph } from "./simulation-3d-graph";
 
-type SimulationKind = "trial" | "negotiation" | "mediation" | "training";
+type SimulationKind = "trial" | "moot_court" | "negotiation" | "mediation" | "training";
 type SimulationStatus = "draft" | "preparing" | "ready" | "running" | "completed" | "stopped" | "failed" | "interrupted";
 
 type SimulationActor = {
@@ -73,6 +73,58 @@ type SimulationCycle = {
   started_at?: string | null;
   completed_at?: string | null;
   messages: SimulationEvent[];
+  adaptive?: boolean;
+  reason?: string;
+};
+
+type CycleControl = {
+  adaptive?: boolean;
+  status?: string;
+  convergence_score?: number;
+  threshold?: number;
+  novelty_score?: number;
+  uncovered_issues?: string[];
+  one_sided_issues?: string[];
+  crucial_points?: string[];
+  recommendation?: string;
+  reason?: string;
+  awaiting_user_decision?: boolean;
+  inserted_cycle?: number;
+  cycle_count?: number;
+  max_cycles?: number;
+};
+
+type SimulationWitness = {
+  id: string;
+  name: string;
+  role: string;
+  personality: string;
+  statement: string;
+};
+
+type CrossExamination = {
+  id: string;
+  witness_id: string;
+  witness_name: string;
+  personality: string;
+  question: string;
+  answer: string;
+  source_ids: string[];
+  attachment_ids: string[];
+  contradictions: string[];
+  evaluation: { relevance: number; precision: number; control: number; evidence_use: number; feedback: string; suggested_follow_up: string };
+  created_at: string;
+};
+
+type JurisprudenceBenchmark = {
+  status: string;
+  similar_cases: { source_id: string; similarity: string; differences: string; ratio: string; issue_alignment: string }[];
+  arguments_seen: string[];
+  arguments_missing: string[];
+  plausibility_notes: string[];
+  limitations: string[];
+  sources: SimulationSource[];
+  generated_at: string;
 };
 
 type SimulationGraphNode = {
@@ -152,6 +204,14 @@ type SimulationCase = {
   decision_tree?: SimulationDecisionItem[];
   events: SimulationEvent[];
   cycles?: SimulationCycle[];
+  adaptive_cycles?: boolean;
+  devil_advocate_enabled?: boolean;
+  jurisprudence_benchmark_enabled?: boolean;
+  max_cycles?: number;
+  cycle_control?: CycleControl;
+  witnesses: SimulationWitness[];
+  cross_examinations: CrossExamination[];
+  jurisprudence_benchmark?: JurisprudenceBenchmark | null;
   report: SimulationReport | null;
   interactions: SimulationInteraction[];
   agent_memories: Record<string, { actor_id: string; actor_name: string; role: string; content: string; argument_ids: string[] }>;
@@ -179,6 +239,7 @@ const STEP_ITEMS = [
 
 const KIND_OPTIONS: { id: SimulationKind; title: string; detail: string; icon: string }[] = [
   { id: "trial", title: "Audience", detail: "Debat contradictoire et issue motivee", icon: "gavel" },
+  { id: "moot_court", title: "Moot Court", detail: "Audience immersive pour avocat ou etudiant", icon: "account_balance" },
   { id: "negotiation", title: "Negociation", detail: "Interets, propositions et concessions", icon: "handshake" },
   { id: "mediation", title: "Mediation", detail: "Dialogue guide sans decision imposee", icon: "diversity_3" },
   { id: "training", title: "Cas pratique", detail: "Entrainement pour etudiants et praticiens", icon: "school" }
@@ -194,7 +255,8 @@ const EVENT_META: Record<string, { label: string; icon: string; tone: string }> 
   ruling: { label: "Issue", icon: "balance", tone: "green" },
   source_review: { label: "Analyse des sources", icon: "fact_check", tone: "teal" },
   risk_assessment: { label: "Analyse de risques", icon: "shield", tone: "red" },
-  argument: { label: "Argument", icon: "format_quote", tone: "slate" }
+  argument: { label: "Argument", icon: "format_quote", tone: "slate" },
+  challenge: { label: "Contradiction", icon: "gavel", tone: "red" }
 };
 
 function formatDate(value: string): string {
@@ -217,6 +279,7 @@ function eventStage(event: SimulationEvent): string {
     : event.type === "submission" ? "memorandum_initial"
     : event.type === "response" ? "memorandum_adverse"
     : event.type === "rebuttal" ? "replique"
+    : event.type === "challenge" ? "challenge_adaptatif"
     : event.type === "deliberation" ? "analyse_autorite"
     : event.type === "risk_assessment" ? "analyse_risques"
     : "";
@@ -225,7 +288,7 @@ function eventStage(event: SimulationEvent): string {
 function fallbackCycles(events: SimulationEvent[], trace: SimulationTraceItem[]): SimulationCycle[] {
   const definitions = [
     { id: "cycle-1", sequence: 1, title: "Examen du dossier", description: "Analyse des sources et presentation de la position initiale.", stages: ["analyse_sources", "memorandum_initial"] },
-    { id: "cycle-2", sequence: 2, title: "Debat contradictoire", description: "Reponse de la partie adverse et replique sur les points contestes.", stages: ["memorandum_adverse", "replique"] },
+    { id: "cycle-2", sequence: 2, title: "Debat contradictoire", description: "Reponse de la partie adverse et replique sur les points contestes.", stages: ["memorandum_adverse", "questions_du_banc", "replique", "duplique"] },
     { id: "cycle-3", sequence: 3, title: "Evaluation et synthese", description: "Analyse neutre de l'autorite et examen des risques du dossier.", stages: ["analyse_autorite", "analyse_risques"] }
   ];
   const completedStages = new Set(trace.filter((item) => item.status === "completed").map((item) => item.stage));
@@ -352,6 +415,119 @@ function ArgumentEvidenceList({ arguments: argumentsList, sourceAnalysis }: { ar
   );
 }
 
+function AdaptiveCyclePanel({ control, busy, onDecision }: { control?: CycleControl; busy: boolean; onDecision: (action: "continue" | "stop") => void }) {
+  if (!control?.adaptive) return null;
+  const convergence = Math.round((control.convergence_score || 0) * 100);
+  const canContinue = (control.cycle_count || 0) < (control.max_cycles || 0);
+  return (
+    <section className={`simulation-adaptive-card ${control.recommendation || "continue"}`}>
+      <header>
+        <span className="material-symbols-outlined">motion_mode</span>
+        <div><small>Cycles adaptatifs</small><h2>{control.status === "cycle_inserted" ? "Un cycle intermediaire a ete ajoute" : control.recommendation === "stop" ? "Les positions semblent converger" : "Un approfondissement est recommande"}</h2></div>
+        <b>{convergence}%</b>
+      </header>
+      <div className="simulation-convergence-meter"><i style={{ width: `${convergence}%` }} /></div>
+      <p>{control.reason || "Le moteur compare les memoires des agents et la couverture des questions de droit."}</p>
+      {control.crucial_points?.length ? <div className="simulation-crucial-points">{control.crucial_points.map((item) => <span key={item}>{item}</span>)}</div> : null}
+      <footer>
+        <small>Cycle {control.cycle_count || 0}/{control.max_cycles || 0} · seuil {Math.round((control.threshold || 0.82) * 100)}%</small>
+        {control.awaiting_user_decision ? <div><button disabled={busy || !canContinue} onClick={() => onDecision("continue")} type="button"><span className="material-symbols-outlined">add_circle</span>Ajouter un cycle</button><button className="stop" disabled={busy} onClick={() => onDecision("stop")} type="button"><span className="material-symbols-outlined">check_circle</span>Clore ici</button></div> : null}
+      </footer>
+    </section>
+  );
+}
+
+function JurisprudenceBenchmarkPanel({ benchmark, busy, onRefresh }: { benchmark?: JurisprudenceBenchmark | null; busy: boolean; onRefresh: () => void }) {
+  return (
+    <section className="simulation-benchmark">
+      <header><div><span className="simulation-eyebrow">Jurisprudence reelle</span><h2>Comparer la simulation au corpus</h2><p>Les arguments sont confrontes a des decisions similaires sans transformer cette comparaison en prediction.</p></div><button disabled={busy} onClick={onRefresh} type="button"><span className={`material-symbols-outlined ${busy ? "spin" : ""}`}>{busy ? "autorenew" : "sync"}</span>{benchmark ? "Actualiser" : "Lancer"}</button></header>
+      {!benchmark ? <div className="simulation-panel-empty"><span className="material-symbols-outlined">account_balance</span><p>La comparaison sera calculee a partir des decisions presentes dans le corpus.</p></div> : null}
+      {benchmark?.status === "no_match" ? <div className="simulation-benchmark-warning">Aucune decision suffisamment similaire n'a ete retrouvee dans le corpus actuel.</div> : null}
+      {benchmark?.similar_cases?.length ? <div className="simulation-benchmark-cases">{benchmark.similar_cases.map((item) => { const source = benchmark.sources.find((candidate) => candidate.id === item.source_id); return <article key={`${item.source_id}-${item.similarity}`}><b>{item.source_id}</b><div><strong>{source?.citation || item.source_id}</strong><p>{item.similarity}</p>{item.ratio ? <small>Portee: {item.ratio}</small> : null}{item.differences ? <em>Difference: {item.differences}</em> : null}</div></article>; })}</div> : null}
+      {benchmark && (benchmark.arguments_seen.length || benchmark.arguments_missing.length) ? <div className="simulation-benchmark-grid"><div><h3>Arguments retrouves</h3>{benchmark.arguments_seen.map((item) => <p key={item}>{item}</p>)}</div><div><h3>Points oublies</h3>{benchmark.arguments_missing.map((item) => <p key={item}>{item}</p>)}</div></div> : null}
+      {benchmark?.limitations?.length ? <footer>{benchmark.limitations.map((item) => <span key={item}>{item}</span>)}</footer> : null}
+    </section>
+  );
+}
+
+function WitnessLab({
+  witnesses,
+  examinations,
+  name,
+  role,
+  personality,
+  statement,
+  selectedWitnessId,
+  question,
+  busy,
+  onName,
+  onRole,
+  onPersonality,
+  onStatement,
+  onSelectedWitness,
+  onQuestion,
+  onCreate,
+  onAsk
+}: {
+  witnesses: SimulationWitness[];
+  examinations: CrossExamination[];
+  name: string;
+  role: string;
+  personality: string;
+  statement: string;
+  selectedWitnessId: string;
+  question: string;
+  busy: boolean;
+  onName: (value: string) => void;
+  onRole: (value: string) => void;
+  onPersonality: (value: string) => void;
+  onStatement: (value: string) => void;
+  onSelectedWitness: (value: string) => void;
+  onQuestion: (value: string) => void;
+  onCreate: () => void;
+  onAsk: () => void;
+}) {
+  const selectedExaminations = examinations.filter((item) => item.witness_id === selectedWitnessId);
+  const selectedWitness = witnesses.find((item) => item.id === selectedWitnessId);
+  return (
+    <section className="simulation-witness-lab">
+      <header>
+        <div>
+          <span className="simulation-eyebrow">Contre-interrogatoire</span>
+          <h2>Interroger un temoin</h2>
+          <p>Ajoutez un temoin fictif, puis testez vos questions sans sortir des faits et des sources du dossier.</p>
+        </div>
+        <span className="material-symbols-outlined">record_voice_over</span>
+      </header>
+      <div className="simulation-witness-create">
+        <label><span>Nom</span><input onChange={(event) => onName(event.target.value)} placeholder="Ex. Cheikh Tidiane Sarr" value={name} /></label>
+        <label><span>Role</span><input onChange={(event) => onRole(event.target.value)} placeholder="Ex. Gerant de la partie plaignante" value={role} /></label>
+        <label><span>Personnalite</span><select onChange={(event) => onPersonality(event.target.value)} value={personality}><option value="cooperatif">Cooperatif</option><option value="hostile">Hostile</option><option value="evasif">Evasif</option><option value="anxieux">Anxieux</option></select></label>
+        <label className="wide"><span>Declaration initiale</span><textarea onChange={(event) => onStatement(event.target.value)} placeholder="Ce que le temoin affirme savoir..." rows={3} value={statement} /></label>
+        <button disabled={busy || name.trim().length < 2 || statement.trim().length < 20} onClick={onCreate} type="button"><span className={`material-symbols-outlined ${busy ? "spin" : ""}`}>{busy ? "autorenew" : "person_add"}</span>{busy ? "Ajout..." : "Ajouter le temoin"}</button>
+      </div>
+      {witnesses.length ? (
+        <>
+          <div className="simulation-witness-selector">
+            <label><span>Temoin actif</span><select onChange={(event) => onSelectedWitness(event.target.value)} value={selectedWitnessId}>{witnesses.map((item) => <option key={item.id} value={item.id}>{item.name} - {item.personality}</option>)}</select></label>
+            {selectedWitness ? <small>{selectedWitness.role} · Declaration: {selectedWitness.statement}</small> : null}
+          </div>
+          <div className="simulation-witness-thread">
+            {selectedExaminations.map((item) => (
+              <article key={item.id}>
+                <div className="simulation-chat-pair"><div className="user"><b>Vous</b><p>{item.question}</p></div><div className="actor"><b>{item.witness_name}</b><p>{item.answer}</p>{item.source_ids.length ? <footer>{item.source_ids.map((sourceId) => <span key={sourceId}>{sourceId}</span>)}</footer> : null}</div></div>
+                <div className="simulation-witness-evaluation"><strong>Evaluation de la question</strong><div><span>Pertinence <b>{item.evaluation.relevance}</b></span><span>Precision <b>{item.evaluation.precision}</b></span><span>Controle <b>{item.evaluation.control}</b></span><span>Preuves <b>{item.evaluation.evidence_use}</b></span></div><p>{item.evaluation.feedback}</p>{item.evaluation.suggested_follow_up ? <small>Relance suggeree: {item.evaluation.suggested_follow_up}</small> : null}{item.contradictions.length ? <em>Contradictions: {item.contradictions.join(" · ")}</em> : null}</div>
+              </article>
+            ))}
+            {!selectedExaminations.length ? <div className="simulation-panel-empty"><span className="material-symbols-outlined">chat</span><p>Posez une premiere question au temoin actif.</p></div> : null}
+          </div>
+          <div className="simulation-chat-input"><textarea disabled={busy} onChange={(event) => onQuestion(event.target.value)} placeholder={selectedWitness ? `Questionner ${selectedWitness.name}...` : "Choisissez un temoin..."} rows={2} value={question} /><button disabled={busy || !selectedWitnessId || question.trim().length < 2} onClick={onAsk} type="button"><span className={`material-symbols-outlined ${busy ? "spin" : ""}`}>{busy ? "autorenew" : "north"}</span></button></div>
+        </>
+      ) : <div className="simulation-panel-empty"><span className="material-symbols-outlined">person_search</span><p>Aucun temoin n'est encore ajoute a ce dossier.</p></div>}
+    </section>
+  );
+}
+
 export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSimulation?: boolean }) {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const [cases, setCases] = useState<SimulationCase[]>([]);
@@ -370,6 +546,15 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
   const [interactionQuestion, setInteractionQuestion] = useState("");
   const [selectedActorId, setSelectedActorId] = useState("");
   const [interactionBusy, setInteractionBusy] = useState(false);
+  const [cycleBusy, setCycleBusy] = useState(false);
+  const [benchmarkBusy, setBenchmarkBusy] = useState(false);
+  const [witnessName, setWitnessName] = useState("");
+  const [witnessRole, setWitnessRole] = useState("Temoin");
+  const [witnessPersonality, setWitnessPersonality] = useState("cooperatif");
+  const [witnessStatement, setWitnessStatement] = useState("");
+  const [selectedWitnessId, setSelectedWitnessId] = useState("");
+  const [witnessQuestion, setWitnessQuestion] = useState("");
+  const [witnessBusy, setWitnessBusy] = useState(false);
   const focusedGraphNodeId = useSimulationGraphStore((state) => state.focusedNodeId);
   const graphFocalView = useSimulationGraphStore((state) => state.focalView);
   const resetGraphForCase = useSimulationGraphStore((state) => state.resetForCase);
@@ -501,10 +686,11 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
       window.localStorage.setItem(LAST_CASE_KEY, next.id);
       setCases((current) => [next, ...current.filter((item) => item.id !== next.id)]);
       if (next.actors.length && !selectedActorId) setSelectedActorId(next.actors[0].id);
+      if (next.witnesses?.length && !selectedWitnessId) setSelectedWitnessId(next.witnesses[0].id);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Impossible de charger le dossier.");
     }
-  }, [caseData?.id, request, selectedActorId]);
+  }, [caseData?.id, request, selectedActorId, selectedWitnessId]);
 
   useEffect(() => {
     if (!caseData || !["preparing", "running"].includes(caseData.status)) return;
@@ -527,7 +713,11 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
           scenario: scenario.trim(),
           simulation_kind: kind,
           jurisdiction: jurisdiction.trim() || "Senegal",
-          objectives: objective.trim() ? [objective.trim()] : []
+          objectives: objective.trim() ? [objective.trim()] : [],
+          adaptive_cycles: true,
+          devil_advocate_enabled: true,
+          jurisprudence_benchmark_enabled: true,
+          max_cycles: 5
         })
       });
       let dossier = created;
@@ -625,6 +815,83 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
     }
   };
 
+  const decideAdaptiveCycle = async (action: "continue" | "stop") => {
+    if (!caseData) return;
+    setCycleBusy(true);
+    setError("");
+    try {
+      await request<SimulationCase>(`/simulation/cases/${caseData.id}/cycles/decision`, {
+        method: "POST",
+        body: JSON.stringify({ action })
+      });
+      await refreshCase(caseData.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "La decision de cycle a echoue.");
+    } finally {
+      setCycleBusy(false);
+    }
+  };
+
+  const createWitnessForCase = async () => {
+    if (!caseData || witnessName.trim().length < 2 || witnessStatement.trim().length < 20) return;
+    setWitnessBusy(true);
+    setError("");
+    try {
+      const next = await request<SimulationCase>(`/simulation/cases/${caseData.id}/witnesses`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: witnessName.trim(),
+          role: witnessRole.trim() || "Temoin",
+          personality: witnessPersonality,
+          statement: witnessStatement.trim()
+        })
+      });
+      setCaseData(next);
+      setCases((current) => [next, ...current.filter((item) => item.id !== next.id)]);
+      const added = next.witnesses?.[next.witnesses.length - 1];
+      if (added) setSelectedWitnessId(added.id);
+      setWitnessName("");
+      setWitnessRole("Temoin");
+      setWitnessStatement("");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Ajout du temoin impossible.");
+    } finally {
+      setWitnessBusy(false);
+    }
+  };
+
+  const askWitness = async () => {
+    if (!caseData || !selectedWitnessId || witnessQuestion.trim().length < 2) return;
+    setWitnessBusy(true);
+    setError("");
+    try {
+      await request<CrossExamination>(`/simulation/cases/${caseData.id}/cross-examinations`, {
+        method: "POST",
+        body: JSON.stringify({ witness_id: selectedWitnessId, question: witnessQuestion.trim() })
+      });
+      setWitnessQuestion("");
+      await refreshCase(caseData.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Le contre-interrogatoire a echoue.");
+    } finally {
+      setWitnessBusy(false);
+    }
+  };
+
+  const refreshBenchmark = async () => {
+    if (!caseData) return;
+    setBenchmarkBusy(true);
+    setError("");
+    try {
+      await request<JurisprudenceBenchmark>(`/simulation/cases/${caseData.id}/benchmark`, { method: "POST" });
+      await refreshCase(caseData.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "La comparaison jurisprudentielle a echoue.");
+    } finally {
+      setBenchmarkBusy(false);
+    }
+  };
+
   const isWorking = caseData?.status === "preparing" || caseData?.status === "running";
   const selectedActor = caseData?.actors.find((actor) => actor.id === selectedActorId);
   const simulationCycles = useMemo(
@@ -648,6 +915,12 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
     setPendingPdf(null);
     setSelectedActorId("");
     setInteractionQuestion("");
+    setWitnessName("");
+    setWitnessRole("Temoin");
+    setWitnessPersonality("cooperatif");
+    setWitnessStatement("");
+    setSelectedWitnessId("");
+    setWitnessQuestion("");
     setError("");
     window.localStorage.removeItem(LAST_CASE_KEY);
   };
@@ -838,6 +1111,7 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
                     <p>{completedCycles} cycle{completedCycles > 1 ? "s" : ""} termine{completedCycles > 1 ? "s" : ""}. Prochaine actualisation automatique dans 10 secondes.</p>
                   </div>
                 ) : null}
+                <AdaptiveCyclePanel control={caseData.cycle_control} busy={cycleBusy} onDecision={(action) => void decideAdaptiveCycle(action)} />
                 <div className="simulation-conversation-list" aria-live="polite">
                   {visibleCycles.map((cycle) => <CycleConversation
                     activeSpeechKey={simulationSpeech.activeKey}
@@ -855,10 +1129,29 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
                     </div>
                   ) : null}
                 </div>
+                <WitnessLab
+                  busy={witnessBusy}
+                  examinations={caseData.cross_examinations || []}
+                  name={witnessName}
+                  onAsk={() => void askWitness()}
+                  onCreate={() => void createWitnessForCase()}
+                  onName={setWitnessName}
+                  onPersonality={setWitnessPersonality}
+                  onQuestion={setWitnessQuestion}
+                  onRole={setWitnessRole}
+                  onSelectedWitness={setSelectedWitnessId}
+                  onStatement={setWitnessStatement}
+                  personality={witnessPersonality}
+                  question={witnessQuestion}
+                  role={witnessRole}
+                  selectedWitnessId={selectedWitnessId}
+                  statement={witnessStatement}
+                  witnesses={caseData.witnesses || []}
+                />
               </div>
             ) : null}
 
-            {activeStep === 4 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 5</span><h1>Rapport et echanges</h1><p>Restitution exploitable pour une preparation, une formation ou une analyse strategique.</p></div><span className="material-symbols-outlined stage-icon">summarize</span></div>{caseData.report ? <div className="simulation-report"><section className="simulation-report-summary"><span className="material-symbols-outlined">auto_awesome</span><div><small>SYNTHESE</small><p>{caseData.report.summary}</p></div></section><div className="simulation-report-grid"><section><h3><span className="material-symbols-outlined">add_task</span> Points a soutenir</h3>{caseData.report.points_for.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">warning</span> Points de vigilance</h3>{caseData.report.points_against.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">shield</span> Risques</h3>{caseData.report.risks.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">alt_route</span> Issues possibles</h3>{caseData.report.outcomes.map((item) => <p key={item}>{item}</p>)}</section></div><aside className="simulation-disclaimer"><span className="material-symbols-outlined">info</span>{caseData.report.disclaimer}</aside><ArgumentEvidenceList arguments={caseData.arguments} sourceAnalysis={caseData.source_analysis} /></div> : <div className="simulation-panel-empty"><span className="material-symbols-outlined">summarize</span><p>Le rapport sera disponible a la fin de l'audience simulee.</p></div>}<section className="simulation-interaction"><div className="simulation-interaction-heading"><div><span className="simulation-eyebrow">Interroger un acteur</span><h2>Tester un argument ou une position</h2></div><select onChange={(event) => setSelectedActorId(event.target.value)} value={selectedActorId}>{caseData.actors.map((actor) => <option key={actor.id} value={actor.id}>{actor.name} - {actor.role.replaceAll("_", " ")}</option>)}</select></div>{caseData.interactions.map((interaction) => <div className="simulation-chat-pair" key={interaction.id}><div className="user"><b>Vous</b><p>{interaction.question}</p></div><div className="actor"><b>{interaction.actor_name}</b><p>{interaction.answer}</p>{interaction.source_ids?.length ? <footer>{interaction.source_ids.map((sourceId) => <span key={sourceId}>{sourceId}</span>)}</footer> : null}</div></div>)}<div className="simulation-chat-input"><textarea disabled={!caseData.sources.length || interactionBusy} onChange={(event) => setInteractionQuestion(event.target.value)} placeholder={selectedActor ? `Questionner ${selectedActor.name}...` : "Choisissez un acteur..."} rows={2} value={interactionQuestion} /><button disabled={!caseData.sources.length || interactionBusy || interactionQuestion.trim().length < 2} onClick={() => void askActor()} type="button"><span className={`material-symbols-outlined ${interactionBusy ? "spin" : ""}`}>{interactionBusy ? "autorenew" : "north"}</span></button></div></section></div> : null}
+            {activeStep === 4 ? <div className="simulation-stage"><div className="simulation-stage-heading"><div><span className="simulation-eyebrow">Etape 5</span><h1>Rapport et echanges</h1><p>Restitution exploitable pour une preparation, une formation ou une analyse strategique.</p></div><span className="material-symbols-outlined stage-icon">summarize</span></div>{caseData.report ? <div className="simulation-report"><section className="simulation-report-summary"><span className="material-symbols-outlined">auto_awesome</span><div><small>SYNTHESE</small><p>{caseData.report.summary}</p></div></section><div className="simulation-report-grid"><section><h3><span className="material-symbols-outlined">add_task</span> Points a soutenir</h3>{caseData.report.points_for.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">warning</span> Points de vigilance</h3>{caseData.report.points_against.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">shield</span> Risques</h3>{caseData.report.risks.map((item) => <p key={item}>{item}</p>)}</section><section><h3><span className="material-symbols-outlined">alt_route</span> Issues possibles</h3>{caseData.report.outcomes.map((item) => <p key={item}>{item}</p>)}</section></div><aside className="simulation-disclaimer"><span className="material-symbols-outlined">info</span>{caseData.report.disclaimer}</aside><ArgumentEvidenceList arguments={caseData.arguments} sourceAnalysis={caseData.source_analysis} /><JurisprudenceBenchmarkPanel benchmark={caseData.jurisprudence_benchmark} busy={benchmarkBusy} onRefresh={() => void refreshBenchmark()} /></div> : <div className="simulation-panel-empty"><span className="material-symbols-outlined">summarize</span><p>Le rapport sera disponible a la fin de l'audience simulee.</p></div>}<section className="simulation-interaction"><div className="simulation-interaction-heading"><div><span className="simulation-eyebrow">Interroger un acteur</span><h2>Tester un argument ou une position</h2></div><select onChange={(event) => setSelectedActorId(event.target.value)} value={selectedActorId}>{caseData.actors.map((actor) => <option key={actor.id} value={actor.id}>{actor.name} - {actor.role.replaceAll("_", " ")}</option>)}</select></div>{caseData.interactions.map((interaction) => <div className="simulation-chat-pair" key={interaction.id}><div className="user"><b>Vous</b><p>{interaction.question}</p></div><div className="actor"><b>{interaction.actor_name}</b><p>{interaction.answer}</p>{interaction.source_ids?.length ? <footer>{interaction.source_ids.map((sourceId) => <span key={sourceId}>{sourceId}</span>)}</footer> : null}</div></div>)}<div className="simulation-chat-input"><textarea disabled={!caseData.sources.length || interactionBusy} onChange={(event) => setInteractionQuestion(event.target.value)} placeholder={selectedActor ? `Questionner ${selectedActor.name}...` : "Choisissez un acteur..."} rows={2} value={interactionQuestion} /><button disabled={!caseData.sources.length || interactionBusy || interactionQuestion.trim().length < 2} onClick={() => void askActor()} type="button"><span className={`material-symbols-outlined ${interactionBusy ? "spin" : ""}`}>{interactionBusy ? "autorenew" : "north"}</span></button></div></section></div> : null}
               </div>
 
               {activeStep >= 2 ? (
