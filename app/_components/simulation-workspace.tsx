@@ -560,6 +560,7 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
   const resetGraphForCase = useSimulationGraphStore((state) => state.resetForCase);
   const setFocusedGraphNodeId = useSimulationGraphStore((state) => state.setFocusedNodeId);
   const setGraphFocalView = useSimulationGraphStore((state) => state.setFocalView);
+  const clearFocusedGraphNode = useCallback(() => setFocusedGraphNodeId(null), [setFocusedGraphNodeId]);
   const [semanticProjection, setSemanticProjection] = useState<SemanticProjection | null>(null);
   const [projectionBusy, setProjectionBusy] = useState(false);
   const simulationSpeech = useTtsPlayer(setError);
@@ -1056,9 +1057,9 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
                   <Simulation3DGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} onNodeSelect={setFocusedGraphNodeId} />
                 ) : (
                   <div className="simulation-double-focal">
-                    {graphFocalView === "split" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} scope="all" variant="embedded" /> : null}
-                    {graphFocalView === "debate" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} scope="debate" variant="embedded" /> : null}
-                    {graphFocalView === "structure" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} scope="structure" variant="embedded" /> : null}
+                    {graphFocalView === "split" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} onSelectionClear={clearFocusedGraphNode} scope="all" variant="embedded" /> : null}
+                    {graphFocalView === "debate" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} onSelectionClear={clearFocusedGraphNode} scope="debate" variant="embedded" /> : null}
+                    {graphFocalView === "structure" ? <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} onSelectionClear={clearFocusedGraphNode} scope="structure" variant="embedded" /> : null}
                   </div>
                 )}
 
@@ -1156,7 +1157,7 @@ export function SimulationWorkspace({ forceNewSimulation = false }: { forceNewSi
 
               {activeStep >= 2 ? (
                 <aside className="simulation-live-graph" aria-label="Graphe juridique mis a jour en direct">
-                  <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} variant="embedded" />
+                  <SimulationRelationshipGraph focusedNodeId={focusedGraphNodeId} graph={caseData.graph} isWorking={isWorking} onNodeSelect={setFocusedGraphNodeId} onSelectionClear={clearFocusedGraphNode} variant="embedded" />
                 </aside>
               ) : null}
             </div>

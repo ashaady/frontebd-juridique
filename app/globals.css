@@ -181,7 +181,7 @@ body {
 @media(max-width:600px){.simulation-graph-onboarding>header{padding:14px 13px 11px}.simulation-graph-onboarding>header h2{font-size:16px}.simulation-graph-reading-steps{grid-template-columns:1fr;padding:0 13px 12px}.simulation-graph-summary{padding:10px 13px}.simulation-graph-click-hint{align-items:flex-start;padding:10px 13px}.simulation-focal-switch button{flex:1 1 100%}.simulation-advanced-analysis>summary{padding:11px}.simulation-advanced-analysis-content{padding:0 10px 10px}}
 
 /* Keep dense legal graphs readable while preserving access to every relation. */
-.legal-force-graph-controls .legal-force-density-control{display:flex;width:auto;min-width:118px;padding:0 10px;gap:6px}.legal-force-density-control b{font-size:9px;white-space:nowrap}.legal-force-density-control[aria-pressed="true"]{border-color:#8fb39a;background:#eef8f0;color:#24613d}.legal-force-node{transition:opacity .18s ease}.legal-force-node.is-dimmed{opacity:.14!important}.legal-force-edge.is-dimmed,.legal-force-edge-label.is-dimmed{opacity:.04!important}
+.legal-force-graph-controls .legal-force-density-control{display:flex;width:auto;min-width:118px;padding:0 10px;gap:6px}.legal-force-density-control b{font-size:9px;white-space:nowrap}.legal-force-density-control[aria-pressed="true"]{border-color:#8fb39a;background:#eef8f0;color:#24613d}.legal-force-node{transition:opacity .18s ease}.legal-force-node.is-dimmed{opacity:.36!important}.legal-force-edge.is-dimmed,.legal-force-edge-label.is-dimmed{opacity:.08!important}
 @media(max-width:760px){.legal-force-graph-controls .legal-force-density-control{width:34px;min-width:34px;padding:0}.legal-force-density-control b{display:none}}
 
 /* Adaptive cycles, witnesses and jurisprudence benchmark. */

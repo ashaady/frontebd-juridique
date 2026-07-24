@@ -99,7 +99,10 @@ function evidenceBand(node: SimulationGraphNode): EvidenceBand {
 }
 
 function clampLabel(value: string, length: number): string {
-  return value.length > length ? `${value.slice(0, Math.max(1, length - 1)).trim()}...` : value;
+  const normalized = String(value || "").replace(/\s+/g, " ").trim() || "Element sans titre";
+  return normalized.length > length
+    ? `${normalized.slice(0, Math.max(1, length - 3)).trimEnd()}...`
+    : normalized;
 }
 
 function endpointNode(endpoint: string | number | ForceNode, byId: Map<string, ForceNode>): ForceNode | undefined {
@@ -253,7 +256,8 @@ export function SimulationRelationshipGraph({
   variant = "full",
   focusedNodeId = null,
   scope = "all",
-  onNodeSelect
+  onNodeSelect,
+  onSelectionClear
 }: {
   graph: SimulationGraph;
   isWorking?: boolean;
@@ -261,6 +265,7 @@ export function SimulationRelationshipGraph({
   focusedNodeId?: string | null;
   scope?: "all" | "structure" | "debate";
   onNodeSelect?: (nodeId: string) => void;
+  onSelectionClear?: () => void;
 }) {
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -374,8 +379,10 @@ export function SimulationRelationshipGraph({
 
   const clearSelection = useCallback(() => {
     setSelection(null);
+    setHoveredNode(null);
     selectionControlRef.current(null);
-  }, []);
+    onSelectionClear?.();
+  }, [onSelectionClear]);
 
   const focusEgoNode = useCallback((nodeId: string) => {
     const node = visibleGraph.nodes.find((item) => item.id === nodeId);
@@ -434,15 +441,19 @@ export function SimulationRelationshipGraph({
     const columnStep = columnCount === 1 ? 0 : (width - horizontalPadding * 2) / (columnCount - 1);
     const topPadding = 76;
     const bottomPadding = 84;
+    const renderedColumn = (node: SimulationGraphNode): GraphNodeType => (
+      node.type === "document" && !columnTypes.includes("document") ? "source" : node.type
+    );
     const groupedNodes = new Map<GraphNodeType, SimulationGraphNode[]>();
     displayGraph.nodes.forEach((node) => {
-      groupedNodes.set(node.type, [...(groupedNodes.get(node.type) || []), node]);
+      const columnType = renderedColumn(node);
+      groupedNodes.set(columnType, [...(groupedNodes.get(columnType) || []), node]);
     });
     const nodeById = new Map<string, ForceNode>();
     const nodes: ForceNode[] = displayGraph.nodes.map((node) => {
-      const typeColumn = node.type === "document" && !columnTypes.includes("document") ? "source" : node.type;
+      const typeColumn = renderedColumn(node);
       const column = Math.max(0, columnTypes.indexOf(typeColumn));
-      const peers = groupedNodes.get(node.type) || [node];
+      const peers = groupedNodes.get(typeColumn) || [node];
       const peerIndex = Math.max(0, peers.findIndex((item) => item.id === node.id));
       const peerStep = (height - topPadding - bottomPadding) / Math.max(1, peers.length - 1);
       const y = peers.length === 1 ? centerY : topPadding + peerIndex * peerStep;
@@ -640,8 +651,9 @@ export function SimulationRelationshipGraph({
     };
     update();
 
-    nodeSelection.style("opacity", 0).attr("transform", `translate(${width / 2},${height / 2})`)
-      .transition().delay((_, index) => index * 45).duration(460).style("opacity", 1);
+    // Polling rebuilds the SVG. Preserve the computed lane positions instead of
+    // stacking every node at the center during each refresh.
+    nodeSelection.style("opacity", 1);
 
     const zoomBehaviour = zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.25, 3.5])
